@@ -1,0 +1,45 @@
+actor:
+  class_name: ModelGenerator
+
+  params:
+    architecture:
+      # point_cloud_encoder:
+      #   class_name: PointCloudEncoder
+      #   proprioception_name: proprioception
+      #   point_cloud_name: point_cloud
+      #   channels: [ 3, 64, 128, 256 ]
+      #   input_mlp_shape: [ 256, 256 ]
+      #   activation: leakyrelu
+      #   batchnorm: False
+      #   dropout: 0.0
+      #   output_size: 128
+
+      mlp_encoder:
+        class_name: MLPBasic
+        shape: [ 256, 128, 64 ]
+        activation: elu
+        batchnorm: False
+        dropout: 0.0
+        output_size: -1 # output dim is overriden for the last submodule
+ 
+  distribution:
+    class_name: Gaussian
+    params:
+      std:
+        fixed: False
+        clamp: False
+        init: 1.
+        min: 0.5
+        max: 2.
+
+critic:
+  class_name: ModelGenerator
+  params:
+    architecture:
+      mlp_encoder:
+        class_name: MLPBasic
+        shape: [ 256, 128, 64 ]
+        activation: elu
+        batchnorm: False
+        dropout: 0.0
+        output_size: -1 # output dim is overriden for the last submodule

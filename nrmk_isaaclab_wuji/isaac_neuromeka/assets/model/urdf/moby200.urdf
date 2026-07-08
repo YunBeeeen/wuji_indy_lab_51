@@ -1,0 +1,213 @@
+<?xml version="1.0" ?>
+<robot name="moby">
+  <material name="black">
+    <color rgba="0.0 0.0 0.0 1.0"/>
+  </material>
+  <material name="blue">
+    <color rgba="0.0 0.0 0.8 1.0"/>
+  </material>
+  <material name="green">
+    <color rgba="0.0 0.8 0.0 1.0"/>
+  </material>
+  <material name="icon_green">
+    <color rgba="0.596078431372549 0.7764705882352941 0.3843137254901961 1.0"/>
+  </material>
+  <material name="icon_grey">
+    <color rgba="0.2 0.2 0.2 1.0"/>
+  </material>
+  <material name="indy_white">
+    <color rgba="0.8941176470588236 0.8941176470588236 0.8941176470588236 1.0"/>
+  </material>
+  <material name="grey">
+    <color rgba="0.2 0.2 0.2 1.0"/>
+  </material>
+  <material name="orange">
+    <color rgba="1.0 0.4235294117647059 0.0392156862745098 1.0"/>
+  </material>
+  <material name="brown">
+    <color rgba="0.8705882352941177 0.8117647058823529 0.7647058823529411 1.0"/>
+  </material>
+  <material name="red">
+    <color rgba="0.8 0.0 0.0 1.0"/>
+  </material>
+  <material name="white">
+    <color rgba="1.0 1.0 1.0 1.0"/>
+  </material>
+  <material name="metal">
+    <color rgba="0.768627450980392 0.749019607843137 0.729411764705882 1"/>
+  </material>
+  <material name="metal_grey">
+    <color rgba="0.501960784313725 0.501960784313725 0.501960784313725 1"/>
+  </material>
+  <material name="metal_white">
+    <color rgba="0.866666666666667 0.866666666666667 0.890196078431373 1"/>
+  </material>
+  <material name="aluminum">
+    <color rgba="0.5 0.5 0.5 1.0"/>
+  </material>
+  <link name="base_link"/>
+  <joint name="base_link_to_base_bottom" type="fixed">
+    <origin rpy="0 0 -1.5707963267948966" xyz="0 0.0 0"/>
+    <parent link="base_link"/>
+    <child link="base_bottom"/>
+    <axis xyz="0 0 0"/>
+  </joint>
+  <link name="base_bottom">
+    <inertial>
+      <origin rpy="0 0 0" xyz="-1.35290575819388E-16 0.043000000000001 0.0173513642649761"/>
+      <mass value="11.3698491581442"/>
+      <inertia ixx="0.509153241264426" ixy="2.53833699359267E-18" ixz="9.00762561353784E-19" iyy="0.660310298127947" iyz="-2.91849961988583E-17" izz="0.15122527595847"/>
+    </inertial>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0.0 -0.04"/>
+      <geometry>
+        <mesh filename="package://moby2_visualization/meshes/base_bottom.STL"/>
+      </geometry>
+      <material name="">
+        <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1"/>
+      </material>
+    </visual>
+  </link>
+  <link name="main_body">
+    <inertial>
+      <origin rpy="0 0 0" xyz="0.000850274527914219 0.0830540434706902 0.0012234338158139"/>
+      <mass value="77.5238857649469"/>
+      <inertia ixx="1.2080587036823" ixy="0.000397736016824614" ixz="-0.0073727231620996" iyy="2.03525540160699" iyz="0.000461077930132956" izz="0.940829325385842"/>
+    </inertial>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0.2 0"/>
+      <geometry>
+        <box size="0.6 0.05 0.8"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="bottom_to_main_body" type="fixed">
+    <origin rpy="1.5708 0 0" xyz="0 0 0.046"/>
+    <parent link="base_bottom"/>
+    <child link="main_body"/>
+    <axis xyz="0 0 0"/>
+  </joint>
+  <link name="top_plate">
+    <inertial>
+      <origin rpy="0 0 0" xyz="-4.93950029590759E-17 0.00497750758553006 -0.00219938883943333"/>
+      <mass value="12.6113286227746"/>
+      <inertia ixx="0.666710205007744" ixy="-4.60546551115133E-17" ixz="-1.28388439791526E-17" iyy="1.04412171808036" iyz="6.23876945543455E-07" izz="0.377620914536898"/>
+    </inertial>
+  </link>
+  <joint name="main_body_to_top_plate" type="fixed">
+    <origin rpy="0 0 3.1416" xyz="0 0.249 0"/>
+    <parent link="main_body"/>
+    <child link="top_plate"/>
+    <axis xyz="0 0 0"/>
+  </joint>
+  <link name="left_wheel">
+    <visual>
+      <geometry>
+        <cylinder length="0.035" radius="0.075"/>
+      </geometry>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <material name="black"/>
+    </visual>
+    <inertial>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <mass value="1.5"/>
+      <inertia ixx="0.0022624999999999998" ixy="0" ixz="0" iyy="0.0022624999999999998" iyz="0" izz="0.004218749999999999"/>
+    </inertial>
+    <surface>
+      <friction>
+        <ode>
+          <mu>100</mu>
+          <mu2>50</mu2>
+        </ode>
+      </friction>
+      <bounce/>
+      <contact/>
+    </surface>
+  </link>
+
+  <link name="right_wheel">
+    <visual>
+      <geometry>
+        <cylinder length="0.035" radius="0.075"/>
+      </geometry>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <material name="black"/>
+    </visual>
+    <inertial>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <mass value="1.5"/>
+      <inertia ixx="0.0022624999999999998" ixy="0" ixz="0" iyy="0.0022624999999999998" iyz="0" izz="0.004218749999999999"/>
+    </inertial>
+    <surface>
+      <friction>
+        <ode>
+          <mu>100</mu>
+          <mu2>50</mu2>
+        </ode>
+      </friction>
+      <bounce/>
+      <contact/>
+    </surface>
+  </link>
+  <joint name="left_wheel_joint" type="continuous">
+    <parent link="base_bottom"/>
+    <child link="left_wheel"/>
+    <origin rpy="0                         1.5708                         0" xyz="-0.2745                          0.0                          0.035"/>
+    <axis xyz="0 0 1"/>
+    <dynamics damping="0.1" friction="10.0"/>
+  </joint>
+  <joint name="right_wheel_joint" type="continuous">
+    <parent link="base_bottom"/>
+    <child link="right_wheel"/>
+    <origin rpy="0                         1.5708                         0" xyz="0.2745                          0.0                          0.035"/>
+    <axis xyz="0 0 1"/>
+    <dynamics damping="0.1" friction="10.0"/>
+  </joint>
+
+
+  <link name="front_nanoscan3_base_link">
+    <visual>
+      <geometry>
+        <mesh filename="package://moby2_visualization/meshes/nanoscan3.STL" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <origin rpy="1.5707963267948966 0 -1.5707963267948966" xyz="0 0 0.051"/>
+      <material name="sick_yellow">
+        <color rgba="1 1 0 1"/>
+      </material>
+    </visual>
+  </link>
+
+  <link name="front_nanoscan3_sensor_link"/>
+  <joint name="front_nanoscan3_base_link_joint" type="fixed">
+    <parent link="base_bottom"/>
+    <child link="front_nanoscan3_base_link"/>
+    <origin rpy="0                         0                         2.3562" xyz="-0.225                          0.325                          0.1195"/>
+  </joint>
+  <joint name="front_nanoscan3_sensor_link_joint" type="fixed">
+    <parent link="front_nanoscan3_base_link"/>
+    <child link="front_nanoscan3_sensor_link"/>
+    <origin rpy="0 0 0" xyz="0 0 0.061"/>
+  </joint>
+  <link name="rear_nanoscan3_base_link">
+    <visual>
+      <geometry>
+        <mesh filename="package://moby2_visualization/meshes/nanoscan3.STL" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <origin rpy="1.5707963267948966 0 -1.5707963267948966" xyz="0 0 0.051"/>
+      <material name="sick_yellow">
+        <color rgba="1 1 0 1"/>
+      </material>
+    </visual>
+  </link>
+  <link name="rear_nanoscan3_sensor_link"/>
+  <joint name="rear_nanoscan3_base_link_joint" type="fixed">
+    <parent link="base_bottom"/>
+    <child link="rear_nanoscan3_base_link"/>
+    <origin rpy="0                         0                         -0.7854" xyz="0.225                          -0.325                          0.1195"/>
+  </joint>
+  <joint name="rear_nanoscan3_sensor_link_joint" type="fixed">
+    <parent link="rear_nanoscan3_base_link"/>
+    <child link="rear_nanoscan3_sensor_link"/>
+    <origin rpy="0 0 0" xyz="0 0 0.061"/>
+  </joint>
+</robot>

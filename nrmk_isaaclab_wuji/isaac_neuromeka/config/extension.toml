@@ -1,0 +1,21 @@
+[package]
+
+# Semantic Versioning is used: https://semver.org/
+version = "0.1.0"
+
+# Description
+title = "isaac_neuromeka"
+description="Extension for Isaac Sim usage in Neuromeka"
+repository = ""
+keywords = []
+category = "robotics"
+readme  = "README.md"
+
+[dependencies]
+"isaaclab" = {}
+"isaaclab_assets" = {}
+"isaaclab_tasks" = {}
+
+
+[[python.module]]
+name = "isaac_neuromeka"

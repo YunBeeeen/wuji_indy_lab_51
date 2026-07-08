@@ -1,0 +1,34 @@
+actor:
+  class_name: ModelGenerator
+
+  params:
+    architecture:
+      mlp_encoder:
+        class_name: MLPBasic
+        shape: [ 256, 128, 64 ]
+        activation: elu
+        batchnorm: False
+        dropout: 0.0
+        output_size: -1 # output dim is overriden for the last submodule
+ 
+  distribution:
+    class_name: Gaussian
+    params:
+      std:
+        fixed: False
+        clamp: False
+        init: 1.
+        min: 0.5
+        max: 2.
+
+critic:
+  class_name: ModelGenerator
+  params:
+    architecture:
+      mlp_encoder:
+        class_name: MLPMultiHead # MLPBasic
+        shape: [ 256, 128, 64 ]
+        activation: elu
+        batchnorm: False
+        dropout: 0.0
+        output_size: -1 # output dim is overriden for the last submodule

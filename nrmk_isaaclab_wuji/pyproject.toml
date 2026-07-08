@@ -1,0 +1,42 @@
+[build-system]
+requires     = ["setuptools>=68", "wheel"]    # build-time deps only
+build-backend = "setuptools.build_meta"
+
+# -----------------------------------------------------------------
+[project]
+name         = "nrmk_isaaclab_public"         # pip install nrmk_isaaclab_public
+version      = "0.1.0"
+description  = "Extension for Isaac Sim usage in Neuromeka"
+readme       = "README.md"
+license      = { text = "Apache-2.0" }
+requires-python = ">=3.10"
+authors      = [
+  { name = "NRMK AI Lab" },
+  { name = "Joonho Lee", email = "joonho.lee@neuromeka.com" },
+  { name = "Yunho Kim" }
+]
+keywords     = ["robotics"]
+classifiers  = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "License :: OSI Approved :: Apache Software License",
+  "Intended Audience :: Developers",
+]
+
+dependencies = [
+  "pandas>=2,<3",
+  "pynput",
+  "ruamel.yaml",
+  "onnxruntime-gpu",
+  "scipy",
+  "toml ; python_version<'3.11'",   # 3.11+ can use std-lib tomllib
+]
+
+# -----------------------------------------------------------------
+[tool.setuptools]
+# anything inside src/ is added automatically; we are flat:
+packages = ["isaac_neuromeka"]
+
+[tool.setuptools.package-data]
+# ship *all* non-Python files inside the package (URDF, STL, USD, YAML, …)
+isaac_neuromeka = ["**/*"]

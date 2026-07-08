@@ -1,0 +1,21 @@
+
+# Large unused robot/mobile assets for current Indy/Wuji reach task
+nrmk_isaaclab_wuji/isaac_neuromeka/assets/model/usd/NAMI/
+nrmk_isaaclab_wuji/isaac_neuromeka/assets/model/usd/moby200/configuration/moby200_base.usd
+nrmk_isaaclab_wuji/isaac_neuromeka/assets/model/urdf/NAMI_visualization/
+nrmk_isaaclab_wuji/isaac_neuromeka/assets/model/urdf/EIR_visualization/
+
+# Local AI tool state
+.claude/
+
+# Editor
+.vscode/
+
+# Large scene assets not needed for Indy/Wuji reach task
+nrmk_isaaclab_wuji/isaac_neuromeka/assets/scene/
+
+# Large unused robot/mobile assets
+nrmk_isaaclab_wuji/isaac_neuromeka/assets/model/usd/NAMI/
+nrmk_isaaclab_wuji/isaac_neuromeka/assets/model/usd/moby200/configuration/moby200_base.usd
+nrmk_isaaclab_wuji/isaac_neuromeka/assets/model/urdf/NAMI_visualization/
+nrmk_isaaclab_wuji/isaac_neuromeka/assets/model/urdf/EIR_visualization/

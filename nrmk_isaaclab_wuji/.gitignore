@@ -1,0 +1,25 @@
+**/__pycache__/
+*.egg-info
+logs/
+robot_logs/
+_orbit*
+IsaacLab/
+.idea/
+wandb/
+
+# object mesh dataset
+object_dataset/
+*.h5
+
+# Outputs
+**/output/*
+**/outputs/*
+**/videos/*
+**/wandb/*
+**/.neptune/*
+docker/artifacts/
+*.tmp
+
+build/
+.codex
+.asset_hash
