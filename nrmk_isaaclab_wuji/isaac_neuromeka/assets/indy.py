@@ -143,7 +143,10 @@ INDY7_ORBIT_ALLEGRO_CFG = FiniteArticulationCfg(
 INDY7_WUJI_RIGHT_CFG = FiniteArticulationCfg(
     class_type=FiniteArticulation,
     spawn=sim_utils.UsdFileCfg(
-        usd_path=f"{os.path.dirname(os.path.abspath(__file__))}/model/usd/indy7_wuji_right/indy7_wuji_right.usd",
+        # active: fidelity tier, arm collision simplified and hand collision restored from *_collision.STL convex hulls
+        usd_path=f"{os.path.dirname(os.path.abspath(__file__))}/model/usd/indy7_wuji_right/indy7_wuji_right_simplified.usd",
+        # fallback: quick-start tier, arm + hand both simplified (cube colliders)
+        # usd_path=f"{os.path.dirname(os.path.abspath(__file__))}/model/usd/indy7_wuji_right/indy7_wuji_right_all_simplified.usd",
         activate_contact_sensors=True,
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             disable_gravity=True,

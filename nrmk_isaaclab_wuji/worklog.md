@@ -16,3 +16,75 @@
   - arm simplified + reduced hand Cube colliders: `indy7_wuji_right_all_simplified.usd`
 - Removed temporary/intermediate wrapper USD backups from the asset folder.
 - Notes for chopstick RL: hand collision fidelity matters; start with arm-simplified + hand mesh, then compare all-simplified if mesh collision is unstable.
+- Inspected the three USD variants directly with `usd-core` (temp venv, not the project env) to check what "mesh collision" actually means:
+  - Earlier inspection suggested `indy7_wuji_right.usd` and `indy7_wuji_right_simplified.usd` had hand convexHull collision, but later Isaac Sim/USD validation showed the hand `collisions` Xforms in `indy7_wuji_right_simplified.usd` were effectively empty/instanced and needed explicit post-processing. See the later fidelity asset fix entry below.
+  - Risk found: convex hulls bulge over concave dips (knuckle/joint sockets), so adjacent finger links can start overlapping at tightly curled poses (chopstick grip) even though the source meshes don't overlap there. Likely explanation for the "mesh collision instability" concern.
+  - `indy7_wuji_right_all_simplified.usd`: cube colliders measured smaller than the visual mesh bbox on every hand link, worst at fingertips (~58-66% of visual size), better at the palm (~72-81%). Confirmed by bbox comparison script, not just visual inspection.
+  - No `contact_offset`/`rest_offset` authored anywhere (USD or `indy.py`), so PhysX default (~0.02 m contact offset) applies to hand parts that are only ~0.015-0.02 m across — likely too large for chopstick-scale contact precision; flagged for later tuning via `CollisionPropertiesCfg`.
+- Decided on a two-tier USD strategy for training, following the same active/commented-alternate pattern already used for `INDY7_CFG`:
+  - Quick-start tier, initially active for smoke testing: `indy7_wuji_right_all_simplified.usd` — arm + hand both simplified, used to get the RL training pipeline running end-to-end first, precision sacrificed.
+  - Fidelity tier, now active after the collision post-process below: `indy7_wuji_right_simplified.usd` — arm collision simplified, hand collision restored from Wuji collision STL meshes as convex hulls.
+  - `indy7_wuji_right.usd` (full mesh incl. arm) stays as reference baseline only, not part of the two active tiers.
+  - Changed `usd_path` in `isaac_neuromeka/assets/indy.py` (`INDY7_WUJI_RIGHT_CFG`) accordingly.
+- Verified `indy7_wuji_right_all_simplified.usd` structurally (articulation root, RigidBodyAPI + mass on every link, joint connectivity/limits) with the same `usd-core` venv — no physics-level blocker found.
+- Found and fixed a real training blocker unrelated to collision fidelity: `isaac_neuromeka/tasks/manipulation/reach/indy_wuji/env_cfg.py` had reward/command `body_name(s)` set to `"tcp"`, but `tcp` is only a non-rigid leftover Xform frame under `link6` (no `RigidBodyAPI`) in all three USD variants — the `tcp -> palm_link` fixed joint from the URDF apparently got merged away during USD generation, so no body named `tcp` exists in the articulation at all. This would have crashed env creation regardless of which USD tier was active. Changed all four references (`end_effector_position_tracking`, `end_effector_orientation_tracking`, `end_effector_speed`, `commands.ee_pose.body_name`) to `"palm_link"`, the real attachment body for the wuji hand.
+- Cleaned up the throwaway `usd-core` venv used for the inspection above (was only in the scratchpad, never part of the repo).
+- Confirmed the actual run setup for training:
+  - `env_isaaclab` gets Isaac Sim via the `isaacsim` pip metapackage (5.1.0.0), not `/home/lsc/isaacsim_pkg` (unrelated standalone extraction). `isaaclab` is editable-installed from `/home/lsc/IsaacLab/source/isaaclab`.
+  - `isaac_neuromeka` was not yet installed in `env_isaaclab`; ran `pip install -e .` from `nrmk_isaaclab_wuji/` (package name `nrmk_isaaclab_public`) — succeeded, but downgraded `pandas` 3.0.3 -> 2.3.3 in the env to satisfy the package's pin.
+  - Verified that a bare `import isaac_neuromeka` fails on `pxr` before `AppLauncher` runs — expected IsaacLab behavior, not an error to chase.
+- Ran `python scripts/rsl_rl/train.py --task Indy-Wuji-Reach --headless --num_envs 32 --max_iterations 5` as a smoke test. Two failures found and fixed along the way, both unrelated to collision fidelity:
+  1. `rsl-rl-lib==5.0.1` is installed (matches `isaaclab_rl`'s own pinned extras version), but `scripts/rsl_rl/train.py`/`play.py` never called `isaaclab_rl.rsl_rl.handle_deprecated_rsl_rl_cfg()` — the function that migrates the deprecated `policy=` config field into the `actor`/`critic` `RslRlMLPModelCfg` fields rsl-rl-lib >= 4.0.0 actually reads. Upstream IsaacLab's own reference `scripts/reinforcement_learning/rsl_rl/{train,play}.py` calls it right after `cli_args.update_rsl_rl_cfg(...)`; ours didn't. Added the same call (plus the `installed_version = metadata.version("rsl-rl-lib")` it needs) to both scripts. This is a repo-wide gap — also affects `Indy-Reach` and `Dual-Arm-Reach`, only our two scripts were patched.
+  2. (Tried first, reverted): manually setting `actor=`/`critic=` `RslRlMLPModelCfg(...)` directly in `ReachPPORunnerCfg` instead of relying on the migration above. This skips the auto-derivation from `policy=` and leaves the deprecated `stochastic`/`init_noise_std` fields dangling at `MISSING`, which surfaces as `TypeError: MLPModel.__init__() got an unexpected keyword argument 'stochastic'`. Reverted `indy_wuji/learning/rsl_rl_cfg.py` back to `policy=`-only; the migration call in `train.py`/`play.py` derives `actor`/`critic` correctly instead.
+  - After both fixes, the smoke test ran clean end-to-end: scene/managers built correctly (5 reward terms incl. the `palm_link`-based ones), 5 PPO iterations completed, no NaNs/crashes, reward ~0.69-0.71, position/orientation error decreasing. This confirms the `all_simplified` USD + current task config is training-ready for a first real run.
+- Also installed `pip install -e .` (`nrmk_isaaclab_public`) into `env_isaaclab` earlier in this session; noted the `pandas` 3.0.3 -> 2.3.3 downgrade side effect.
+- User reported (via their team lead) that importing `indy7.urdf` in Isaac Sim shows the usual green collision boxes, but importing the standalone `wuji_right/wuji_right.urdf` shows none. Checked the file directly: 21 of its 26 links (`palm_link`, all `finger*_link1-4`) had `<collision>` wrapped in an XML comment (`<!-- <collision>...</collision> -->`); only the 5 `finger*_tip_link` collisions were live. The referenced `*_collision.STL` mesh files all exist on disk (both raw and pre-computed `.convex.stl`), so this was purely a disabled/commented block, not missing geometry.
+  - Cross-checked the combined `indy7_wuji_right.urdf` (the file actually used to generate the shipped `.usd` assets) — its collision blocks were never commented out, so this bug never affected the training assets already verified working earlier in this log.
+  - Fixed `wuji_right/wuji_right.urdf` by uncommenting all 21 blocks (kept a backup at `/tmp/.../scratchpad/wuji_right.urdf.bak` during the edit, not committed anywhere). Verified with `xml.etree.ElementTree` that the file still parses and all 26 links now have a `<collision>` element.
+- After the URDF fix, user re-imported `wuji_right.urdf` in the Isaac Sim GUI with an on-disk destination path, and both visuals AND collisions came back empty for every link (confirmed directly: opened the generated `urdf/wuji_right/wuji_right/configuration/{wuji_right_base,wuji_right_physics}.usd` layers with `usd-core` and found `palm_link/visuals` and `palm_link/collisions` Xform groups present but with 0 children on every link).
+  - Root-caused via a headless repro using the same `isaacsim.asset.importer.urdf` commands (`URDFCreateImportConfig` + `URDFParseAndImportFile`) the GUI uses: importing straight into an in-memory stage (`dest_path=""`) populates every mesh correctly (verified point counts: collision meshes all 1500 pts = 500 tri x 3, matching the known 500-tri collision STLs; visual meshes vary correctly per link). The Isaac Sim log explicitly prints `"Creating Asset in an in-memory stage, will not create layered structure"` for that path.
+  - Conclusion: this is an **Isaac Sim 5.1 URDF importer bug in the on-disk "layered structure" export path** (the one that writes `configuration/{base,physics,robot,sensor}.usd`), not a problem with `wuji_right.urdf` or with our earlier fix. The URDF itself was independently re-verified clean (all 26 links have correct paired visual/collision STL references).
+  - Workaround: import with no destination/output directory set (import into the open stage in-memory), then `File → Save As` to write the USD out, instead of using the importer's on-disk destination-path option directly.
+- Fixed the actual training fidelity asset `isaac_neuromeka/assets/model/usd/indy7_wuji_right/indy7_wuji_right_simplified.usd` with a reproducible post-process:
+  - Added `scripts/assets/apply_wuji_hand_collision_meshes.py`.
+  - Backed up the pre-fix USD as `indy7_wuji_right_simplified.before_hand_collision_fix.usd`.
+  - Inserted 26 Wuji hand collision meshes from `isaac_neuromeka/assets/model/urdf/wuji_right/meshes/*_collision.STL`.
+  - Applied `PhysicsCollisionAPI`, `PhysxCollisionAPI`, `PhysxConvexHullCollisionAPI`, and `MeshCollisionAPI(approximation="convexHull")` to the direct hand collision mesh prims only.
+  - De-instanced the empty hand `collisions` Xforms and blocked active nested importer leftovers under the direct collision mesh prims.
+  - Validation result: 26 direct Wuji collision meshes, 0 active nested children under those meshes, 0 CollisionAPI under Wuji visuals; full USD collision list is now 9 Indy arm primitive colliders + 26 Wuji hand mesh colliders.
+  - Switched `INDY7_WUJI_RIGHT_CFG` active `usd_path` from `indy7_wuji_right_all_simplified.usd` to `indy7_wuji_right_simplified.usd`; `all_simplified` remains commented as fallback/debug only.
+  - Attempted minimal headless check with `conda run -n env_isaaclab env PYTHONPATH=/home/lsc/wuji_indy_lab_51/nrmk_isaaclab_wuji python scripts/rsl_rl/train.py --task Indy-Wuji-Reach --headless --num_envs 1 --max_iterations 1`. It did not reach env/USD creation in the Codex sandbox because CUDA/GPU access was unavailable and `pynput` could not acquire the X display connection (`DISPLAY=:1`, operation not permitted). Treat this as an execution-environment limitation, not as a USD validation failure.
+- Matched the `Indy-Wuji-Reach` config structure to the existing Neuromeka `Indy-Reach` pattern:
+  - Added `Indy7WujiReachStudentEnvCfg` and `Indy7WujiReachCMDPEnvCfg` alongside the existing base and teacher configs.
+  - Left only `Indy-Wuji-Reach` actively registered; added commented future registration blocks for teacher/student/CMDP variants to mirror the existing `Indy-Reach` layout without changing runtime behavior.
+  - Verified syntax with `python -m py_compile isaac_neuromeka/tasks/manipulation/reach/indy_wuji/env_cfg.py isaac_neuromeka/tasks/manipulation/reach/indy_wuji/__init__.py`.
+- Reduced `Indy-Wuji-Reach` to arm-only observations/regularization for the initial arm end-effector tracking phase:
+  - `policy/joint_pos` and `policy/joint_vel` now use only `joint[0-5]`, while hand joints remain in the articulation but are not exposed to the policy observation.
+  - `joint_vel` reward regularization now also applies only to `joint[0-5]`, avoiding penalties on hand joints that are not controlled by the current action term.
+  - Future teacher/student proprioception and privileged joint friction/damping terms are also scoped to `joint[0-5]`.
+  - Set `sim.render_interval = decimation` in the Indy-Wuji cfg to remove the render interval mismatch for this task.
+  - First attempt reused one `SceneEntityCfg` across multiple terms, which failed because IsaacLab resolves and mutates `joint_ids` per term. Fixed by creating a fresh `SceneEntityCfg("robot", joint_names=["joint[0-5]"])` for each term.
+  - Verified syntax with `python -m py_compile nrmk_isaaclab_wuji/isaac_neuromeka/tasks/manipulation/reach/indy_wuji/env_cfg.py`.
+  - Verified smoke run with `conda run -n env_isaaclab python scripts/rsl_rl/train.py --task Indy-Wuji-Reach --headless --num_envs 1 --max_iterations 1`: action shape stayed 6, policy observation shape changed from 175 to 55 (`joint_pos=18`, `joint_vel=18`, `pose_command=7`, `action_history=12`), actor/critic input features changed to 55, and 1 PPO iteration completed.
+- Root handoff/study docs updated:
+  - `/home/lsc/wuji_indy_lab_51/AGENTS.md` 최신화함.
+  - `/home/lsc/wuji_indy_lab_51/WORKLOG.md` 최신화함.
+  - `/home/lsc/wuji_indy_lab_51/study.md` 생성함.
+  - 모든 새 문서는 개괄식으로 작성함.
+  - `study.md`에는 Direct/ManagerBased 차이, Franka/Neuromeka 차이, Indy-Wuji 구조, observation/reward/command/asset 요약, 실행 명령, 학습 로그 확인 기준을 정리함.
+- Fixed `scripts/rsl_rl/play.py` for the installed IsaacLab 2.3.2 environment:
+  - `isaaclab.utils.pretrained_checkpoint` is not available in this env.
+  - Added fallback import from `isaaclab_rl.utils.pretrained_checkpoint`.
+  - Verified syntax with `python -m py_compile scripts/rsl_rl/play.py`.
+  - Latest checkpoint found at `logs/rsl_rl/indy_wuji_reach/2026-07-08_18-16-06/model_99.pt`.
+- Fixed second `play.py` compatibility issue with `rsl-rl-lib==5.0.1`:
+  - Old export code tried `runner.alg.policy` / `runner.alg.actor_critic`, but rsl-rl 5 `PPO` exposes `actor`, `critic`, and `get_policy()` instead.
+  - Matched upstream IsaacLab 2.3.2 behavior: for rsl-rl >= 4.0.0, use `runner.export_policy_to_jit()` and `runner.export_policy_to_onnx()`.
+  - Verified syntax with `python -m py_compile scripts/rsl_rl/play.py`.
+  - Verified short play run with `conda run -n env_isaaclab python scripts/rsl_rl/play.py --task Indy-Wuji-Reach --headless --num_envs 1 --load_run 2026-07-08_18-16-06 --video --video_length 2`.
+  - Result: checkpoint `model_99.pt` loaded, actor input stayed 55, action output stayed 6, and play loop completed.
+- Added root daily activity log:
+  - `/home/lsc/wuji_indy_lab_51/ACTIVITY_2026-07-08.md` 생성함.
+  - 2026-07-08 대화/작업 흐름을 개괄식으로 정리함.
+  - root `AGENTS.md`와 `WORKLOG.md`에 일지 위치 기록함.
+  - 내부 `agent.md`와 `worklog.md`에도 일지 위치 기록함.

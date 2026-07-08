@@ -34,7 +34,7 @@
           rgba="0.89804 0.91765 0.92941 1" />
       </material>
     </visual>
-    <!-- <collision>
+    <collision>
       <origin
         xyz="0 0 0"
         rpy="0 0 0" />
@@ -42,7 +42,7 @@
         <mesh
           filename="meshes/palm_link_collision.STL" />
       </geometry>
-    </collision> -->
+    </collision>
   </link>
   <link
     name="finger1_link1">
@@ -74,7 +74,7 @@
           rgba="0.89804 0.91765 0.92941 1" />
       </material>
     </visual>
-    <!-- <collision>
+    <collision>
       <origin
         xyz="0 0 0"
         rpy="0 0 0" />
@@ -82,7 +82,7 @@
         <mesh
           filename="meshes/finger1_link1_collision.STL" />
       </geometry>
-    </collision> -->
+    </collision>
   </link>
   <joint
     name="finger1_joint1"
@@ -132,7 +132,7 @@
           rgba="0.89804 0.91765 0.92941 1" />
       </material>
     </visual>
-    <!-- <collision>
+    <collision>
       <origin
         xyz="0 0 0"
         rpy="0 0 0" />
@@ -140,7 +140,7 @@
         <mesh
           filename="meshes/finger1_link2_collision.STL" />
       </geometry>
-    </collision> -->
+    </collision>
   </link>
   <joint
     name="finger1_joint2"
@@ -190,7 +190,7 @@
           rgba="0.89804 0.91765 0.92941 1" />
       </material>
     </visual>
-    <!-- <collision>
+    <collision>
       <origin
         xyz="0 0 0"
         rpy="0 0 0" />
@@ -198,7 +198,7 @@
         <mesh
           filename="meshes/finger1_link3_collision.STL" />
       </geometry>
-    </collision> -->
+    </collision>
   </link>
   <joint
     name="finger1_joint3"
@@ -248,7 +248,7 @@
           rgba="0.89804 0.91765 0.92941 1" />
       </material>
     </visual>
-    <!-- <collision>
+    <collision>
       <origin
         xyz="0 0 0"
         rpy="0 0 0" />
@@ -256,7 +256,7 @@
         <mesh
           filename="meshes/finger1_link4_collision.STL" />
       </geometry>
-    </collision> -->
+    </collision>
   </link>
   <joint
     name="finger1_joint4"
@@ -359,7 +359,7 @@
           rgba="0.89804 0.91765 0.92941 1" />
       </material>
     </visual>
-    <!-- <collision>
+    <collision>
       <origin
         xyz="0 0 0"
         rpy="0 0 0" />
@@ -367,7 +367,7 @@
         <mesh
           filename="meshes/finger2_link1_collision.STL" />
       </geometry>
-    </collision> -->
+    </collision>
   </link>
   <joint
     name="finger2_joint1"
@@ -417,7 +417,7 @@
           rgba="0.89804 0.91765 0.92941 1" />
       </material>
     </visual>
-    <!-- <collision>
+    <collision>
       <origin
         xyz="0 0 0"
         rpy="0 0 0" />
@@ -425,7 +425,7 @@
         <mesh
           filename="meshes/finger2_link2_collision.STL" />
       </geometry>
-    </collision> -->
+    </collision>
   </link>
   <joint
     name="finger2_joint2"
@@ -475,7 +475,7 @@
           rgba="0.89804 0.91765 0.92941 1" />
       </material>
     </visual>
-    <!-- <collision>
+    <collision>
       <origin
         xyz="0 0 0"
         rpy="0 0 0" />
@@ -483,7 +483,7 @@
         <mesh
           filename="meshes/finger2_link3_collision.STL" />
       </geometry>
-    </collision> -->
+    </collision>
   </link>
   <joint
     name="finger2_joint3"
@@ -533,7 +533,7 @@
           rgba="0.89804 0.91765 0.92941 1" />
       </material>
     </visual>
-    <!-- <collision>
+    <collision>
       <origin
         xyz="0 0 0"
         rpy="0 0 0" />
@@ -541,7 +541,7 @@
         <mesh
           filename="meshes/finger2_link4_collision.STL" />
       </geometry>
-    </collision> -->
+    </collision>
   </link>
   <joint
     name="finger2_joint4"
@@ -644,7 +644,7 @@
           rgba="0.89804 0.91765 0.92941 1" />
       </material>
     </visual>
-    <!-- <collision>
+    <collision>
       <origin
         xyz="0 0 0"
         rpy="0 0 0" />
@@ -652,7 +652,7 @@
         <mesh
           filename="meshes/finger3_link1_collision.STL" />
       </geometry>
-    </collision> -->
+    </collision>
   </link>
   <joint
     name="finger3_joint1"
@@ -702,7 +702,7 @@
           rgba="0.89804 0.91765 0.92941 1" />
       </material>
     </visual>
-    <!-- <collision>
+    <collision>
       <origin
         xyz="0 0 0"
         rpy="0 0 0" />
@@ -710,7 +710,7 @@
         <mesh
           filename="meshes/finger3_link2_collision.STL" />
       </geometry>
-    </collision> -->
+    </collision>
   </link>
   <joint
     name="finger3_joint2"
@@ -760,7 +760,7 @@
           rgba="0.89804 0.91765 0.92941 1" />
       </material>
     </visual>
-    <!-- <collision>
+    <collision>
       <origin
         xyz="0 0 0"
         rpy="0 0 0" />
@@ -768,7 +768,7 @@
         <mesh
           filename="meshes/finger3_link3_collision.STL" />
       </geometry>
-    </collision> -->
+    </collision>
   </link>
   <joint
     name="finger3_joint3"
@@ -818,7 +818,7 @@
           rgba="0.89804 0.91765 0.92941 1" />
       </material>
     </visual>
-    <!-- <collision>
+    <collision>
       <origin
         xyz="0 0 0"
         rpy="0 0 0" />
@@ -826,7 +826,7 @@
         <mesh
           filename="meshes/finger3_link4_collision.STL" />
       </geometry>
-    </collision> -->
+    </collision>
   </link>
   <joint
     name="finger3_joint4"
@@ -929,7 +929,7 @@
           rgba="0.89804 0.91765 0.92941 1" />
       </material>
     </visual>
-    <!-- <collision>
+    <collision>
       <origin
         xyz="0 0 0"
         rpy="0 0 0" />
@@ -937,7 +937,7 @@
         <mesh
           filename="meshes/finger4_link1_collision.STL" />
       </geometry>
-    </collision> -->
+    </collision>
   </link>
   <joint
     name="finger4_joint1"
@@ -987,7 +987,7 @@
           rgba="0.89804 0.91765 0.92941 1" />
       </material>
     </visual>
-    <!-- <collision>
+    <collision>
       <origin
         xyz="0 0 0"
         rpy="0 0 0" />
@@ -995,7 +995,7 @@
         <mesh
           filename="meshes/finger4_link2_collision.STL" />
       </geometry>
-    </collision> -->
+    </collision>
   </link>
   <joint
     name="finger4_joint2"
@@ -1045,7 +1045,7 @@
           rgba="0.89804 0.91765 0.92941 1" />
       </material>
     </visual>
-    <!-- <collision>
+    <collision>
       <origin
         xyz="0 0 0"
         rpy="0 0 0" />
@@ -1053,7 +1053,7 @@
         <mesh
           filename="meshes/finger4_link3_collision.STL" />
       </geometry>
-    </collision> -->
+    </collision>
   </link>
   <joint
     name="finger4_joint3"
@@ -1103,7 +1103,7 @@
           rgba="0.89804 0.91765 0.92941 1" />
       </material>
     </visual>
-    <!-- <collision>
+    <collision>
       <origin
         xyz="0 0 0"
         rpy="0 0 0" />
@@ -1111,7 +1111,7 @@
         <mesh
           filename="meshes/finger4_link4_collision.STL" />
       </geometry>
-    </collision> -->
+    </collision>
   </link>
   <joint
     name="finger4_joint4"
@@ -1214,7 +1214,7 @@
           rgba="0.89804 0.91765 0.92941 1" />
       </material>
     </visual>
-    <!-- <collision>
+    <collision>
       <origin
         xyz="0 0 0"
         rpy="0 0 0" />
@@ -1222,7 +1222,7 @@
         <mesh
           filename="meshes/finger5_link1_collision.STL" />
       </geometry>
-    </collision> -->
+    </collision>
   </link>
   <joint
     name="finger5_joint1"
@@ -1272,7 +1272,7 @@
           rgba="0.89804 0.91765 0.92941 1" />
       </material>
     </visual>
-    <!-- <collision>
+    <collision>
       <origin
         xyz="0 0 0"
         rpy="0 0 0" />
@@ -1280,7 +1280,7 @@
         <mesh
           filename="meshes/finger5_link2_collision.STL" />
       </geometry>
-    </collision> -->
+    </collision>
   </link>
   <joint
     name="finger5_joint2"
@@ -1330,7 +1330,7 @@
           rgba="0.89804 0.91765 0.92941 1" />
       </material>
     </visual>
-    <!-- <collision>
+    <collision>
       <origin
         xyz="0 0 0"
         rpy="0 0 0" />
@@ -1338,7 +1338,7 @@
         <mesh
           filename="meshes/finger5_link3_collision.STL" />
       </geometry>
-    </collision> -->
+    </collision>
   </link>
   <joint
     name="finger5_joint3"
@@ -1388,7 +1388,7 @@
           rgba="0.89804 0.91765 0.92941 1" />
       </material>
     </visual>
-    <!-- <collision>
+    <collision>
       <origin
         xyz="0 0 0"
         rpy="0 0 0" />
@@ -1396,7 +1396,7 @@
         <mesh
           filename="meshes/finger5_link4_collision.STL" />
       </geometry>
-    </collision> -->
+    </collision>
   </link>
   <joint
     name="finger5_joint4"

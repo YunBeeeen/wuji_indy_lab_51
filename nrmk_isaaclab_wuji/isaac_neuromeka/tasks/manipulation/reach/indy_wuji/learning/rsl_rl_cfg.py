@@ -16,6 +16,8 @@ class ReachPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     run_name = ""
     resume = False
     empirical_normalization = False
+    # deprecated pre-4.0 field; scripts/rsl_rl/{train,play}.py call handle_deprecated_rsl_rl_cfg()
+    # which derives `actor`/`critic` (with correct distribution_cfg) from this automatically.
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,
         actor_obs_normalization=False,

@@ -19,3 +19,15 @@ nrmk_isaaclab_wuji/isaac_neuromeka/assets/model/usd/NAMI/
 nrmk_isaaclab_wuji/isaac_neuromeka/assets/model/usd/moby200/configuration/moby200_base.usd
 nrmk_isaaclab_wuji/isaac_neuromeka/assets/model/urdf/NAMI_visualization/
 nrmk_isaaclab_wuji/isaac_neuromeka/assets/model/urdf/EIR_visualization/
+
+# Generated/imported asset folders not needed for current push
+nrmk_isaaclab_wuji/isaac_neuromeka/assets/model/urdf/NAMI/
+nrmk_isaaclab_wuji/isaac_neuromeka/assets/model/urdf/indy7/
+nrmk_isaaclab_wuji/isaac_neuromeka/assets/model/urdf/indy7_allegro_hand_right/
+nrmk_isaaclab_wuji/isaac_neuromeka/assets/model/urdf/indy7_simplified/
+nrmk_isaaclab_wuji/isaac_neuromeka/assets/model/urdf/indy7_wuji_right/
+nrmk_isaaclab_wuji/isaac_neuromeka/assets/model/urdf/wuji_right/wuji_right/
+nrmk_isaaclab_wuji/scripts/assets/
+
+# Accidental shell typo files
+tatus --short
