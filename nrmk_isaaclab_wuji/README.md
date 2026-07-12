@@ -1,4 +1,7 @@
 # Neuromeka-IsaacLab
+
+- 이 문서는 `nrmk_isaaclab_wuji` 확장 패키지의 개요와 사용법을 설명하는 README 문서임.
+
 This repository is a Neuromeka IsaacLab extension for robot simulation, task configuration, and reinforcement-learning workflows. It provides:
 - Neuromeka robot assets and IsaacLab task registrations
 - Manipulation reach examples such as `Indy-Reach` and `Dual-Arm-Reach`

@@ -107,6 +107,49 @@ def joint_pos_history(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneE
     )
 
 
+def generated_position_commands(env: ManagerBasedRLEnv, command_name: str) -> torch.Tensor:
+    return env.command_manager.get_command(command_name)[:, :3]
+
+
+def object_position_relative(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", body_names=["palm_link"]),
+    object_cfg: SceneEntityCfg = SceneEntityCfg("cube"),
+) -> torch.Tensor:
+    asset: FiniteArticulation = env.scene[asset_cfg.name]
+    obj = env.scene[object_cfg.name]
+    body_pos_w = asset.data.body_state_w[:, asset_cfg.body_ids[0], :3]
+    object_pos_w = obj.data.root_pos_w
+    return object_pos_w - body_pos_w
+
+
+def object_position_relative_to_bodies(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg(
+        "robot",
+        body_names=["finger1_tip_link", "finger2_tip_link", "finger3_tip_link", "finger4_tip_link", "finger5_tip_link"],
+    ),
+    object_cfg: SceneEntityCfg = SceneEntityCfg("cube"),
+) -> torch.Tensor:
+    asset: FiniteArticulation = env.scene[asset_cfg.name]
+    obj = env.scene[object_cfg.name]
+
+    body_pos_w = asset.data.body_state_w[:, asset_cfg.body_ids, :3]
+    object_pos_w = obj.data.root_pos_w.unsqueeze(1)
+    object_in_bodies_w = object_pos_w - body_pos_w
+    return object_in_bodies_w.reshape(env.num_envs, -1)
+
+
+def object_position_error_to_target(
+    env: ManagerBasedRLEnv,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("cube"),
+    target_pos: tuple[float, float, float] = (0.55, -0.05, 0.12),
+) -> torch.Tensor:
+    obj = env.scene[object_cfg.name]
+    target_pos_w = obj.data.root_pos_w.new_tensor(target_pos).unsqueeze(0)
+    return target_pos_w - obj.data.root_pos_w
+
+
 def joint_vel_history(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
     asset: FiniteArticulation = env.scene[asset_cfg.name]
     return torch.cat(
@@ -119,7 +162,8 @@ def joint_vel_history(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneE
 
 
 def action_history(env: ManagerBasedRLEnv) -> torch.Tensor:
-    return torch.cat((env.action_manager.prev_action, env.action_manager.action), dim=-1)
+    return env.action_manager.prev_action
+    # return torch.cat((env.action_manager.prev_action, env.action_manager.action), dim=-1)
 
 
 def position_error(env: ManagerBasedRLEnv) -> torch.Tensor:

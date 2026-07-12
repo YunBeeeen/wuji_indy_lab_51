@@ -33,15 +33,14 @@ class Indy7WujiReachEnvCfg(ReachEnvCfg):
         def arm_joint_cfg():
             return SceneEntityCfg("robot", joint_names=arm_joint_names)
 
-        # "tcp" is only a leftover non-rigid frame on link6 from the bare indy7 arm asset;
-        # the wuji hand's actual attachment body is palm_link, so track that instead.
-        self.rewards.end_effector_position_tracking.params["asset_cfg"].body_names = ["palm_link"]
-        self.rewards.end_effector_orientation_tracking.params["asset_cfg"].body_names = ["palm_link"]
-        self.rewards.end_effector_speed.params["asset_cfg"].body_names = ["palm_link"]
-        self.rewards.joint_vel.params["asset_cfg"] = arm_joint_cfg()
+        # Use the arm flange as a clean reach baseline before revisiting the Wuji hand frame.
+        self.rewards.end_effector_position_tracking.params["asset_cfg"].body_names = ["link6"]
+        # self.rewards.end_effector_orientation_tracking.params["asset_cfg"].body_names = ["link6"]
+        # self.rewards.end_effector_speed.params["asset_cfg"].body_names = ["link6"]
+        # self.rewards.joint_vel.params["asset_cfg"] = arm_joint_cfg()
 
         self.observations.policy.joint_pos.params = {"asset_cfg": arm_joint_cfg()}
-        self.observations.policy.joint_vel.params = {"asset_cfg": arm_joint_cfg()}
+        # self.observations.policy.joint_vel.params = {"asset_cfg": arm_joint_cfg()}
 
         if hasattr(self.observations, "proprioception"):
             self.observations.proprioception.joint_pos.params = {"asset_cfg": arm_joint_cfg()}
@@ -57,7 +56,7 @@ class Indy7WujiReachEnvCfg(ReachEnvCfg):
             scale=0.2,
             use_default_offset=True,
         )
-        self.commands.ee_pose.body_name = "palm_link"
+        self.commands.ee_pose.body_name = "link6"
 
 
 @configclass

@@ -34,6 +34,12 @@ parser.add_argument(
     help="Use the pre-trained checkpoint from Nucleus.",
 )
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
+parser.add_argument(
+    "--render_interval",
+    type=int,
+    default=2,
+    help="Physics steps between rendered frames. Lower is smoother; pass the task's decimation to keep its training value.",
+)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -107,6 +113,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # note: certain randomizations occur in the environment initialization so we set the seed here
     env_cfg.seed = agent_cfg.seed
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
+
+    # Task cfgs set render_interval = decimation so training skips redundant renders. That leaves
+    # the viewport drawing once per policy step (5 Hz for the reach/grasp tasks), which reads as
+    # a stuttering viewport when replaying a policy.
+    if args_cli.render_interval is not None:
+        env_cfg.sim.render_interval = args_cli.render_interval
 
     # specify directory for logging experiments
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)

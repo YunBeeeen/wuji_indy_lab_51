@@ -1,5 +1,7 @@
 # IsaacLab 5.1 작업 환경과 Indy7/Wuji 자산 메모
 
+- 이 문서는 IsaacLab 5.1 작업 환경 정리와 Indy7/Wuji asset 상태를 기록한 환경/자산 메모 문서임.
+
 ## 현재 기준 환경
 
 - IsaacLab checkout: `/home/lsc/IsaacLab`

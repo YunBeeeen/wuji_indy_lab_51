@@ -1,5 +1,7 @@
 # `train.py` 실행 흐름 추적
 
+- 이 문서는 `scripts/rsl_rl/train.py`가 Isaac Lab task를 실행하는 흐름을 추적한 코드 흐름 분석 문서임.
+
 기준 명령:
 
 ```bash

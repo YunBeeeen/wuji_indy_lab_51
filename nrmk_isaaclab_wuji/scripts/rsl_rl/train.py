@@ -32,6 +32,16 @@ parser.add_argument(
     "--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes."
 )
 parser.add_argument("--export_io_descriptors", action="store_true", default=False, help="Export IO descriptors.")
+parser.add_argument(
+    "--render_interval",
+    type=int,
+    default=None,
+    help=(
+        "Physics steps between rendered frames. Only has any effect when a GUI or an RTX sensor is"
+        " active, so it never slows down --headless runs. Defaults to the task cfg (= decimation),"
+        " which draws one frame per policy step; lower it (e.g. 4) to watch training smoothly."
+    ),
+)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -118,6 +128,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # note: certain randomizations occur in the environment initialization so we set the seed here
     env_cfg.seed = agent_cfg.seed
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
+
+    # Task cfgs set render_interval = decimation, which draws one frame per policy step. At
+    # decimation 24 over a 1/60 s physics step that is 2.5 frames per simulated second, so watching
+    # training in the GUI looks like a slideshow. Only affects GUI/RTX-sensor runs.
+    if args_cli.render_interval is not None:
+        env_cfg.sim.render_interval = args_cli.render_interval
+
     # check for invalid combination of CPU device with distributed training
     if args_cli.distributed and args_cli.device is not None and "cpu" in args_cli.device:
         raise ValueError(

@@ -10,9 +10,10 @@ import pdb  # noqa:F401
 # import carb
 # import numpy as np
 import torch
-from isaaclab.envs import ManagerBasedRLEnv
+from isaaclab.envs import ManagerBasedEnv, ManagerBasedRLEnv
+from isaaclab.managers import CommandManager, CurriculumManager, TerminationManager
 
-from isaac_neuromeka.env.managers import SceneEntityCfg
+from isaac_neuromeka.env.managers import CustomRewardManager, SceneEntityCfg
 
 # custom cfg
 from isaac_neuromeka.env.rl_task_env_cfg import RLEnvWithIKCfg
@@ -36,6 +37,31 @@ Environment with IK Solver
 
 from isaaclab.controllers import DifferentialIKController, DifferentialIKControllerCfg
 from isaaclab.utils.math import subtract_frame_transforms
+
+
+class CustomManagerBasedRLEnv(ManagerBasedRLEnv):
+    """Manager-based RL env that logs both weighted and raw reward terms."""
+
+    def load_managers(self):
+        # note: this order follows IsaacLab's ManagerBasedRLEnv but swaps in CustomRewardManager.
+        self.command_manager: CommandManager = CommandManager(self.cfg.commands, self)
+        print("[INFO] Command Manager: ", self.command_manager)
+
+        ManagerBasedEnv.load_managers(self)
+
+        self.termination_manager = TerminationManager(self.cfg.terminations, self)
+        print("[INFO] Termination Manager: ", self.termination_manager)
+
+        self.reward_manager = CustomRewardManager(self.cfg.rewards, self)
+        print("[INFO] Reward Manager: ", self.reward_manager)
+
+        self.curriculum_manager = CurriculumManager(self.cfg.curriculum, self)
+        print("[INFO] Curriculum Manager: ", self.curriculum_manager)
+
+        self._configure_gym_env_spaces()
+
+        if "startup" in self.event_manager.available_modes:
+            self.event_manager.apply(mode="startup")
 
 
 # Only supports single body for now.
