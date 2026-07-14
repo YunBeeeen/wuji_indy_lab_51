@@ -67,6 +67,10 @@ class MimicJointActionCfg(JointPositionActionCfg):
 
     mimic: dict[str, str] = {}
 
+    target_clamp: dict[str, tuple[float | None, float | None]] = {}
+    """관절 이름 정규식 -> (최소, 최대). 액션 '목표'만 자름 (물리 한계 불변, None이면 그쪽 무제한).
+    follower는 클램프된 source 목표를 복사받음."""
+
 
 @configclass
 class FloatingBaseVelocityActionCfg(ActionTermCfg):

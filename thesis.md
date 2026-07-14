@@ -528,6 +528,14 @@ object가 손가락 사이에 잘 들어왔는지를 보상함.
 
 논문은 thumb tip과 middle finger 사이에 여러 점을 만들고, 이 점들이 object 내부 또는 표면 근처에 있을 때 hold reward가 커지게 설계함.
 
+가상점 구성 (원문 확인, arXiv:2307.16752):
+
+- "Each direction thumb-tip→fingertip and thumb-tip→finger-middle has **three equidistant points**."
+- 선분 2개(엄지끝→중지끝, 엄지끝→중지 중간마디) × 등간격 내부점 3개 = 총 6점. 끝점(손끝 자체)은 미포함.
+- 중앙점의 관용은 의도된 설계임: "This ensures a positive response when an object is positioned
+  between the thumb and other fingers **imperfectly**." — 불완전한 중간 상태에도 gradient를 주기 위함.
+- 이 관용이 만드는 "가만히 새장만 유지해도 매 스텝 적립" 문제의 마개는 hold가 아니라 r_T임 (아래 참고).
+
 의미:
 
 - contact force나 tactile sensor 없이도 grasp-like behavior를 유도함.
@@ -554,13 +562,34 @@ manipulability penalty임.
 
 최종 성공 sparse reward임.
 
-Explicit grasp 성공 조건:
+Explicit grasp 성공 조건 (Eq. 18):
 
 ```text
 hand position error < 1 cm
 hand rotation error < 0.15 rad
 hand joint error < 0.1 rad
 ```
+
+크기와 지급 방식 (원문 확인):
+
+- r_T = **5000**. 서열은 r_T ≫ r_orient(500) ≫ r_hold(25) ≫ r_reach(1).
+- **일회성이며 성공 시 에피소드 즉시 종료함**: "The episode ends when reaching the target grasp."
+- 이 두 가지가 hold 연금의 마개임: 성공하면 에피소드가 끝나므로 "성공 후 계속 벌기"가 불가능하고,
+  hold만 farming하는 정책은 5000을 영영 못 받음. 앉아서 버는 총액 상한 < 성공 한 방.
+
+Constraint-based 성공 조건 (Eq. 20):
+
+```text
+index fingertip target error < 1 cm
+hand rotation error < 0.15 rad
+object z > table + 15 cm
+```
+
+- lift 조건의 목적 (원문): "By accepting only grasps that enable an object to be lifted off the
+  table, we introduce an implicit grasp stability constraint" — 손 모양만 흉내내는 fake success 방지.
+- 이 조건을 향한 gradient용 보조 lifting reward가 따로 있음 (Eq. 22).
+
+출처: arXiv:2307.16752 (Pavlichenko & Behnke), https://arxiv.org/html/2307.16752v2
 
 ### Constraint-Based Reward
 
