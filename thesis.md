@@ -595,7 +595,7 @@ object가 table에서 충분히 들어올려짐
 Explicit grasp curriculum:
 
 ```text
-Stage 1:
+close-start:
   object를 nominal pose로 손 가까이에 둠
   target grasp가 바로 가능함
   r_man을 끄고 grasp reaching부터 학습
@@ -609,7 +609,7 @@ Stage 2:
 Constraint-based curriculum:
 
 ```text
-Stage 1:
+close-start:
   target constraint만 만족하도록 학습
   object lift는 요구하지 않음
 

@@ -6,12 +6,57 @@ from typing import TYPE_CHECKING
 import torch
 from isaaclab.envs import ManagerBasedRLEnv
 from isaaclab.envs.mdp.actions import JointAction, actions_cfg
+from isaaclab.managers.action_manager import ActionTerm
 
 # from isaac_neuromeka.env.rl_task_custom_env import CustomManagerBasedRLEnv, RLEnvWithIK
 from isaac_neuromeka.env.rl_task_custom_env import RLEnvWithIK
 
 if TYPE_CHECKING:
     from .action_cfgs import ClampedJointActionCfg, ResidualJointActionCfg
+
+
+class FixedJointPositionAction(ActionTerm):
+    """Zero-dimension action term that holds selected joints at their default positions."""
+
+    cfg: actions_cfg.JointPositionActionCfg
+
+    def __init__(self, cfg: actions_cfg.JointPositionActionCfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+
+        self._joint_ids, self._joint_names = self._asset.find_joints(
+            self.cfg.joint_names, preserve_order=self.cfg.preserve_order
+        )
+        self._raw_actions = torch.zeros(self.num_envs, 0, device=self.device)
+        self._processed_actions = self._asset.data.default_joint_pos[:, self._joint_ids].clone()
+        self._export_IO_descriptor = False
+
+    @property
+    def action_dim(self) -> int:
+        return 0
+
+    @property
+    def raw_actions(self) -> torch.Tensor:
+        return self._raw_actions
+
+    @property
+    def processed_actions(self) -> torch.Tensor:
+        return self._processed_actions
+
+    def process_actions(self, actions: torch.Tensor):
+        self._raw_actions[:] = actions.to(self.device)
+        self._processed_actions = self._asset.data.default_joint_pos[:, self._joint_ids].clone()
+
+    def apply_actions(self, env_ids: Sequence[int] | None = None):
+        if env_ids is None:
+            env_ids = slice(None)
+        target = self._asset.data.default_joint_pos[:, self._joint_ids][env_ids]
+        self._asset.set_joint_position_target(target, joint_ids=self._joint_ids, env_ids=env_ids)
+
+    def reset(self, env_ids: Sequence[int] | None = None) -> None:
+        if env_ids is None:
+            env_ids = slice(None)
+        self._raw_actions[env_ids] = 0.0
+        self.apply_actions(env_ids=env_ids)
 
 
 class CustomJointPositionAction(JointAction):

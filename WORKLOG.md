@@ -387,7 +387,7 @@ conda run -n env_isaaclab python scripts/rsl_rl/train.py --task Indy-Wuji-Reach 
 - smoke test에서 active reset event는 `reset_all`, `reset_cube_position` 2개로 확인함.
 - smoke test에서 action shape 18, policy observation shape 57, reward term 4개 유지 확인함.
 - cube random / higher arm smoke test log dir은 `logs/rsl_rl/indy_wuji_cube_grasp/2026-07-10_22-30-24`임.
-- Wuji hand actuator gain이 전체 finger 공통으로 `stiffness=8.0`, `damping=0.5`, `friction=0.02` 상태임을 확인함.
+- Wuji hand actuator gain이 전체 finger 공통으로 `stiffness=20.0`, `damping=0.5`, `friction=0.02`, `effort_limit=0.6` (2026-07-12에 stiffness를 `8.0`에서 올림. damping은 한때 `2.5`였으나 **최대 폐합 속도 = effort_limit/damping = 0.24 rad/s로 손가락이 5배 느려져** `0.5`로 되돌림) 상태임을 확인함.
 - 이 설정은 ring/little finger passive 흔들림을 줄이기 위한 안정화 설정임.
 - `py_compile`로 `assets/indy.py` 문법 확인 통과함.
 - cube grasp action scale을 `0.2`에서 `0.1`로 낮춘 상태를 확인함.
@@ -527,7 +527,7 @@ conda run -n env_isaaclab python scripts/rsl_rl/train.py --task Indy-Wuji-Reach 
 
 ### 실패 시 용의자 순서
 
-- 1순위: 손가락 actuator (`stiffness=8.0`, `damping=0.5`)가 물러서 `0.08 kg`을 못 쥘 수 있음.
+- 1순위: 손가락 actuator (`stiffness=20.0`, `damping=0.5`)가 물러서 `0.08 kg`을 못 쥘 수 있음.
 - 2순위: 큐브가 맨바닥에 있어 팔이 `z=0.03`까지 굽혀 내려가야 함. manipulability 최악임.
 - 3순위: 제어 주파수 `2.5 Hz`가 손가락 폐합에 거침. 논문은 `30 Hz`임.
 
@@ -538,3 +538,264 @@ conda run -n env_isaaclab python scripts/rsl_rl/train.py --task Indy-Wuji-Reach 
 - 넘어가는 것: cage 기계 전체, 검지 포함 가상점, `cube_lift`.
 - 추가되는 것: `r_hr`, `r_hp`. **버려지는 것 없음.**
 - 순서: 큐브 파지 -> 직육면체 + 랜덤 방향 -> 젓가락 pre-grasp(논문 완성) -> 젓가락 조작(논문 밖).
+
+## 2026-07-13 palm_facing 차분형 + arm_manipulability + cube_lift가 0이라는 발견
+
+- 상세 일지는 `ACTIVITY_2026-07-13.md`, 세부 기록은 `nrmk_isaaclab_wuji/worklog.md`임.
+
+### 문제: `palm_facing`(절대형)이 국소최적을 만듦
+
+- run `2026-07-12_20-11-57` (1803 iter): `palm_facing`이 `0.994`까지 올랐으나 손이 큐브 **31cm 밖에서 정지**함.
+- 보상 분해 결과 `palm_facing`이 전체 `mean_reward`의 **`98.6%`**를 차지함. 나머지 항은 전부 `0`이었음.
+- **거리와 무관하게 지급**되므로 (단위벡터라 거리가 사라짐) 멀리서 겨눠도 만점이었음.
+- 접근하면 `palm_facing`이 떨어져 **순손실**이었음. 정책은 합리적으로 행동한 것임.
+- 사용자 GUI 관찰로 **팔이 접혀 특이점에 빠진 것**을 발견함.
+- manipulability 실측: 초기 자세 `0.0645` (`57%`) -> 수렴 자세 **`0.0144` (`13%`)**.
+
+### 수정 1: `arm_manipulability` (논문 Eq.17, weight `1.0`)
+
+- `r = 1 - 2 / (1 + (min(|J|, j_max)/j_max)^3)`, 범위 `[-1, 0]`, `j_max = 0.02`.
+- 논문: "penalizes coming close to singularities and leads to learning more intuitive motions."
+
+### 수정 2: `palm_facing`을 차분형으로 (`PalmFacingProgressReward`, weight `1.0`)
+
+- **논문의 거의 모든 항이 차분형임** (`r_hp`, `r_hr`, `r_hj`, `r_reach`, `r_orient`). **절대형은 `r_hold` 하나뿐임.**
+- **차분형은 "가만히 있으면 0"이라 farming이 불가능함.** 그래서 논문은 weight `1.0`을 줘도 안전함.
+- 우리 `palm_facing`은 절대형이라 정렬만 유지해도 매 step 보상이 나왔음.
+- **가중치가 아니라 형태가 문제였음.**
+
+### 형태 선택 원칙 (확립)
+
+- 절대 양수 + 유지가 쉬움 -> **반드시 farming당함**.
+- 절대 양수 + 유지가 어려움 -> 안전 (`finger_cage_hold`, `cube_lift`).
+- 절대 페널티 (`<=0`) -> 안전 (최대가 `0`이라 쌓을 것이 없음).
+- 차분 -> 안전.
+
+### 논문의 실제 가중치 (9쪽)
+
+- `r = r_grasp + r_reach + 25*r_hold + 500*r_orient + r_MP + 5000*r_T`.
+- approach(1) -> hold(25) -> orient(500) -> grasp(5000). **각 단계마다 약 20배씩.**
+- "The exact values do not affect learning significantly, **as long as the overall proportions reflect the logical sequence**."
+- **절대값이 아니라 비율만 중요하고, scale은 각자의 보상값 크기에 맞춰야 함.**
+
+### 결정적 발견: `cube_lift` 보상이 한 번도 나온 적이 없음
+
+- 전 학습 기간 동안 `Episode_Reward_Raw/cube_lift` = **정확히 `0`**. 큐브가 단 한 번도 바닥에서 떨어진 적이 없음.
+- **`0`인 보상은 가중치가 `3`이든 `500`이든 무의미함.** 정책은 "들기" gradient를 받은 적이 없음.
+- 원인: `cube_lift`를 **최하 모서리** 기준으로 바꿔 기울이기 편법을 막았더니 **사실상 희소해짐.**
+- 희소 보상은 curriculum 없이 학습 불가능함. 논문의 `r_T`(sparse)가 curriculum과 세트인 이유임.
+
+### Curriculum이 필수인 이유
+
+- 과제가 **사슬**임. 마지막 보상은 앞의 모든 링크를 통과해야 나옴.
+- 마지막 보상을 한 번도 경험 못 하면 value function에 전파되지 않고, **정책은 도달 가능한 가장 뒤쪽 링크에서 멈춤.**
+- Curriculum은 사슬을 **거꾸로** 배움. close-start에서 마지막 보상을 도달 가능하게 만들고, 후속 단계에서 앞 단계에 목적을 부여함.
+- 논문 데이터: curriculum 없으면 성공률 약 `50%`에 편차 폭발, 있으면 **`97%`** (wall-clock 동일).
+
+### 사용자 통찰: 보상 단계화도 curriculum임
+
+- "접근/파지를 먼저 학습시키고 lift를 넣어 다시 학습"도 curriculum임. **환경이 아니라 보상을 단계화**하는 것임.
+- 더 저렴함. 환경을 안 건드리므로 warm-start가 깔끔함.
+- **성립 조건**: Phase 1이 끝났을 때 그 자세에서 lift가 **탐색으로 도달 가능**해야 함. 아니면 `0 x W = 0`임.
+
+### 현재 reward (6개)
+
+- `finger_cage_reach` (차분, 0.3), `palm_facing` (차분, 1.0), `finger_cage_hold` (절대, 1.0).
+- `cube_lift` (절대, 3.0), `arm_manipulability` (절대 페널티, 1.0), `action_rate` (-0.0003).
+- action shape 18, observation shape 57 불변.
+
+### 계획
+
+- Phase 1 (진행 중 `2026-07-13_10-26-32`): 접근 + 손바닥 정렬 + 감싸기 학습. `cube_lift`는 사실상 `0`이라 없는 것과 같음.
+- 수렴 후 (1) 실측 raw 값으로 가중치 역산, (2) **"들 수 있는 자세"인지 검증**.
+- Phase 2: `cube_lift` 가중치 상향 + `--resume`.
+
+## 2026-07-13 `Indy-Wuji-Cube-Grasp-Easy` curriculum task 추가
+
+- `Indy-Wuji-Cube-Grasp-Easy` task를 추가함.
+- 목적은 reward를 더 만지는 것이 아니라 **현재 reward가 켜질 수 있는 쉬운 초기 상태**를 만드는 것임.
+- 기존 hard task `Indy-Wuji-Cube-Grasp`는 유지함.
+- Easy task는 `Indy7WujiCubeGraspEnvCfg`를 상속함.
+- action dim, observation dim, reward term, runner/model 구조는 hard task와 동일하게 유지함.
+- cube 초기 위치만 손 가까운 grasp aperture 안쪽으로 옮김.
+- Easy cube 위치는 `(0.74, -0.18, 0.03)`임.
+- Easy reset random range는 `x/y = +/-0.015`, `z = 0`으로 좁힘.
+- gym id는 `Indy-Wuji-Cube-Grasp-Easy`임.
+- 의도는 easy에서 `finger_cage_hold > 0`을 먼저 경험시키고, 이후 hard task로 checkpoint resume하는 것임.
+
+### 변경 파일
+
+- `nrmk_isaaclab_wuji/isaac_neuromeka/tasks/manipulation/grasp/indy_wuji/env_cfg.py`
+- `nrmk_isaaclab_wuji/isaac_neuromeka/tasks/manipulation/grasp/indy_wuji/__init__.py`
+- `CLI.md`
+
+### 실행 흐름
+
+```bash
+python scripts/rsl_rl/train.py \
+  --task Indy-Wuji-Cube-Grasp-Easy \
+  --headless \
+  --num_envs 4096 \
+  --max_iterations 50000 \
+  --run_name easy_close_start
+```
+
+### 다음 확인
+
+- smoke test에서 task 등록이 되는지 확인함. 완료함.
+- Action Manager shape가 hard와 같은 `18`인지 확인함. 완료함.
+- Observation shape가 hard와 같은 `57`인지 확인함. 완료함.
+- Reward Manager active term 6개 확인함.
+- `Episode_Reward_Raw/finger_cage_hold`가 `0`에서 벗어나는지 확인함.
+- `Metrics/cube_final/cage_inside_frac`가 `0`에서 벗어나는지 확인함.
+
+## 2026-07-13 hand/cube contact response 완화 확인
+
+- 영상에서 ring/little을 접은 뒤에도 palm/hand가 cube와 닿을 때 arm이 뒤로 튀는 현상을 확인함.
+- 원인 후보를 ring/little 단독 collision에서 palm/hand contact impulse 쪽으로 갱신함.
+- active `INDY7_WUJI_RIGHT_CFG`에서 `RigidBodyPropertiesCfg` 값이 완화된 것을 확인함.
+- 현재 active 값은 `max_depenetration_velocity=5.0`, `max_contact_impulse=100.0`임.
+- 이전 active 값은 `max_depenetration_velocity=1000.0`, `max_contact_impulse=1e32`였고, 관통 보정 속도/impulse가 사실상 무제한이라 contact 순간 arm이 튈 수 있었음.
+- cube 쪽은 아직 `CollisionPropertiesCfg(collision_enabled=True)`만 있고 `contact_offset/rest_offset`는 따로 주지 않음.
+- 이 변경은 action/observation/reward/model shape를 바꾸지 않음.
+- 기존 checkpoint로 `play` 비교 가능함.
+- 학습은 기존 checkpoint에서 `resume` 가능함.
+- 단, physics가 바뀐 것이므로 최종 성능 평가는 resume adaptation 또는 fresh/easy curriculum run 후 판단함.
+
+## 2026-07-14 close-start 높이/받침면 수정
+
+- close-start이 실제로는 큐브 `x/y`만 손 파지 중심 근처였고 `z`는 바닥 `0.03m`라 손 높이와 맞지 않는 문제를 확인함.
+- `BASE_Z=0.50` 받침면을 추가함.
+- `{ENV_REGEX_NS}/Support` kinematic cuboid를 `CubeGraspSceneCfg`에 추가함.
+- cube 중심 높이는 `BASE_Z + CUBE_HALF = 0.53m`로 맞춤.
+- close-start cube 위치는 `(0.704, -0.279, 0.530)`임.
+- hard cube 위치는 `(0.850, 0.000, 0.530)`임.
+- `cube_lift` reward에 `surface_z` 파라미터를 추가해 월드 바닥이 아니라 받침면 기준 lift를 보게 함.
+- TensorBoard `cube_clearance` metric도 같은 `surface_z` 기준으로 보정함.
+- `hand_floor` penalty도 같은 `surface_z` 기준으로 보정함.
+- `python -m py_compile` 통과함.
+- `Indy-Wuji-Cube-Grasp --headless --num_envs 1 --max_iterations 1` smoke test 통과함.
+- 확인된 shape는 action `18`, policy observation `57`임.
+
+## 2026-07-14 close-start 파지 간극/방향 검증 정정
+
+- 사용자 지적대로 `palm_facing=0`과 `joint5` action 반경 축소는 초기 손-큐브 방향 정렬이 검증돼야만 성립함.
+- `/tmp/cube_grasp_probe.py`로 close-start reset 상태를 수치 확인함.
+- 기존 close-start cube `(0.704, -0.279, 0.430)`는 cage 중심에서 y로 약 `9cm` 벗어났음.
+- 기존 위치는 zero action 30 step만 해도 cube가 `(0.758, -0.220, 0.430)`으로 밀리고 `palm_facing`이 `0.838 -> 0.260`으로 깨짐.
+- close-start cube를 `(0.692, -0.369, 0.430)`으로 수정함.
+- 수정 후 reset `palm_facing=0.987`, zero action 30 step 뒤 `0.997`임.
+- 수정 후 `cage_center_to_cube` xy 오차는 reset 약 `0.5mm`, zero action 30 step 뒤 약 `3mm`임.
+- 따라서 **현재 close-start 배치에서만** `finger_cage_reach=0`, `palm_facing=0`, `joint5` scale 축소가 타당함.
+- cube 배치나 arm reset pose를 바꾸면 이 probe를 다시 해야 함.
+- `python -m py_compile` 통과함.
+- `Indy-Wuji-Cube-Grasp --headless --num_envs 1 --max_iterations 1` smoke test 통과함.
+
+## 2026-07-14 close-start action 출력 보강
+
+- action이 잘못 나오는지 직접 확인하기 위해 `scripts/rsl_rl/play.py`의 `--print_action` 출력을 보강함.
+- 기존 출력은 전체 action 요약과 `actions[0,5]` 하나만 보여서 원인 분리에 부족했음.
+- 새 출력은 `raw policy action`, `clip 후 applied action`, `target joint position`, `actual joint position`, `target-actual error`, `joint velocity`를 joint 이름별로 출력함.
+- `clip%`도 출력해 policy가 `clip_actions=1.0` 밖으로 자주 나가는지 확인 가능함.
+- 판정 기준은 다음과 같음.
+- `err`가 작고 action/Delta action이 크면 policy가 그렇게 시킨 것임.
+- `err`가 크면 물리/PD/접촉/decimation이 목표를 못 따라가는 것임.
+- `CLI.md`에 close-start action 확인 명령을 추가함.
+- `python -m py_compile nrmk_isaaclab_wuji/scripts/rsl_rl/play.py` 통과함.
+
+## 2026-07-14 Cube Grasp 단일 task 정리
+
+- 사용자 판단대로 `close-start`/`Hard`를 나눠 쓰지 않기로 함.
+- `Indy-Wuji-Cube-Grasp` 본체가 검증된 close-start nominal grasp 배치를 사용하도록 정리함.
+- 별도 호환 alias는 남기지 않음. task id는 `Indy-Wuji-Cube-Grasp` 하나임.
+- 새 학습/play/smoke test 명령은 전부 `Indy-Wuji-Cube-Grasp`를 사용함.
+- 현재 cube 위치는 `(0.692, -0.369, 0.430)`임.
+- cube reset randomization은 꺼둠. `x/y/z = 0`.
+- 현재 reward override는 `finger_cage_reach=0`, `palm_facing=0`, `finger_cage_hold=1`, `cube_lift=10`, `arm_manipulability=1`, `hand_floor=0.5`, `action_rate=-0.0003`임.
+- `CLI.md`, `AGENTS.md`, `nrmk_isaaclab_wuji/agent.md`를 단일 task 기준으로 정리함.
+- 같은 experiment 안에 과거 smoke/hard/easy run이 섞여 있으므로 최신 run 자동 선택은 위험함.
+- `python -m py_compile` 통과함.
+- `Indy-Wuji-Cube-Grasp --headless --num_envs 1 --max_iterations 1` smoke test 통과함.
+- smoke test에서 action `18`, observation `57`, reward 7개를 확인함.
+- reward table은 `finger_cage_reach=0`, `finger_cage_hold=1`, `cube_lift=10`, `palm_facing=0`, `arm_manipulability=1`, `hand_floor=0.5`, `action_rate=-0.0003`임.
+- `/tmp/cube_grasp_probe.py --task Indy-Wuji-Cube-Grasp --headless --num-envs 1` 통과함.
+- probe reset 값은 cube `(0.692, -0.369, 0.430)`, cage xy error 약 `0.5mm`, `palm_facing=0.986780`, `cage_hold=0.210871`임.
+- zero action 30 step 뒤 cage xy error 약 `3mm`, `palm_facing=0.996594`임.
+
+## 2026-07-14 close-start alias 제거 최종 정리
+
+- 예전 curriculum alias와 관련 class/register를 제거함.
+- cube grasp 실행 이름은 `Indy-Wuji-Cube-Grasp` 하나만 남김.
+- `CLOSE_START_CUBE`는 가까운 nominal grasp 배치 상수로 유지함.
+- 과거 hard 배치 상수는 `LEGACY_HARD_CUBE`로 이름만 남겨 공통 cfg 기본값과 구분함.
+- RSL-RL `run_name`은 `cube_grasp_close_start`로 정리함.
+- 예전 probe helper는 `/tmp/cube_grasp_probe.py`로 이름을 바꿈.
+- functional_grasp/chopsticks skeleton의 예전 alias class/register도 제거함.
+- repo 전체에서 예전 alias/문자열을 검색해 남은 직접 참조가 없음을 확인함.
+- `python -m py_compile` 통과함.
+- `Indy-Wuji-Cube-Grasp --headless --num_envs 1 --max_iterations 1` smoke test 통과함.
+- `/tmp/cube_grasp_probe.py --task Indy-Wuji-Cube-Grasp --headless --num-envs 1` probe 통과함.
+
+## 2026-07-14 hand-only cube grasp 재정리
+
+- cube grasp를 다시 "Wuji hand가 물체를 감쌀 수 있는지"부터 확인하는 hand-only 진단 모드로 바꿈.
+- policy action은 `finger[1-3]_joint[1-4]` 12축만 사용함.
+- arm 6축은 `FixedJointPositionAction` 0D term을 새로 만들어 default joint target을 매 step 유지하게 함.
+- 이 수정 전에는 arm action을 빼면서 arm joint target도 사라져 zero action 30 step만에 arm이 무너지고 cube가 날아갔음.
+- `CubeGraspActionsCfg`에 `arm_hold_action` 슬롯을 추가함.
+- `Indy-Wuji-Cube-Grasp` Action Manager는 `arm_action=12`, `arm_hold_action=0`, total action shape `12`로 확인함.
+- policy observation shape는 `42`임.
+- `cube_to_goal` observation은 hand-only 진단에서 제거함.
+- active reward는 `finger_cage_hold=1`, `hand_floor=0.5`, `action_rate=-0.0003` 중심임.
+- `finger_cage_reach`, `palm_facing`, `cube_lift`, `arm_manipulability` weight는 현재 `0`임.
+- RSL-RL run name은 `cube_grasp_hand_only`로 바꿈.
+- `python -m py_compile` 통과함.
+- `Indy-Wuji-Cube-Grasp --headless --num_envs 1 --max_iterations 1` smoke test 통과함.
+- `/tmp/cube_grasp_probe.py --task Indy-Wuji-Cube-Grasp --headless --num-envs 1 --close-action 1.0 --close-steps 60` 통과함.
+- probe에서 zero action 30 step 후 arm collapse/cube ejection이 사라짐.
+- close action 60 step 후 `cage_hold=0.427465`, `cage_inside_frac=0.666667`로 증가함.
+- `--num_envs 128 --max_iterations 20` 짧은 학습 통과함.
+- 짧은 학습에서 `finger_cage_hold`는 초반 `0.003`에서 `0.13~0.18`까지 증가함.
+- 같은 학습에서 `hand_floor` penalty가 커지고 mean reward는 음수로 유지됨.
+- 다음 판단은 GUI에서 손이 받침면을 긁는지 확인한 뒤 `hand_floor`/초기 높이/손가락 action scale을 조정하는 것임.
+
+## 2026-07-14 grasp+lift active 재정리
+
+- `Indy-Wuji-Cube-Grasp`를 다시 arm 6축 + thumb/index/middle 12축, 총 18D action으로 돌림.
+- observation은 joint position 18D, palm 기준 cube 3D, five-fingertip 기준 cube 15D, previous action 18D로 총 54D임.
+- `cube_to_goal` observation은 현재 grasp+lift baseline에서 제거함.
+- active reward는 `finger_cage_reach=3`, `finger_cage_hold=5`, `cube_lift=50`, `cube_support=2`, `palm_facing=0`, `arm_manipulability=0`, `hand_floor=0.2`, `action_rate=-0.0003`임.
+- `cube_support`를 추가해 cube 최하 모서리가 받침면 아래로 내려가면 벌점을 주게 함.
+- `--num_envs 128 --max_iterations 20` 짧은 학습에서는 hold는 켜졌지만 lift는 거의 0이고, cube를 받침 아래로 누르는 실패 모드가 보임.
+- `/tmp/cube_lift_probe.py`를 만들어 scripted feasibility를 확인함.
+- 기본 설정에서 close action은 `cage_hold`를 약 `0.40`까지 올리지만 `cube_clearance`는 0 근처이고 `cube_lift_reward_raw=0`임.
+- `joint0~joint5` 단일축 ±1 lift 후보를 모두 넣어도 양의 cube clearance가 나오지 않음.
+- 강한 손/가벼운 큐브 probe(`finger_effort=3`, `stiffness=40`, `cube_mass=0.03`, `friction=2`)에서도 lift는 0임.
+- 결론: 긴 RL 전에 실제로 cube를 들어올리는 scripted arm/hand sequence 또는 초기 자세를 먼저 찾아야 함.
+
+## 2026-07-14 contact/lift 확인 스크립트 추가
+
+- `scripts/debug/check_cube_contact_lift.py` 추가함.
+- policy 없이 `reset -> zero settle -> finger close -> optional arm lift`를 실행하게 함.
+- thumb/index/middle/palm 링크별 cube contact force를 출력하게 함.
+- cube clearance와 `GOOD_CONTACT thumb+middle`, `LIFT_SUCCESS` 판정을 출력하게 함.
+- cube 자체에는 contact reporter가 없어 `Cube -> Support` contact sensor는 제거함.
+- 손 링크 기준 cube contact sensor만 사용함.
+- 짧은 headless 검증 통과함.
+- close-only 확인 결과 `after_close`에서 `index_mid=5.5961N`, `thumb_tip=0.0593N`, middle contact 없음.
+- `after_lift`에서 `thumb_tip=0.4257N`, `middle_mid=0.7081N`로 `GOOD_CONTACT=True`가 늦게 켜짐.
+- 같은 run에서 `max_clearance=0.0003m`라 lift는 실패함.
+- 결론: contact 자체는 생기지만 현재 scripted close-only는 cube를 들어 올리지 못함.
+- 긴 학습 전에 `--sweep-lift` 또는 cube pose sweep으로 `GOOD_CONTACT=True`와 `max_clearance>0.005m`가 나오는 조건을 먼저 찾아야 함.
+
+## 2026-07-14 contact/lift probe finger sweep 추가
+
+- `scripts/debug/check_cube_contact_lift.py`에 `--finger-action` 옵션을 추가함.
+- `--finger-action`은 thumb/index/middle 3개 그룹 값 또는 finger action 12개 값을 직접 받음.
+- `--sweep-fingers` 옵션을 추가함.
+- `--sweep-fingers`는 cube를 고정하고 thumb/index/middle close 값 조합을 훑음.
+- `--contact-mode` 옵션을 추가함.
+- contact 판정은 `thumb_middle`, `thumb_index`, `thumb_any`, `tripod` 중 선택 가능함.
+- 짧은 검증 명령 `--finger-action 1 0 1 --contact-mode thumb_middle` 실행 통과함.
+- 해당 짧은 검증에서는 thumb과 middle이 같은 시점에 안정적으로 물지 못해 `lift_success=False`임.
+- 다음 확인은 cube를 움직이기보다 `--sweep-fingers`로 손가락 joint 명령 조합부터 찾는 것이 우선임.

@@ -277,7 +277,7 @@
 - Added lifted-gated `cube_goal_tracking` reward.
 - Current cube goal position is `(0.55, -0.05, 0.12)`.
 - `cube_goal_tracking` is zero until cube root z reaches `0.08 m`.
-- At that stage, active cube grasp reward terms were `arm_cube_reach`, `finger_cube_reach`, `cube_lift`, `cube_goal_tracking`, and `action_rate`.
+- At that point, active cube grasp reward terms were `arm_cube_reach`, `finger_cube_reach`, `cube_lift`, `cube_goal_tracking`, and `action_rate`.
 - `py_compile` passed for the modified observation, reward, common cfg, cube grasp cfg, and Indy/Wuji grasp override files.
 - `Indy-Wuji-Cube-Grasp --headless --num_envs 1 --max_iterations 1` passed after escalation for local GPU/display access.
 - Smoke test confirmed action shape 18, policy observation shape 57, and reward term count 5.
@@ -390,7 +390,7 @@
 
 ## 2026-07-11 Wuji Finger Actuator Gain
 
-- Confirmed Wuji finger actuator gain is `stiffness=8.0`, `damping=0.5`, `friction=0.02`.
+- Confirmed Wuji finger actuator gain is `stiffness=20.0`, `damping=0.5`, `friction=0.02`, `effort_limit=0.6` (2026-07-12에 stiffness를 `8.0`에서 올림. damping은 한때 `2.5`였으나 **최대 폐합 속도 = effort_limit/damping = 0.24 rad/s로 손가락이 5배 느려져** `0.5`로 되돌림).
 - The gain applies to all `finger[1-5]_joint[1-4]`.
 - This is a stabilization setting to reduce passive ring/little finger shaking.
 - `py_compile` passed for `assets/indy.py`.
@@ -447,7 +447,7 @@
 - 사용자가 이 비대칭은 의도된 설계라고 확정함. 목적은 dimension을 낮추는 것임.
 - 제어 대상은 `joint[0-5]` + `finger[1-3]_joint[1-4]` = 18D로 유지함.
 - observation은 5-finger tip을 모두 포함해 57D를 유지함.
-- ring/little finger는 policy 제어 대상이 아니고 actuator gain(`stiffness=8.0`, `damping=0.5`)으로만 안정화함.
+- ring/little finger는 policy 제어 대상이 아니고 actuator gain(`stiffness=20.0`, `damping=0.5`)으로만 안정화함.
 - 따라서 obs/reward finger 개수를 맞추는 방향의 수정은 하지 않음.
 - 코드 변경 없음. 문서 확정만 반영함.
 - `agent.md`의 미확정 항목을 확정 항목으로 갱신함.
@@ -1500,7 +1500,7 @@
 - 12점 cage + lift로 "하중을 견디는 자세"가 나오는가.
 - `Metrics/cube_final/cube_lift`가 `0.002`에서 올라가는가.
 - `thumb_index_opposition`과 `thumb_middle_opposition`이 둘 다 오르는가.
-- lift가 끝내 오르지 않으면 다음 용의자는 손가락 actuator gain임 (`stiffness=8.0`, `damping=0.5`).
+- lift가 끝내 오르지 않으면 다음 용의자는 손가락 actuator gain임 (`stiffness=20.0`, `damping=0.5`).
 - 이 값은 약지/새끼 떨림을 줄이려고 낮춰놓은 것이라 80g 큐브를 쥐기에 물를 수 있음.
 
 ### 다음 일반화 단계 (큐브 성공 후)
@@ -1509,3 +1509,1194 @@
 - 긴 축은 손의 파지 간극보다 길어 물 수 없으므로, cage가 짧은 축을 자동으로 찾게 됨.
 - orientation 항 없이 물체 기하가 스스로 제약함.
 - 여기까지 되면 젓가락은 "긴 물체를 특정 방식으로"라는 문제가 되고, 그때 논문의 `r_hr` (진짜 목표 회전)이 등장함.
+
+## 2026-07-12 palm_facing 도입 + cube_lift 기울이기 편법 차단
+
+### 사용자 관찰 (GUI)
+
+- 12점 cage 학습(run `2026-07-12_13-43-04`) 결과 **손바닥이 여전히 하늘을 향함**.
+- `cube_lift`가 오른 이유는 파지가 아니라 **손가락 2개가 오므리면서 큐브를 기울여 튕겨 올린 것**임.
+- 즉 `cube_lift`도 해킹당하고 있었음.
+
+### 실측 확인 (checkpoint `model_550.pt` replay)
+
+- `cube_lift` (중심 높이): `+4.28 mm`.
+- `cube_clearance` (최하 모서리 높이): `-0.04 mm`. **바닥에 붙어 있음.**
+- `palm_facing`: `0.182` (`+1`이 정면). 손바닥이 큐브를 거의 보지 않음.
+- `cage_inside_frac`: `0.753`. cage는 만족됨.
+- 결론: 큐브를 모서리로 세워 중심만 올린 것임. 기울이기 편법 확정됨.
+
+### 원인 1: `cube_lift`가 큐브 **중심 높이**를 봤음
+
+- 큐브를 기울이면 한 모서리가 바닥에 남아도 중심 높이는 올라감.
+- `cage_gate`도 만족됨. 가상점이 큐브 안에 있으므로.
+- 수정: **최하 모서리 높이(`box_ground_clearance`)** 기준으로 변경함.
+- 큐브 8개 꼭짓점을 world로 변환해 최소 z를 구하고 ground plane 대비 높이를 씀.
+- 기울이면 한 모서리가 바닥이므로 최소 z = 0 → 보상 0. **편법이 원천 차단됨.**
+- `initial_height` 파라미터 제거함. ground 기준이므로 불필요함.
+
+### 원인 2: 손바닥 방향이 여전히 제약되지 않음
+
+- 12점 cage로도 손바닥 방향을 못 잡음.
+- 이유: **엄지끝-손가락 선분은 손 방향과 무관하게 큐브를 관통할 수 있음.**
+- 따라서 손바닥이 하늘을 봐도 cage가 만점이 나옴.
+
+### 선행 검증: 손바닥을 아래로 돌릴 수 있는가
+
+- reward를 넣기 전에 kinematic 도달성부터 확인함. 팔 관절 40만 개 샘플링.
+- 큐브 중심 높이 `0.030 m`.
+- 손바닥이 가장 가까이 간 거리 `0.016 m`.
+- 20cm 이내에서 최고 `palm_facing` = **`+1.000`** (완벽히 정면).
+- `(거리 < 0.20 AND facing > 0.7)` 자세: `561 / 397,312` (`0.14%`).
+- **결론: 도달 가능함.** 바닥이 막는 것이 아님. 정책은 할 수 있는데 보상이 없어서 안 하는 것임.
+- 다만 `0.14%`로 드물어 **명시적 보상 없이는 무작위 탐색으로 못 찾음.**
+
+### `palm_facing_object` 도입 (weight `0.5`)
+
+- `r = clamp(dot(손바닥 법선, 단위벡터(큐브 - 손바닥)), 0, 1)`.
+- 손바닥 법선은 `palm_link` 로컬 `+x`임. 손가락을 오므릴 때 손끝이 이동하는 방향으로 실측함.
+- **자의적 제약이 아니라 물리적 필요조건임.** 손가락은 손바닥 쪽으로 굽으므로, 손바닥 뒤에 있는 물체는 오므려도 감싸지지 않음.
+- 특정 회전을 지정하지 않음. 손바닥 법선 축만 정렬하고 **roll은 자유**임.
+- 대칭 물체에 대해 파지 방식을 고르지 않음. "잡는 것이 가능한 자세"만 요구함.
+- 논문 `r_hr`은 목표 회전 3자유도를 전부 맞춤. `palm_facing`은 그중 **물리적으로 반드시 필요한 성분 1개**만 요구함.
+- 젓가락에서는 기능이 손 회전을 결정하므로 `r_hr`(진짜 목표 회전)이 이것을 **상위호환 교체**함. 버려지는 것이 아니라 승격됨.
+
+### 이전 판단 정정
+
+- 2026-07-12 초반에 `palm_facing`을 "자의적"이라며 철회하고 "`cube_lift`가 자세를 선별할 것"이라고 판단했음.
+- **틀렸음.** `cube_lift`가 기울이기로 해킹당했고, 손바닥은 여전히 하늘을 봄.
+- 사용자가 "opposition은 0.5를 넘어도 손바닥이 하늘일 수 있다"고 지적한 것이 옳았음.
+
+### 최종 reward 구성
+
+- `finger_cage_reach`: `0.3`.
+- `finger_cage_hold`: `1.0`.
+- `cube_lift`: `3.0`. 최하 모서리 기준으로 수정됨.
+- `palm_facing`: `0.5`. 신규.
+- `action_rate`: `-0.0003`.
+- action shape 18, observation shape 57 불변.
+
+### 신규 metric
+
+- `cube_clearance`: 큐브 최하 모서리의 지면 대비 높이. **진짜 lift 지표임.**
+- `palm_facing`: 손바닥이 큐브를 향하는 정도.
+- 기존 `cube_lift`(중심 높이)도 유지함. **두 값이 벌어지면 기울이기 편법 재발 신호임.**
+- `managers.py`의 `_palm_normal_b`는 reward의 `palm_normal_b`와 반드시 동일해야 함.
+
+### 학습 판정 지표
+
+- `Metrics/cube_final/palm_facing`: `0.18` → `0.7` 이상으로 오르는가.
+- `Metrics/cube_final/cube_clearance`: `0`에서 오르는가. **진짜 파지 여부임.**
+- `Metrics/cube_final/cube_lift`가 `cube_clearance`보다 크게 앞서면 또 기울이는 중임.
+- `--resume` 금지. reward가 바뀜.
+
+## 2026-07-13 palm_facing 국소최적 + arm_manipulability (r_MP) 도입
+
+### 문제: 정책이 31cm 밖에서 손바닥만 겨누고 서 있음
+
+- run `2026-07-12_20-11-57` (1803 iter, 완전 수렴).
+- `palm_facing`: `0.013` → **`0.994`**. 손바닥은 완벽히 큐브를 향함.
+- 그러나 `cage_sdf_mean`: `0.605` → **`0.313`에서 정지**. 손이 31cm 밖임.
+- `cage_inside_frac` = `0`, `finger_cage_hold` = `0`, `cube_clearance` = `0`.
+- `cube_displacement` = `0.0022`. **큐브를 건드리지도 않음.**
+
+### 원인 1: `palm_facing`이 거리와 무관하게 지급됨
+
+- `palm_facing = clamp(dot(법선, 단위벡터(큐브 - 손바닥)), 0, 1)`.
+- **단위벡터라 거리가 사라짐.** 10m 밖에서 겨눠도 만점임.
+- 보상 분해: `0.5 x 0.994 x 0.4(dt) x 20(step) = 3.96`. 전체 `mean_reward` `4.015`의 **98.6%**임.
+- 나머지 항은 전부 `0`이었음.
+
+### 원인 2: 접근하면 손해였음
+
+- 도달성 테스트에서 "닿으면서 정면"인 자세는 `0.14%`뿐이었음. 가까이 가면 정면 유지가 어려움.
+- `31cm -> 1cm` 접근 시 손익 계산:
+- 얻는 것: `reach`(차분) = `(0.30 / 0.5) x 0.3 x 0.4 = +0.072` (1회성).
+- 잃는 것: `palm_facing`이 `0.99 -> 0.7`로 떨어지면 `(0.29) x 0.5 x 0.4 x 20 = -1.16` (매 step).
+- **접근이 순손실 `-1.09`.** 정책은 완벽히 합리적으로 행동한 것임.
+- 논문이 경고한 그대로임. "local minima created by accumulating rewards for actions that are **easier to achieve**".
+- `palm_facing(0.5) > reach(0.3)`인데 훨씬 쉬움. **가중치 순서가 뒤집혔음.**
+
+### 원인 3 (사용자 GUI 관찰): 팔이 접혀서 특이점에 빠짐
+
+- 사용자가 GUI에서 "arm 자세 때문에 못 가는 것 같다"고 관찰함.
+- **manipulability 실측** (`sqrt(det(J J^T))`, palm_link 기준 arm 6축):
+- 무작위 자세 최대: `0.1129` (기준 100%).
+- 리셋 직후 초기 자세: `0.0645` (`57%`).
+- **정책이 수렴한 자세: `0.0144` (`13%`)**. `joint2`가 한계의 `81%`까지 접힘.
+- **손을 자유롭게 못 움직이는 자세임.**
+- 인과: `palm_facing`을 만족시키는 **가장 싼 방법이 "팔을 접어서 손목만 돌리기"**였음. 팔을 뻗는 것보다 훨씬 쉬움.
+- 그 결과 특이점 근처로 가서 접근 자체가 불가능해짐.
+
+### 수정 1: `palm_facing`에 proximity 램프 + 가중치 인하
+
+- `proximity = 1 - clamp(손바닥-큐브 거리, 0, distance_max) / distance_max`.
+- `r = facing * proximity`.
+- `distance_max = 0.8`. **에피소드 시작 거리(약 `0.7 m`)보다 크게 잡음.**
+- 이유: 리셋 직후에도 `proximity`가 `0`이 아니어야 **접근하는 동안 손바닥을 돌림.**
+- 하드 게이트면 도착할 때까지 보상이 `0`이라, 큐브 바로 옆에서 손바닥을 급회전시켜 **큐브를 날려버림.**
+- 거리별 `proximity`: `0.70 m` -> `0.125`, `0.31 m` -> `0.61`, `0.10 m` -> `0.875`, `0.05 m` -> `0.94`.
+- **접근하면 보상이 오름.** 정렬이 다소 깨져도 순이득이라 "서서 겨누기" 국소최적이 사라짐.
+- weight `0.5` -> `0.3`. `finger_cage_reach`와 동급이고 `hold(1.0)`, `lift(3.0)`보다 낮음.
+- precondition은 가벼워야 함. 논문의 `r_T >> r_orient >> r_hold >> r_reach` 순서를 지킴.
+
+### 수정 2: `arm_manipulability_penalty` (논문 Eq.17, weight `1.0`)
+
+- `r = 1 - 2 / (1 + (min(|J|, j_max) / j_max)^3)`. 범위 `[-1, 0]`.
+- `|J|`는 `sqrt(det(J J^T))`. `palm_link` 기준 arm 6축 Jacobian임.
+- `j_max = 0.02`. 논문은 "관측 최대치의 15%"라 하며, 실측 최대치가 `0.113`이므로 `0.017`에 해당함.
+- 초기 자세(`0.0645`) -> 페널티 `0`. 접힌 자세(`0.0144`) -> 페널티 약 `-0.46`.
+- 논문 원문: "This reward penalizes coming close to singularities and leads to learning more intuitive motions."
+- 논문은 이 항을 스케일하지 않음 ("We leave the other rewards unscaled"). weight `1.0`.
+
+### 신규 metric
+
+- `arm_manipulability`: `sqrt(det(J J^T))`. 팔이 접히는지 감시함.
+- 기준값: 초기 자세 `0.064`, 무작위 최대 `0.113`. **`0.02` 아래로 떨어지면 특이점 근처임.**
+- `managers.py`의 `_arm_joint_ids`는 reward의 `joint_names=["joint[0-5]"]`와 동일해야 함.
+
+### 최종 reward (6개)
+
+- `finger_cage_reach` (0.3), `finger_cage_hold` (1.0), `cube_lift` (3.0).
+- `palm_facing` (0.3, proximity 램프), `arm_manipulability` (1.0), `action_rate` (-0.0003).
+- action shape 18, observation shape 57 불변.
+- `py_compile` 통과, smoke test 통과.
+- 검증: 초기 자세 `arm_manipulability = 0.0625`(이전 측정 `0.0645`와 일치), 페널티 `0`.
+- 검증: `palm_facing` raw `0.0014` (램프 전 `0.017`). 멀리서 겨누기가 억제됨.
+
+### 학습 판정 지표
+
+- `Metrics/cube_final/arm_manipulability`: `0.02` 아래로 떨어지면 팔이 접히는 중임.
+- `Metrics/cube_final/cage_sdf_mean`: `0.05` 아래로 내려가는가 (도착).
+- `Metrics/cube_final/palm_facing`: 접근하면서 오르는가.
+- `Metrics/cube_final/cube_clearance`: `0`에서 오르는가. **진짜 파지 여부임.**
+- `Metrics/cube_final/cube_displacement`: 접근 중 큐브가 날아가는가 (급회전 부작용 감시).
+- `--resume` 금지.
+
+### 교훈
+
+- **어떤 reward든 "가장 싼 만족 방법"이 무엇인지 먼저 물을 것.** `palm_facing`의 가장 싼 방법은 팔을 접는 것이었음.
+- **precondition 성격의 reward는 거리/진행도에 비례해야 함.** 절대값으로 주면 그 자리에서 만족시키고 멈춤.
+- **논문의 가중치 순서(`r_T >> r_hold >> r_reach`)는 장식이 아님.** 쉬운 항이 무거우면 반드시 거기 갇힘.
+- 이번에 `palm_facing(0.5) > reach(0.3)`으로 넣었다가 정확히 그 함정에 빠짐.
+
+## 2026-07-13 palm_facing을 차분형으로 (논문 원칙 복원)
+
+### 사용자 지적: 논문과 가중치 비율이 다름
+
+- 확인 결과 **가중치가 아니라 "형태"가 달랐음.**
+
+### 논문의 항들은 거의 전부 차분(differential)형임
+
+- `r_hp` (Eq.9): `[Δh_p(t-1) - Δh_p(t)] / Δh_p^max`. 차분.
+- `r_hr` (Eq.10): `[Δh_r(t-1) - Δh_r(t)] / Δh_r^max`. 차분. **손 회전.**
+- `r_hj` (Eq.11): 차분.
+- `r_reach` (Eq.14): 차분.
+- `r_orient` (Eq.16): 차분.
+- `r_hold` (Eq.15): **절대. 논문에서 유일한 절대형임.**
+- 논문 원문: "Wide use of differential distances in our reward, instead of directly using the velocities, naturally avoids learning overshooting behaviors."
+
+### 왜 논문은 `r_grasp`에 weight 1.0을 줘도 안전한가
+
+- **차분형은 "가만히 있으면 0"임.** 정렬해놓고 앉아 있어도 보상이 나오지 않음.
+- 따라서 farming이 원천적으로 불가능하고, 큰 weight를 줘도 국소최적이 생기지 않음.
+- 우리 `palm_facing`은 **절대형**이라 정렬만 유지해도 매 step 보상이 나왔음.
+- 그래서 weight `0.5`에서도 전체 보상의 `98.6%`를 먹고 국소최적을 만들었음.
+- **가중치를 낮추는 것이 아니라 형태를 바꾸는 것이 정답이었음.**
+
+### 수정: `PalmFacingProgressReward` (차분형)
+
+- `r(t) = facing(t) - facing(t-1)`. `reset()`에서 기준선 seeding.
+- 에피소드 총합이 `facing(final) - facing(reset)`으로 telescoping됨.
+- **가만히 있으면 정확히 0.** 정렬이 깨지면 감점.
+- `clamp(-1, 1)`. `facing`이 `[0,1]`이므로 차분은 `[-1,1]`임.
+- proximity 램프 제거함. 차분형이면 거리 의존성이 불필요함. 거리는 `reach`가 담당함.
+- `palm_facing_object`는 절대형 그대로 유지함. **metric 전용**으로 쓰고 reward는 차분 클래스를 씀.
+
+### 가중치는 논문을 그대로 베끼지 않고 우리 구조에 맞춤 (사용자 판단)
+
+- 우리 구조에는 `r_orient`도 `r_T`도 없고, `cube_lift`가 `r_T` 자리를 대신함.
+- 에피소드당 실제 기여량을 계산해서 비율을 잡음:
+- `finger_cage_reach` (차분, `0.3`): `0.6m / 0.5 x 0.3 x 0.4` = 약 `0.14`.
+- `palm_facing` (차분, `1.0`): `1.0 x 1.0 x 0.4` = 약 `0.40`.
+- `finger_cage_hold` (절대, `1.0`): `0.6 x 1.0 x 0.4 x 20 step` = 약 `4.8`.
+- `cube_lift` (절대, `3.0`): `0.5 x 3.0 x 0.4 x 20 step` = 약 `12.0`.
+- `arm_manipulability` (절대 페널티, `1.0`): `0` (정상 자세) ~ `-8` (특이점).
+- `action_rate`: 약 `-0.2`.
+- **차분형은 한 번만 지급되므로(telescoping) 절대형과 규모가 근본적으로 다름.**
+- `reach`와 `palm_facing`이 "유도"(차분, 1회), `hold`와 `cube_lift`가 "유지/달성"(절대, 매 step) 역할임.
+- `palm_facing`을 `reach`와 같은 급으로 두고 `hold`/`lift`보다 한 단계 아래로 배치함.
+
+### 최종 reward (6개)
+
+- `finger_cage_reach`: 차분, `0.3`.
+- `palm_facing`: **차분**, `1.0`.
+- `finger_cage_hold`: 절대, `1.0`.
+- `cube_lift`: 절대, `3.0`.
+- `arm_manipulability`: 절대 페널티, `1.0`.
+- `action_rate`: `-0.0003`.
+- action shape 18, observation shape 57 불변.
+- `py_compile` 통과, smoke test 통과.
+- 검증: `Episode_Reward_Raw/palm_facing = 0.0008` (차분), `Metrics/cube_final/palm_facing = 0.0170` (절대). 분리 확인됨.
+
+### 교훈 (중요)
+
+- **절대형 reward는 "그 상태를 유지하는 것"에 매 step 지급됨. 유지가 쉬우면 반드시 farming당함.**
+- **차분형 reward는 "그 상태로 가는 것"에만 지급됨. 도달 후에는 0이므로 farming 불가.**
+- 논문이 `r_hold` 하나만 절대형으로 둔 것은 우연이 아님. **hold는 "유지"가 목적이므로 절대형이 맞고, 나머지는 전부 "유도"이므로 차분형이어야 함.**
+- 새 reward를 넣을 때 **"이건 유도인가 유지인가"**를 먼저 물을 것. 유도면 차분, 유지면 절대.
+
+## 2026-07-13 작업공간 측정: 큐브 위치가 "가능하지만 찾기 어려운" 지점임
+
+### 사용자 지적
+
+- GUI에서 팔이 접힌 것을 보고 "큐브가 베이스에 너무 가까운 것 아닌가", "x쪽으로 더 빼야 학습이 빠를 것 같다"고 지적함.
+
+### 1차 측정 (최댓값만 봄) — 잘못된 결론
+
+- 바닥 위 위치별로 "손바닥을 아래로 향한 채" 낼 수 있는 **최고** manipulability를 측정함.
+- 현재 큐브 위치(베이스로부터 `0.485 m`): 최고 `0.1159`.
+- 바닥 전체 최적(`0.62~0.70 m`): 최고 `0.1251`.
+- **"93% 수준이니 문제 없다"고 결론냈으나 이것이 틀렸음.**
+
+### 2차 측정 (밀도를 봄) — 사용자가 옳았음
+
+- "가능한가(최댓값)"와 "찾기 쉬운가(평균/좋은자세 비율)"는 **다른 질문**임.
+
+```text
+거리            최고 manip    평균 manip    manip>0.08 비율
+0.46~0.54 m      0.1159       0.0447          11.9%    <- 현재 큐브
+0.54~0.62 m      0.1229       0.0468          14.8%
+0.62~0.70 m      0.1251       0.0585          22.6%
+0.70~0.78 m      0.1243       0.0666          34.2%    <- 3배 쉬움
+```
+
+- **최댓값은 비슷하지만(`0.116` vs `0.125`), 좋은 자세를 만날 확률이 3배 차이남** (`11.9%` -> `34.2%`).
+- 평균 manipulability도 `0.045` -> `0.067`로 1.5배임.
+- **"가능하지만 찾기 어렵다"**가 정확한 진단임. 사용자 직관이 맞았음.
+
+### 그럼에도 이번 run은 유지하기로 함
+
+- `3배`는 **무작위 탐색 기준**임. 우리는 `arm_manipulability` (r_MP) 페널티가 있어 **경사를 타고 올라감.**
+- 실제로 현재 run에서 manipulability가 `0.0527`에 유지됨 (이전 `0.0144`에서 4배 개선). r_MP가 작동 중임.
+- `11.9%`는 4096 env x 20 step 기준으로 매 iteration마다 수천 번 마주치는 확률임. 희귀하지 않음.
+- 재시작하면 진행 중인 run을 버려야 함. 이번 run의 목적은 `r_MP` + 차분형 `palm_facing`의 효과 확인임.
+- **한 번에 하나씩** 원칙 유지.
+
+### 다음 run 권장 사항
+
+- 큐브 위치를 `x`쪽으로 이동: `(0.45, -0.18, 0.03)` -> `(0.62, -0.18, 0.03)`.
+- 베이스로부터 `0.485 m` -> `0.646 m`. 좋은 자세 비율 `11.9%` -> `22.6%`.
+- **공짜로 밀도 2배를 얻음.** 논문도 "objects are spawned such that at least 75% of their bounding box is in the manipulation workspace"라고 명시함.
+- 이번 run이 manipulability 부족으로 정체하면(`0.053`에서 안 오르고 파지 실패) 그때가 옮길 명분임.
+
+### 교훈
+
+- **"가능한가"와 "찾기 쉬운가"는 다른 질문임.** 최댓값만 보면 안 되고 **분포(평균/비율)**를 봐야 함.
+- 학습 속도를 논할 때는 **최적해의 존재**가 아니라 **최적해의 밀도**가 중요함.
+
+---
+
+## 2026-07-13 [결정적] 제어 안 되는 약지/새끼가 큐브를 쳐내고 있었음
+
+### 사용자 영상 관찰 (둘 다 정확했음)
+- "손이 cube를 밀어버리고 swing out 현상이 벌어짐"
+- "충돌 때문에 팔이 뒤로 튕겨져 나갔다가 다시 접근하는 걸 반복. 손바닥이 확실히 더 돌지 않아서
+  새끼랑 약지손가락이 자꾸 접촉을 발생시킴"
+
+### 지표 확증 (`2026-07-13_11-49-57`, 181 iter)
+```
+                   iter 0     60     120     180
+cube_displacement  0.003  0.024  0.046  0.125   ← 큐브를 12.5cm 밀어냄
+cage_sdf_mean      0.590  0.496  0.455  0.487   ← 120에서 바닥 찍고 다시 멀어짐
+MAX cage_sdf_mean  0.784  0.813  0.773  0.944   ← 에피소드 중 94cm까지 벌어짐 (튕겨나감)
+cage_inside_frac   0      0      0      0
+```
+
+### 원인: 액추에이터 ≠ 액션
+```python
+액추에이터  finger[1-5]_joint[1-4]  stiffness=20   ← 5개 손가락 전부 구동
+초기 자세   finger[1-5]_joint[1-4] = 0.0           ← 전부 쫙 편 상태
+액션        finger[1-3]_joint[1-4]                 ← 정책은 3개만 제어
+```
+`finger4`(약지)/`finger5`(새끼)는 **제어 불가 + 편 자세에 뻣뻣하게 고정 + 콜리전만 켜짐 + cage에도 미포함.**
+
+**초기 자세 손끝 x좌표 (결정적 증거):**
+```
+palm 0.660 | 검지 0.825 | 중지 0.837 | 약지 0.841(제어X) | 새끼 0.838(제어X)
+```
+**제어 못 하는 두 손가락이 손에서 제일 앞으로 튀어나와 있었음.** 접근하면 무조건 먼저 큐브를 치고,
+stiffness=20으로 버티며 밀어내고, 반작용이 팔을 튕겨냄.
+
+### 수정 — `grasp/indy_wuji/env_cfg.py`
+```python
+joint_pos = self.scene.robot.init_state.joint_pos
+joint_pos.pop("finger[1-5]_joint[1-4]", None)   # 필수: 안 지우면 정규식 중복 매칭 ValueError
+joint_pos.update({
+    "joint1": -0.45, "joint2": -1.85, "joint4": 1.20,
+    "finger[1-3]_joint[1-4]": 0.0,
+    "finger[4-5]_joint1": 1.20,   # 한계 +1.636
+    "finger[4-5]_joint2": 0.0,    # 벌림 중립
+    "finger[4-5]_joint3": 1.20,   # 한계 +1.627
+    "finger[4-5]_joint4": 1.20,   # 한계 +1.627
+})
+```
+액션에 없는 관절은 액추에이터가 `default_joint_pos`를 목표로 유지 → **접힌 채 굳음.**
+3지 파지 자세이므로 물리적으로 정당하고, **action dim은 18D 그대로.**
+
+### 손가락 관절 한계 (측정값)
+```
+finger1_joint1 [-0.045,+1.651]  finger[2-5]_joint1 [-0.327,+1.636]  (굽힘)
+finger1_joint2 [-0.166,+0.934]  finger[2-5]_joint2 [-0.495,+0.495]  (벌림)
+finger[1-5]_joint3 [-0.493,+1.627]   finger[1-5]_joint4 [-0.493,+1.627]  (굽힘)
+```
+
+---
+
+## 2026-07-13 두 run 비교 — 차분형 palm_facing 수정은 실제로 먹혔음
+
+| | 07-12_20-11-57 | 07-13_11-49-57 |
+|---|---|---|
+| palm_facing | **절대형** w=0.5 | **차분형** w=1.0 |
+| arm_manipulability | 없음 | w=1.0 |
+| 학습량 | **1809 iter** | 181 iter |
+| cage_sdf_mean | **0.312 정체** | 0.487 (진행 중) |
+| cube_displacement | **0.0022 = 큐브를 한 번도 안 건드림** | 0.125 |
+| finger_cage_hold | **0 (내내)** | 0 |
+
+- **이전 run은 1809 iter 동안 큐브 근처에도 못 갔음** (31cm 밖 standoff, palm_facing만 0.995 farming)
+- **지금 run의 displacement=0.125는 "드디어 닿았다"는 증거** → 차분형 수정 성공
+- 즉 **후퇴가 아니라 전진.** 닿는 순간 약지/새끼 버그가 터질 뿐.
+
+---
+
+## 2026-07-13 커리큘럼 러닝 판단 — "아직 논할 단계가 아님"
+
+**사용자 질문**: "흠 아니면 진짜로 curriculum learning 을 해야되려나"
+
+**답: 아니오. 지금 `hold=0`은 탐색 문제가 아니라 물리적 불가능임.**
+- 제어 못 하는 손가락이 큐브를 쳐내는 한 어떤 정책도 cage를 못 만듦
+- 논문 커리큘럼(물체를 손 5cm 앞에 스폰)을 지금 적용하면 **더 나빠짐** — 더 가까우니 더 세게 침
+- **커리큘럼은 이 버그를 못 고침**
+
+**버그 수정 후 재판단할 것.** 판단 기준: `cage_inside_frac > 0`이 뜨는가.
+- 뜨면 → 가중치 재조정(`approach ≪ hold ≪ lift`) 후 Phase 2
+- 안 뜨면 → **그때 커리큘럼 도입** (논문: 없으면 ~50%±큰분산, 있으면 97%)
+
+---
+
+## 2026-07-13 교훈 (중요)
+
+- **"제어하지 않는 관절" ≠ "존재하지 않는 관절".**
+  액션 dim을 줄이려고 관절을 액션에서 빼도 **액추에이터·콜리전·질량은 그대로 남음.**
+  빼려면 **초기 자세도 같이 설계**해야 함 (안 그러면 뻣뻣한 장애물이 됨).
+- **지표는 "무엇이" 잘못됐는지 알려주지만 "왜"는 못 알려줌.**
+  `cube_displacement` 급증은 지표로 보였지만, 원인(약지/새끼)은 **영상을 본 사용자가 짚었고 그게 맞았음.**
+  → **지표 + 영상 둘 다 필요.**
+
+## 2026-07-13 Added `Indy-Wuji-Cube-Grasp-Easy`
+
+- Added a separate curriculum task: `Indy-Wuji-Cube-Grasp-Easy`.
+- Kept the original hard task `Indy-Wuji-Cube-Grasp`.
+- Implemented the easy task as a subclass of `Indy7WujiCubeGraspEnvCfg`.
+- Kept action/observation/reward/model shapes identical to hard task.
+- Changed only cube initial/reset distribution for the easy task.
+- Easy cube initial position is `(0.74, -0.18, 0.03)`.
+- Easy cube reset range is narrow: `x/y = +/-0.015`, `z = 0`.
+- Registered the new gym id in `grasp/indy_wuji/__init__.py`.
+- Intended flow:
+  - train `Indy-Wuji-Cube-Grasp-Easy` first.
+  - check that `finger_cage_hold` and `cage_inside_frac` become non-zero.
+  - resume the checkpoint on `Indy-Wuji-Cube-Grasp`.
+- Use `--run_name easy_close_start` for the easy run so the later hard resume command can target the easy checkpoint explicitly.
+- Smoke test passed with `--num_envs 1 --max_iterations 1`.
+- Verified Action Manager shape `18`, policy observation shape `57`, and 6 active reward terms.
+
+## 2026-07-13 Softened active hand/cube contact response
+
+- User video showed that after folding ring/little, the arm still bounced when the hand/palm approached the cube.
+- Updated/confirmed the root cause hypothesis from ring/little-only collision to excessive contact response on active hand/palm collision.
+- Active `INDY7_WUJI_RIGHT_CFG` now uses:
+  - `max_depenetration_velocity=5.0`.
+  - `max_contact_impulse=100.0`.
+- Previous active values were effectively unbounded:
+  - `max_depenetration_velocity=1000.0`.
+  - `max_contact_impulse=1e32`.
+- Those previous values could make PhysX resolve a small hand/cube penetration with a large impulse, kicking the arm away.
+- This change does not alter action/observation/reward/model shapes.
+- Existing checkpoints can be loaded for play comparison or resumed for adaptation.
+- Because the physics changed, final performance should be judged after resume adaptation or a fresh/easy-curriculum run.
+
+---
+
+## 2026-07-13 [진짜 원인] action space 설계 오류 — 정책이 발산하고 있었음
+
+### 사수님 지적이 사건을 해결함
+> "튀었던 게 action이 실제로 저렇게 된 거면 학습이 잘못된 거다. 모르는 거니까 action을 찍어봐라"
+
+**앞선 물리 진단(바닥 슬램/튕김)은 전부 틀렸음.** 손의 z 높이·관절 속도·큐브 이동량 같은 **결과**만
+보고 "물리 반작용"이라 단정했으나, 그건 가정이었지 측정이 아니었음.
+
+### 측정 (`model_350`, decimation 24 재현)
+```
+step   |a|평균  |Δa|최대   추종오차   팔속도   손최저z
+   2    1.415   3.033     0.600     0.73     1.73 cm
+   3    1.601   9.311     0.916     2.77   106.38 cm  ← 106cm로 솟구침
+   5    1.090   3.379     0.452     1.35    15.02 cm
+   6    1.928   3.066     0.785     0.62     0.42 cm  ← 바닥
+  ... 주기 5~6 step 무한 반복. 팔속도가 velocity_limit(2.775)에 딱 붙어 있음
+```
+
+### 판정: 물리 튕김이 아니라 **정책이 팔을 휘두른 것**
+- `|a|` 평균 1.5 — action 범위가 `[-1,1]`인데 **정의 범위를 벗어남**
+- `|Δa|` 최대 9.66 — `scale=0.2`이므로 관절 목표가 한 step에 **1.93 rad(110°) 점프**
+- 팔속도가 정확히 velocity_limit → 튕김이면 충돌 후 잦아들어야 하는데 **일정 주기로 최대속도 왕복**
+- 추종오차가 큰 것도 물리 탓이 아니라 **도달 불가능한 목표를 명령해서**임
+  (0.4초에 팔이 갈 수 있는 최대 1.11 rad < 명령 1.93 rad)
+
+### 근본 원인: `clip_actions` 미설정 + `scale` 과소
+```python
+# rsl_rl_cfg.py 에 clip_actions 자체가 없었음 -> None -> 상한 없음
+# scripts/rsl_rl/{train,play}.py: RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
+```
+```
+scale=0.2, |a|=1  ->  관절이 default에서 0.2 rad(11°)만 움직임
+손은 큐브까지 55cm를 내려가야 함  ->  |a|=1로는 절대 도달 불가
+-> 정책이 살려고 |a|를 5, 10까지 밀어냄  ->  상한이 없으니 발산
+```
+**둘 중 하나만 고치면 안 됨:** clip만 1.0으로 걸면 관절이 ±11°만 움직여 큐브에 영영 못 감.
+scale만 키우면 여전히 상한이 없어 발산.
+
+### 수정 — 도달성 먼저 검증 (4096 x 8회 샘플링, default ± s 범위)
+```
+ s (rad)  |  손끝 3개가 전부 큐브 표면에 닿는 최소 거리
+    0.5   |   3.63 cm   ← 도달 불가! scale 0.5면 큐브를 못 잡음
+    1.0   |   0.20 cm   ← 도달 가능. 최적
+    1.5   |   0.45 cm
+    2.0   |   1.94 cm   ← 넓힐수록 오히려 나빠짐 (탐색 공간만 커짐)
+```
+```python
+scale = 1.0          # grasp/indy_wuji/env_cfg.py.  관절 목표 = default ± 1.0 rad
+clip_actions = 1.0   # learning/rsl_rl_cfg.py.  없었음 — 발산의 직접 원인
+action_rate = -0.005 # -0.0003이었음. 발광 비용이 접근 보상의 4%라 사실상 공짜였음
+```
+
+---
+
+## 2026-07-13 제어 주파수 / reward 스케일 재조정
+
+### 최종 설정 (재학습 필요, `--resume` 불가)
+```
+sim.dt = 1/60,  decimation = 2  ->  30 Hz,  240 step/episode,  8초
+action: scale 1.0, clip_actions 1.0, 18D
+
+finger_cage_reach   차분   25.0   최대 +1.0     <- dt 보정(x12) + 순서 교정
+finger_cage_hold    절대    1.0   최대 +4.0
+cube_lift           절대    3.0   최대 +6~12    <- 들고 있던 "시간"에 비례
+palm_facing         차분    9.0   최대 +0.29    <- reach보다 싸게
+arm_manipulability  페널티  1.0
+hand_floor          페널티  0.5   최악 -2.0     <- 신규
+action_rate                -0.005               <- 17배 강화
+
+순서:  palm(0.29) < reach(1.0) < hold(4.0) < lift(6~12)   <- 논문 논리
+```
+
+### `--resume` 불가인 이유
+`scale` 0.2->1.0 (같은 출력이 5배 큰 움직임), `clip_actions` 추가 (기존 |a|~1.5가 전부 잘림),
+`decimation` 24->2 (dynamics 변화), reward 재조정 (가치함수 무효화).
+
+### **reward manager가 `raw * weight * dt`로 누적함 — 중대**
+```
+절대형 (hold, lift, hand_floor, manip)  에피소드 합 = 평균값 x 8초   -> decimation 무관, 불변
+차분형 (reach, palm_facing)             에피소드 합 = dt x 총변화량  -> dt에 비례
+```
+**decimation을 바꾸면 차분형 weight를 반드시 같이 바꿔야 함.** dt 0.4 -> 1/30이면 12배 약해짐.
+
+### iteration 숫자를 이전 run과 비교하지 말 것
+```
+iteration당 시뮬 시간 = num_steps_per_env x decimation x sim.dt
+이전: 24 x 24 / 60 = 9.60초/iter
+지금: 24 x  2 / 60 = 0.80초/iter   ← 경험량이 12배 줄어듦
+```
+5000 iter는 이전 run(1809 iter)의 **23%**에 불과함. `--max_iterations 25000` 이상 권장.
+
+### sim.dt 판단 — 지금은 1/60 유지
+```
+                   physics dt  decimation  제어 Hz
+Allegro / in-hand    1/120         4        30 Hz
+ShadowHand           1/120        2~3     40~60 Hz
+Lift-Cube-Franka     1/100         2        50 Hz
+사수님                1/200        20        10 Hz   (실기 구조: PD 200Hz + 정책 10Hz)
+우리                  1/60          2        30 Hz
+```
+- 제어 30 Hz는 예제와 일치 (Allegro/in-hand와 동일)
+- **physics 1/60은 예제 중 제일 성김.** 손끝 0.5m/s면 물리 1 step에 8.3mm 이동 -> 큐브(60mm)를
+  8.3mm 파고든 뒤에야 솔버가 알아챔
+- **지금 안 올리는 이유**: 팔이 튄 원인이 물리가 아니라 정책 발산이었음이 밝혀졌으므로 근거가 약함.
+  실제로 손가락이 큐브에 접촉하기 시작한 뒤 침투 깊이를 재보고 판단할 것.
+- 올릴 땐 decimation도 같이 올려야 30 Hz 유지 (예: 1/120 + dec 4)
+
+### 비용 구조 (반드시 기억)
+```
+sim.dt      -> GPU 비용에 정확히 비례.  1/60 -> 1/120 이면 물리 계산 2배
+decimation  -> 물리 비용과 무관.  정책 forward만 늘어남 (MLP라 거의 공짜)
+```
+
+### episode_length_s = 8초 판단
+참고: Lift-Cube 5초(단, Franka는 테이블 위 큐브 바로 앞에서 시작), ShadowHand/Allegro 10초, in-hand 20초.
+우리는 손이 55cm를 내려가야 하므로 더 필요함. 예산: 접근 2~3초 + 정렬 1~2초 + 파지 0.5초 + 들기 1초
+= 5~6초, 남는 2~3초가 "들고 버티는 시간". **hold/lift는 절대형이라 그 시간에 비례해 쌓임.**
+늘려야 할지는 `Metrics/cube_min/cage_sdf_mean`(에피소드 중 최근접)으로 판단할 것.
+
+---
+
+## 2026-07-13 새 진단 도구
+
+### TensorBoard (모든 run에서 자동)
+```
+Metrics/cube_max/action_delta       |a_t - a_{t-1}| 최대.  clip 후 상한 2.0 (이전 9.66)
+Metrics/cube_max/action_track_err   |관절목표 - 관절실제| 최대 [rad]
+```
+**`cube_max`를 볼 것** — 튀는 건 순간적 사건이라 평균/최종값엔 안 잡히고 최댓값에만 잡힘.
+
+### play.py
+```bash
+python scripts/rsl_rl/play.py --task Indy-Wuji-Cube-Grasp --num_envs 32 \
+  --checkpoint <path>.pt --print_action
+```
+
+### 판정 규칙
+```
+추종오차 작음(<0.1) + |Δa| 큼(>0.3)  ->  팔이 명령대로 발광. 학습/보상 문제
+추종오차 큼(>0.3) 단독                ->  물리가 명령을 이김. dt/decimation 문제
+   단, 명령 자체가 도달 불가능하면 추종오차도 커짐 -> |Δa|를 반드시 같이 볼 것
+```
+
+---
+
+## 2026-07-13 교훈 (가장 중요)
+
+- **"결과"를 보고 원인을 단정하지 말 것.** 손이 87cm 솟구친 걸 보고 물리 튕김이라 단정했으나
+  **정책이 그렇게 명령한 것**이었음. **제어 입력(action)을 안 보고 상태(state)만 봤기 때문.**
+- **증거는 이미 화면에 있었음.** `Episode_Reward_Raw/action_rate = 167` (= `|Δa| ≈ 0.68`)이
+  TensorBoard에 계속 찍히고 있었음. **정책 발산의 명백한 증거를 보고도 흘려봤음.**
+- **`action_rate` reward는 공짜 진단 도구임.** 별도 코드 없이 "정책이 명령을 흔드나"를 알려줌.
+- **잘못된 진단 위에 쌓은 수정은 헛수고임.** 약지/새끼 접기, 바닥 페널티, decimation은 전부
+  증상을 건드린 것. action space를 고치지 않았으면 무엇도 해결되지 않았을 것.
+- **`scale`과 `clip_actions`는 반드시 같이 설계할 것.** scale이 작으면 정책이 |a|를 키워야 하고,
+  clip이 없으면 그게 발산으로 이어짐. 하나만 보면 반드시 틀림.
+
+---
+
+## 2026-07-13 action space 수정 후 첫 학습 — 역사상 최초로 hold가 켜짐
+
+### `2026-07-13_17-44-24` (228 iter)
+```
+                  iter 0      45      91     136     182     228
+|Δa| 최대         0.87    1.12    1.08    0.99    0.94    0.90   ← 발산 해결 (이전 9.66)
+cage_sdf          0.626   0.171   0.125   0.118   0.101   0.096  ← 손이 드디어 큐브에 도달
+cage_inside       0.000   0.0008  0.0066  0.0094  0.0229  0.0599 ← 최초로 0을 벗어남
+hold raw          0.000   0.0012  0.0051  0.0167  0.0298  0.0617 ← 최초
+opposition       -0.976  -0.731  -0.577  -0.598  -0.527  -0.442  ← 개선 중
+mean_reward      -0.122   0.058   0.273   0.432   0.616   0.840
+```
+**이전 run은 1809 iter 돌고도 cage_sdf 0.31에서 정체. 지금 228 iter만에 0.096.**
+**`hold`/`cage_inside`가 이 프로젝트 역사상 처음으로 0이 아님.**
+
+**주의: `decimation` 24 -> 2로 iteration당 경험량이 12배 줄었음. 228 iter = 예전 기준 약 19 iter.**
+
+### 남은 문제 — "감싸기"가 아니라 "엄지 갖다 대기"를 학습 중
+사용자 관찰(스크린샷): 손이 큐브 **옆**에 있고 엄지만 큐브를 향함. 나머지 손가락은 반대편으로 말림.
+```
+thumb_middle_opposition = -0.44   ← 음수 = 엄지와 중지가 큐브의 "같은 쪽"
+엄지-큐브표면 = 0.080 m            ← 엄지만 가까움
+cage_inside_frac = 0.06            ← 가상점의 6%만 큐브 안
+cube_displacement = 0.348          ← 큐브를 35cm 밀어냄. 줄지 않음
+```
+보상 분해: `reach 47.6%` / `hold 41.6%` / `palm 10.2%` / `action_rate -20.8%` / `hand_floor -16.4%`
+
+**원인**: cage 가상점이 **엄지끝 -> 손가락** 선분 위 `0.25/0.50/0.75` 지점인데, **`0.25` 지점은 엄지 바로 옆**.
+엄지가 큐브에 닿으면 그 점들이 **공짜로** 가까워짐. **"나머지 손가락이 큐브 반대편에 있어야 한다"는
+보상이 없음.** 그래서 `reach`(47.6%)를 만족시키는 가장 싼 방법이 "엄지만 갖다 대기"가 됨.
+
+### 판단: 더 돌린다 (최소 2000~3000 iter)
+지표가 전부 올바른 방향으로 **가속** 중. 228 iter는 매우 초반.
+
+### 유일한 경고 신호
+```
+cube_displacement   0.25 -> 0.18 -> 0.31 -> 0.31 -> 0.348   ← 안 줄고 있음
+```
+계속 0.3 이상이면 "밀면서 쫓아가는" 패턴에 갇힌 것.
+그때 `opposition`을 reward에 직접 넣을 것 (이미 metric으로 재고 있으므로 3줄).
+
+### 판정 기준
+```
+thumb_middle_opposition  ->  양수가 되어야 함  (지금 -0.44)
+cage_inside_frac         ->  계속 올라야 함     (지금 0.06)
+cube_displacement        ->  줄어야 함          (지금 0.35) <- 관건
+```
+
+### 부수 확인
+- reward는 큐브의 실제 pose를 해석적 SDF로 씀. **인식이 없으므로 손가락을 큐브로 착각할 수 없음.**
+- **힘 부족이 아님.** 힘 문제라면 "잡았는데 놓친다"가 나와야 하는데 `cage_inside=0.06`이라 못 잡음.
+
+### `scripts/diag/` 삭제
+`play.py --print_action`과 중복이라 제거. action 진단 코드는 `play.py`와 `managers.py` 두 곳뿐.
+
+---
+
+## 2026-07-13 `palm_facing` weight 9 → 60 — 정책이 손바닥 방향을 팔아먹고 있었음
+
+### 사용자 관찰 (스크린샷) + 지표 확증 (`2026-07-13_17-44-24`, 795 iter)
+```
+                 iter 0     159     318     477     636     795
+palm_facing     0.032   0.597   0.538   0.457   0.434   0.408   ← 정점 찍고 역주행!
+cage_inside     0.000   0.024   0.137   0.240   0.191   0.203   ← 상승
+hold raw        0.000   0.020   0.101   0.125   0.106   0.127   ← 상승
+큐브 이동         0.002   0.277   0.415   0.366   0.343   0.452   ← 45cm. 악화
+```
+**`cage_inside`가 오르는 동안 `palm_facing`이 내려감.** 손을 옆으로 뉘여 엄지-손가락 선분만
+큐브에 꽂는 자세가 `hold`를 더 싸게 벌기 때문. 그 과정에서 큐브를 45cm 밀어냄.
+
+### 원인: 절대형 vs 차분형의 구조적 불균형
+보상 분해: `hold 48.6%` / `reach 45.0%` / `palm 5.8%` / `hand_floor -16.3%`
+
+**최대 획득량** (Episode_Reward_Raw = 에피소드 합 / 8초):
+```
+hold  (절대 1.0)  0.50    ← 절대형은 "유지한 시간"만큼 8초 내내 쌓임
+reach (차분 25)   0.13
+palm  (차분  9)   0.036   ← 차분형은 딱 한 번.  hold의 1/14
+```
+**weight 9로는 구조적으로 hold를 이길 수 없었음.**
+
+논문도 orientation을 hold의 20배로 둠 (`25·r_hold` vs `500·r_orient`). 우리는 반대로 1/14였음.
+
+### 수정
+```python
+palm_facing weight 9.0 -> 60.0     # 최대 획득량 0.036 -> 0.24 (hold 0.50의 절반)
+```
+**farming 위험 없음**: 차분형이라 총액이 `facing(final) - facing(reset)`으로 고정.
+weight를 키워도 반복 수확 불가. `hold`(0.50)가 여전히 더 큼.
+
+**절대형 전환은 거부.** 예전 절대형 palm_facing(w=0.5)이 전체 보상의 98%를 먹고
+31cm 밖에서 정체시킨 전력이 있음.
+
+**재학습 필요** (`--resume` 불가).
+
+---
+
+## 2026-07-13 `palm_facing`이 파지와 무관한 축(손바닥 법선)을 재고 있었음
+
+### 발단: palm_facing weight 60이 재앙 (`2026-07-13_18-47-02`, 1342 iter)
+```
+palm_facing  0.032 -> 0.983 (즉시 만점, 유지)
+cage_sdf     0.626 -> 0.121 (12cm 정체)
+cage_inside  0.000 -> 0.000 (완전 붕괴!  weight 9였을 땐 0.20)
+hold raw     0.000 -> 0.000
+큐브 이동      0.002 -> 0.003 (큐브를 아예 안 건드림)
+```
+보상 분해: `palm_facing 70.1%` / `reach 29.9%` / `hold 0.0%`
+사용자: "왜 접근을 더 못하지? palm_facing이 막는 건가" -> **정확했음.**
+
+### 1차 진단 (틀렸음): "(1,0,0)이 손바닥 법선이 아니다"
+cage 형성 자세들의 큐브 방향이 (0.19, 0.28, 0.94)라 "(1,0,0)은 엉뚱한 축"이라 결론냄.
+**-> 사용자 반박: "(0,0,1)이 진짜 손바닥 법선 맞아? 확인해봐"**
+
+### 직접 기하 측정 — **(1,0,0)이 손바닥 법선이 맞았음**
+```
+손바닥 평면 법선 (손가락 뿌리 5개의 평면) = (+0.965, -0.008, +0.262)  ~= (1,0,0)  O
+손가락 오므림 방향                       = (+0.700, -0.482, -0.527)   -> (1,0,0)과 +0.700
+```
+
+### 진짜 구조: 손바닥 법선과 파지 개구부는 **서로 다른 축** (65도 어긋남)
+손끝의 palm_link 로컬 좌표:
+```
+              편 상태                      오므린 상태
+엄지   (+0.007, +0.123, +0.062)     (+0.059, -0.002, +0.092)
+검지   (-0.011, +0.046, +0.195)     (+0.069, +0.013, +0.100)
+중지   (-0.020, +0.007, +0.193)     (+0.066, +0.007, +0.099)
+```
+- 손가락은 **+z로 뻗음**. 오므리면 셋이 **(0.065, 0.006, 0.097) 한 점으로 모임**
+- -> 물체가 들어갈 자리는 그 "사이" = 약 (0.25, 0.25, 0.94)
+- cage가 형성된 자세들의 큐브 방향 (0.19, 0.28, 0.94)와 **독립적으로 일치**
+
+| | 방향 (palm 로컬) | 의미 |
+|---|---|---|
+| 손바닥 법선 | (0.97, 0.00, 0.26) | 손바닥이 향하는 쪽, 손가락이 굽는 쪽 |
+| **파지 개구부** | **(0.19, 0.28, 0.94)** | **물체가 엄지-손가락 사이로 들어가는 공간** |
+
+**파지의 조건은 "손바닥이 향하는가"가 아니라 "물체가 손가락 사이에 들어갈 수 있는가"임.**
+
+### 검증 (무작위 자세 102,400개)
+```
+facing 정의                     hold 상관계수   face>0.7&hold>0.1   face>0.9시 hold최대
+(1,0,0) 손바닥 법선                  +0.003            0개              0.0000
+(0.19,0.28,0.94) 고정 개구부         +0.105           48개              0.6381
+실시간 palm->손끝3개 중심              +0.103           48개              0.6381
+실시간 palm->파지중심                 +0.104           48개              0.6381
+```
+
+### 사용자 질문: "법선을 고정해도 되나? 매번 바뀔 텐데"
+1. **팔이 움직여도 안 바뀜** — palm_link 로컬 벡터이고 `quat_apply`로 매 step 월드 변환. 문제없음.
+2. **손가락 자세에 따라선 바뀔 수 있으나, 실측 결과 고정과 실시간이 사실상 동일**
+   (상관 +0.105 vs +0.103, 양립 48개 동일). **고정 벡터로 충분함.**
+
+### 수정
+```python
+palm_normal_b:      (1,0,0) -> (0.19, 0.28, 0.94)   # reward + metric 둘 다. 정규화도 추가
+palm_facing weight:  60.0   -> 20.0                 # 최대 0.081 < reach 0.13
+```
+
+### **`palm_facing`은 약한 신호임 (상관계수 +0.105)**
+"손이 큐브 쪽을 향한다"가 "파지 성공"을 거의 예측하지 못함.
+- **weight를 올려서 뭔가 되기를 기대하면 안 됨.** 60으로 올렸다가 학습을 죽인 게 증거
+- **진짜 일은 `hold`가 함.** palm_facing은 초반 shaping 보조 역할
+
+### weight 규칙
+```
+palm 최대 획득량 < reach 최대 획득량   <- 넘기면 standoff
+weight 60 -> palm 0.24 > reach 0.13  -> standoff (실측)
+weight 20 -> palm 0.081 < reach 0.13 -> 안전
+```
+
+### 교훈
+- **상관관계가 있다고 그게 정의는 아님.** "hold와 상관있는 축"을 찾아놓고 "그게 손바닥 법선"이라
+  단정했으나, 손바닥 법선은 따로 있었고 그 축은 "파지 개구부"였음.
+  **사용자가 "진짜 법선 맞아?"라고 물어서 잡힘.**
+- **기하는 기하로 측정할 것.** 손바닥 법선은 손가락 뿌리 평면의 법선으로, 파지 개구부는 손끝의
+  편/오므린 상태 중간으로 — 둘 다 5분이면 직접 잴 수 있었음.
+- **"reward가 목표와 상관있는가"를 먼저 잴 것.** palm_facing의 hold 상관이 +0.105로 약하다는 걸
+  알았다면 weight를 만지작거리며 시간을 쓰지 않았을 것.
+
+---
+
+## 2026-07-13 접근 순서 강제 — `reach`를 `facing`으로 게이팅 (B안)
+
+### 사용자 관찰
+> "손바닥이 하늘을 보고 시작하는데 바로 큐브로 손이 붙고, 손을 돌리려니 큐브에 막혀서 못 돌림"
+> "접근 속도가 너무 빨라서 손 돌릴 시간도 없이 접근해버려서 그런 거 같음"
+
+### 왜 서두르나 — 보상이 서두르라고 시킴
+```
+reach  차분형 -> 속도와 무관하게 총액 동일. 서둘러도 손해 없음
+hold   절대형 -> "잡고 있던 시간"에 비례해 쌓임 -> 일찍 도착할수록 이득
+```
+**속도 페널티로는 못 고침** (틀린 방향으로 "천천히" 도착할 뿐). **속도는 증상, 원인은 순서.**
+
+### 수정 (rewards.py, ObjectCageProgressReward)
+```python
+reward = clamp(progress / distance_max, -1, 1)
+if palm_cfg is not None:
+    gate = palm_facing_object(env, palm_cfg, object_cfg, palm_normal_b)
+    reward = reward * (gate_floor + (1 - gate_floor) * gate)   # gate_floor=0.0 -> 완전 차단
+```
+**"잘못된 순서"를 무가치하게 만듦.** 방향 틀린 채 달려들면 reach = 0.
+
+smoke test(15 iter): `palm_facing 0.001 -> 0.323`, `cage_sdf 0.584 -> 0.393`. 의도대로 작동.
+
+---
+
+## 2026-07-13 논문 원문 확인 — 논문은 게이팅을 안 함
+
+### 순서 강제 = 가중치 스케일링
+> "we scale the rewards according to their position in the sequence: **r_T >> r_orient >> r_hold >>
+> r_reach**. This reduces the probability that the policy gets **stuck in the local minima, created by
+> accumulating rewards for actions that are easier to achieve** compared to the following more complex
+> sub-tasks."
+
+실제값: `r_reach x1, r_hold x25, r_orient x500, r_T x5000` (단계마다 약 20배)
+
+### 논문은 목표 파지 자세를 앎 — 본질적 차이
+```
+r_grasp = r_hp + r_hr + lambda*r_hj   <- 전부 "주어진 목표 파지 g"를 향한 차분 보상
+```
+`r_hr`이 목표 회전으로 돌리기를 **직접** 보상 -> **게이팅 불필요.**
+**우리는 목표 파지가 없음. 게이팅이 r_hr의 대용품.**
+
+### 커리큘럼: close-start에서 r_man을 통째로 끔
+물체를 **손 5cm 앞**에, 팔은 **manipulability 높은 중립 자세**로. `r_man` 비활성. 성공률 50%까지.
+
+### 가상점: 논문은 엄지-중지만 6점 (사용자 추측 정확)
+> "if an object is contained between the middle finger and the thumb, it is also contained between
+> the index and ring fingers, **as defined by the hand topology**."
+
+**단 엄지의 50% 지분은 선분을 줄여도 안 바뀜** (엄지는 모든 선분의 시작점).
+논문 6점: 엄지 3.0 : 나머지 3.0.  우리 12점: 엄지 6.0 : 나머지 6.0. **동일.**
+
+---
+
+## 2026-07-13 최종 가중치 (논문 방향으로 한 단계)
+
+```
+항목                형태     weight   최대 획득량
+palm_facing         차분      8.0       0.033      <- 20 -> 8
+finger_cage_reach   차분     10.0       0.050      <- 25 -> 10.  x facing 게이트
+finger_cage_hold    절대      1.0       0.500
+cube_lift           절대      3.0       0.750
+arm_manipulability  페널티    1.0
+hand_floor          페널티    0.5
+action_rate                 -0.005
+
+순서: palm(0.033) < reach(0.050) < hold(0.500) < lift(0.750)
+hold / reach = 10.0     (이전 4.0,  논문 25)
+```
+
+**논문의 25를 바로 못 쓰는 이유:** 논문은 (a) `r_hp`라는 별도 접근 신호가 있고 (b) close-start 커리큘럼이
+있음. 우리는 둘 다 없어서 reach를 죽이면 **접근 신호 소멸 + hold는 가까워야 켜짐 = 닭-달걀.**
+
+**규칙: `palm 최대 < reach 최대`.** 넘기면 standoff (weight 60에서 palm 0.24 > reach 0.13 ->
+cage_inside 0.20 -> 0.000 붕괴 실측).
+
+### 다음: 젓가락은 논문대로
+젓가락은 목표 파지 자세가 정의되므로 `r_hp`/`r_hr`/`r_hj`/`r_T`를 전부 쓸 수 있음.
+그러면 **게이팅 없이 논문의 25/500/5000 스케일이 그대로 성립함.**
+
+---
+
+## 2026-07-13 게이팅 버그 — 차분형의 telescoping을 깨뜨림 (왕복 farming)
+
+### 증상 (`2026-07-13_21-22-25`, 394 iter)
+```
+iter                0      66     132     199     265     331     394
+palm_facing      0.002   0.425   0.819   0.735   0.570   0.454   0.420   ← 정점 후 역주행
+palm_facing MAX  0.005   0.515   0.988   0.994   0.990   0.993   0.996   ← 순간적으론 만점
+cage_sdf         0.626   0.470   0.129   0.194   0.287   0.364   0.413   ← 바닥 후 역주행
+reach raw        0.000   0.001   0.004   0.013   0.028   0.036   0.040   ← 계속 오름
+mean_reward     -0.062  -0.374   0.020   0.769   1.915   2.491   2.864   ← 계속 오름
+```
+**보상은 오르는데 지표는 나빠짐 = 허점을 찾았다는 신호.**
+
+### 원인: 게이트를 음수(후퇴)에도 곱했음
+```python
+reward = reward * gate      # gate in [0,1].  음수에도 곱하면...
+```
+```
+겨누고 다가감    +0.5 x 1.0 = +0.5
+안 겨누고 물러섬 -0.5 x 0.0 =  0     ← 페널티 소멸!
+```
+**"방향을 버리면 후퇴가 공짜"** -> `겨눔 -> 접근 -> 방향 버림 -> 공짜 후퇴` 왕복으로 reach 무한 수확.
+**차분형의 telescoping(총합 = sdf(reset) - sdf(final))이 깨진 것.**
+
+### 수정 (rewards.py, 한 줄)
+```python
+reward = torch.where(reward > 0.0, reward * gate, reward)
+```
+- 다가갈 때: 방향이 맞아야 보상 (순서 강제 유지)
+- 물러설 때: 방향과 무관하게 페널티 전액 (왕복 farming 차단)
+```
+왕복 1회:  이전 +0.50 + 0.00 = +0.50   |   수정 +0.50 - 0.50 = 0.00
+```
+
+### 교훈
+- **차분형에 곱셈 게이트를 걸 땐 반드시 부호를 나눌 것.** 음수에 곱하면 "페널티를 게이트로 지우는"
+  편법이 생기고 telescoping이 깨짐.
+- **"보상은 오르는데 지표는 나빠진다"가 보이면 무조건 허점이 있음.** 항상 이 신호를 볼 것.
+- **`cube_max`와 `cube_final`의 괴리도 신호임** (palm MAX 0.996 vs 최종 0.420 = 잠깐 만족시키고 버림).
+
+---
+
+## 2026-07-13 신규 task `Indy-Wuji-Chopsticks-Grasp` (직육면체 = 젓가락 프록시)
+
+```
+tasks/manipulation/functional_grasp/     <- 논문 방식(목표 파지 + orient + 커리큘럼) 폴더
+├── chopsticks_grasp_env_cfg.py          # ChopsticksGraspSceneCfg / ChopsticksGraspEnvCfg
+└── indy_wuji/
+    ├── __init__.py                      # Indy-Wuji-Chopsticks-Grasp / -close-start
+    ├── env_cfg.py
+    └── learning/rsl_rl_cfg.py           # experiment_name = "indy_wuji_chopsticks_grasp"
+```
+
+### 물체
+```python
+size = (0.03, 0.03, 0.16)        # 3cm x 3cm x 16cm 막대
+mass = 0.30 kg
+pos  = (0.62, -0.18, 0.015)      # 3cm 면으로 누움
+rot  = (0.70711, 0, 0.70711, 0)  # 긴 축을 월드 x로 눕힘
+```
+**긴 축이 있어서 `r_hr`/`r_orient`가 해석적으로 정의됨** (정육면체는 대칭이라 불가능).
+**누워 있으면 바로 못 잡음 -> 먼저 세워야 함 = pre-grasp manipulation.**
+
+### 현재: reward는 아직 CubeGraspRewardsCfg 공유 (half_extent만 override)
+
+### 다음 작업 순서
+```
+1. ChopsticksGraspRewardsCfg 분리
+2. 목표 파지 g = (hp, hr, hj) 정의    <- 나머지가 전부 여기 의존
+3. r_grasp = r_hp + r_hr + lambda*r_hj    4. r_orient    5. r_T
+6. 가중치 논문 그대로 (1/25/500/5000)      7. 게이팅 제거 (r_hr이 대신함)
+8. 커리큘럼 close-start (물체를 손 5cm 앞 + manip 높은 중립 자세 + r_man 끔)
+```
+
+### 사고 기록
+`functional_grasp`의 `rsl_rl_cfg.py`가 복사본이라 `experiment_name`이 `indy_wuji_cube_grasp`
+그대로였음 -> chopsticks smoke test가 **cube 학습 로그에 섞임.**
+**복사로 task를 만들 땐 `experiment_name`을 반드시 먼저 바꿀 것.**
+
+---
+
+## 2026-07-14 close-start 높이/받침면 수정
+
+- close-start 구조를 다시 확인함.
+- 기존 close-start은 큐브 `x/y`만 손 파지 중심 근처였고 `z`는 바닥 `0.03m`였음.
+- 손 최저/파지 중심 높이는 약 `0.53m`라 큐브 높이와 맞지 않았음.
+- `BASE_Z=0.50` 받침면을 추가함.
+- `{ENV_REGEX_NS}/Support` kinematic cuboid를 scene에 추가함.
+- cube 중심 높이는 `0.53m`임.
+- close-start cube 위치는 `(0.704, -0.279, 0.530)`임.
+- hard cube 위치는 `(0.850, 0.000, 0.530)`임.
+- `cube_lift`는 받침면 `surface_z=BASE_Z` 기준으로 계산함.
+- `cube_clearance` metric도 같은 기준으로 보정함.
+- `hand_floor` penalty도 같은 기준으로 보정함.
+- model shape는 변하지 않음. action `18`, observation `57` 유지함.
+- `python -m py_compile` 통과함.
+- `Indy-Wuji-Cube-Grasp --headless --num_envs 1 --max_iterations 1` smoke test 통과함.
+
+## 2026-07-14 close-start 파지 간극/방향 검증 정정
+
+- `palm_facing=0`과 `joint5` action 반경 축소는 초기 손-큐브 방향 정렬이 검증돼야만 성립함.
+- `/tmp/cube_grasp_probe.py`로 close-start reset 상태를 수치 확인함.
+- 기존 close-start cube `(0.704, -0.279, 0.430)`는 cage 중심에서 y로 약 `9cm` 벗어났음.
+- 기존 위치는 zero action 30 step만 해도 cube가 `(0.758, -0.220, 0.430)`으로 밀리고 `palm_facing`이 `0.838 -> 0.260`으로 깨짐.
+- close-start cube를 `(0.692, -0.369, 0.430)`으로 수정함.
+- 수정 후 reset `palm_facing=0.987`, zero action 30 step 뒤 `0.997`임.
+- 수정 후 `cage_center_to_cube` xy 오차는 reset 약 `0.5mm`, zero action 30 step 뒤 약 `3mm`임.
+- 따라서 **현재 close-start 배치에서만** `finger_cage_reach=0`, `palm_facing=0`, `joint5` scale 축소가 타당함.
+- cube 배치나 arm reset pose를 바꾸면 이 probe를 다시 해야 함.
+- `python -m py_compile` 통과함.
+- `Indy-Wuji-Cube-Grasp --headless --num_envs 1 --max_iterations 1` smoke test 통과함.
+
+## 2026-07-14 close-start action 출력 보강
+
+- action이 잘못 나오는지 직접 확인하기 위해 `scripts/rsl_rl/play.py`의 `--print_action` 출력을 보강함.
+- 기존 출력은 전체 action 요약과 `actions[0,5]` 하나만 보여서 원인 분리에 부족했음.
+- 새 출력은 `raw policy action`, `clip 후 applied action`, `target joint position`, `actual joint position`, `target-actual error`, `joint velocity`를 joint 이름별로 출력함.
+- `clip%`도 출력해 policy가 `clip_actions=1.0` 밖으로 자주 나가는지 확인 가능함.
+- 판정 기준은 다음과 같음.
+- `err`가 작고 action/Delta action이 크면 policy가 그렇게 시킨 것임.
+- `err`가 크면 물리/PD/접촉/decimation이 목표를 못 따라가는 것임.
+- `CLI.md`에 close-start action 확인 명령을 추가함.
+- `python -m py_compile nrmk_isaaclab_wuji/scripts/rsl_rl/play.py` 통과함.
+
+## 2026-07-14 Cube Grasp 단일 task 정리
+
+- `close-start`/`Hard`를 나눠 쓰지 않기로 함.
+- `Indy-Wuji-Cube-Grasp` 본체가 검증된 close-start nominal grasp 배치를 사용하도록 정리함.
+- 별도 호환 alias는 남기지 않음. task id는 `Indy-Wuji-Cube-Grasp` 하나임.
+- 새 학습/play/smoke test 명령은 전부 `Indy-Wuji-Cube-Grasp`를 사용함.
+- 현재 cube 위치는 `(0.692, -0.369, 0.430)`임.
+- cube reset randomization은 꺼둠. `x/y/z = 0`.
+- 현재 reward override는 `finger_cage_reach=0`, `palm_facing=0`, `finger_cage_hold=1`, `cube_lift=10`, `arm_manipulability=1`, `hand_floor=0.5`, `action_rate=-0.0003`임.
+- `CLI.md`, `AGENTS.md`, `nrmk_isaaclab_wuji/agent.md`를 단일 task 기준으로 정리함.
+- 같은 experiment 안에 과거 smoke/hard/easy run이 섞여 있으므로 최신 run 자동 선택은 위험함.
+- `python -m py_compile` 통과함.
+- `Indy-Wuji-Cube-Grasp --headless --num_envs 1 --max_iterations 1` smoke test 통과함.
+- smoke test에서 action `18`, observation `57`, reward 7개를 확인함.
+- reward table은 `finger_cage_reach=0`, `finger_cage_hold=1`, `cube_lift=10`, `palm_facing=0`, `arm_manipulability=1`, `hand_floor=0.5`, `action_rate=-0.0003`임.
+- `/tmp/cube_grasp_probe.py --task Indy-Wuji-Cube-Grasp --headless --num-envs 1` 통과함.
+- probe reset 값은 cube `(0.692, -0.369, 0.430)`, cage xy error 약 `0.5mm`, `palm_facing=0.986780`, `cage_hold=0.210871`임.
+- zero action 30 step 뒤 cage xy error 약 `3mm`, `palm_facing=0.996594`임.
+
+---
+
+## 2026-07-14 cube grasp 포기 — 근본 원인 두 가지
+
+### ① action space가 논문과 근본적으로 다름  ★ 이게 오늘 사고의 대부분
+논문 원문 (Section III-B):
+> "An action represents a **relative displacement** in 3D hand position, hand rotation, and hand
+>  joint positions. **The arm joint targets are calculated via Inverse Kinematics (IK).**"
+> "6 DoF UR5e + 11 DoF Schunk SIH hand. The joints are **coupled, leaving five controllable DoF**.
+>  An action is an **11-element vector**: 손위치 변위 3 + 손회전 변위 3(Euler) + 손가락 5."
+> "v_hp_max = 1 m/s, dt = 0.0333 s"   -> step당 최대 3.3cm
+
+| | 논문 | 우리 |
+|---|---|---|
+| action | **상대 변위** (손위치3 + 회전3 + 손가락5 = 11D) | **절대 관절각** (팔6 + 손가락12 = 18D) |
+| 팔 제어 | **IK** | 관절 직접 |
+| 크기 제한 | `v_max x dt = 3.3cm/step` **내재적** | `scale` x `clip_actions` **수동** |
+| 제어 주파수 | 30 Hz | 30 Hz (오늘 맞춤) |
+
+**이 차이가 낳은 결과:**
+- **scale/clip_actions 발산**: 논문 action은 "손을 3cm 옮겨라"라 물리적으로 유계. 우리는
+  "관절을 X rad로"라서 scale이 작으면 정책이 |a|를 키우고, 상한이 없으면 발산 (|Δa| 9.66).
+- **arm_manipulability 페널티가 불필요**: IK가 팔을 풀어주므로 특이점에 빠질 수 없음.
+  그 페널티를 만든 이유 자체가 "관절을 직접 명령하기 때문"임.
+- **r_hp/r_hr이 action space와 일치**: 정책이 손 pose를 명령하고 보상도 손 pose에 걸림.
+  우리는 관절을 명령하면서 손 방향을 보상하려다 palm_facing 축을 추측하는 삽질을 함.
+- **손가락 5 DOF vs 12 DOF**: 탐색 공간이 훨씬 작음.
+
+IsaacLab에 `DifferentialInverseKinematicsActionCfg` 있음. Lift-Cube에 `ik_abs/ik_rel_env_cfg.py` 예제.
+
+### ② 정육면체는 "목표 파지"를 정의할 수 없음
+논문은 `g = (hp, hr, hj)`를 알고 있고 `r_hr`이 "이 방향으로 돌려라"를 직접 보상함.
+**대칭인 정육면체는 목표 회전을 정의할 수 없어서 그걸 못 씀.**
+-> 대리 지표(palm_facing 축, 게이팅, closability)를 발명했고 전부 뚫림.
+
+---
+
+## 2026-07-14 오늘의 실패 (반복 방지)
+
+### 실패 1: clip_actions 없음 + scale 과소 -> 정책 발산  ★사수님이 잡음
+`|a|` 평균 1.5(범위 [-1,1]), `|Δa|` 최대 9.66 -> 관절 목표가 한 step에 110° 점프
+-> 팔이 velocity_limit로 왕복, 큐브를 67cm 날림.
+**나는 "손이 87cm 솟구쳤다"는 결과만 보고 "물리 튕김"이라 단정.**
+사수님이 "action을 찍어봐라"고 해서 잡힘. `Episode_Reward_Raw/action_rate = 167`이 이미
+TensorBoard에 찍혀 있었는데 흘려봤음.
+
+### 실패 2: palm_facing 축을 세 번 틀림
+`(1,0,0)`이 hold와 무상관(+0.003)이라 "틀린 축"이라 결론 -> `(0.19,0.28,0.94)`로 바꿈 ->
+**사용자가 "진짜 손바닥 법선 맞아?"라고 물어서** 직접 기하 측정 -> **`(1,0,0)`이 맞았음.**
+더 파보니 **`hold` 자체가 87% 퇴화**였음 (오므리면 오히려 물체에서 멀어지는 자세).
+**썩은 지표와의 상관으로 축을 골라서 퇴화를 최적화하는 축을 고른 것.**
+
+### 실패 3: 게이팅 -> telescoping 파괴 (왕복 farming)
+음수(후퇴)에도 게이트를 곱해서 "방향 버리면 후퇴가 공짜"가 됨.
+-> `겨눔 -> 접근 -> 방향 버림 -> 공짜 후퇴` 왕복으로 reach 무한 수확.
+**보상은 오르는데 지표는 역주행** (mean_reward 2.86인데 cage_sdf 0.129 -> 0.413).
+수정: `torch.where(reward > 0, reward * gate, reward)`.
+
+### 실패 4: "리셋 자세가 이미 물체를 잡고 있어야 한다"고 착각  ★사용자가 잡음
+논문 close-start: "The arm is set to a **neutral configuration**." **파지는 정책이 학습함.**
+나는 테이블 넣고 손목 뒤집고 CEM으로 파지 자세를 찾으려 했음. 전부 헛수고.
+
+---
+
+## 2026-07-14 관통하는 패턴 (진짜 교훈)
+
+**매번 "대리 지표"를 만들고 검증하지 않고 결정했음:**
+```
+palm_facing 축   <- hold와의 상관으로 고름.  hold가 87% 퇴화라 무의미
+게이팅           <- 발명.  telescoping을 깨뜨림
+closability      <- 발명.  안 씀
+"파지 중심"       <- 손끝 3개의 중심.  엄지가 마주보지 않으면 무의미
+손목 자세         <- "파지중심이 palm 아래" + manip.  둘 다 대리 지표
+```
+
+**속일 수 없는 신호는 하나뿐: `cube_clearance` (물체가 실제로 떴는가).**
+`hold`, `cage_inside`, `opposition`, `palm_facing` 전부 정책에게 뚫렸음.
+**그리고 이 프로젝트에서 `cube_lift`는 한 번도 0을 벗어난 적이 없음.**
+
+### 규칙
+1. **새 보상/지표를 만들면 최종 목표와의 상관계수부터 재라.** 5분이면 됨.
+2. **"그 상태가 존재하는가"를 샘플링으로 먼저 확인하라.**
+   (`hold>0.1 AND palm_facing>0.7`은 61,440개 중 **0개**. 존재하지 않는 걸 학습시키고 있었음)
+3. **"보상은 오르는데 지표는 나빠진다"가 보이면 무조건 허점이 있다.**
+4. **상태(state)가 아니라 제어 입력(action)을 봐라.**
+5. **정책이 지표를 거스르면, 정책이 아니라 지표를 의심하라.**
+
+---
+
+## 2026-07-14 코드 되돌리기
+
+### 남긴 것
+```
+clip_actions = 1.0,  scale = 1.0        rsl_rl_cfg.py:21, indy_wuji/env_cfg.py:76
+sim.dt = 1/60,  decimation = 2 (30 Hz)  cube_grasp_env_cfg.py:145-146
+play.py --print_action                   진단 도구
+사용자/codex 작업 전부                    support 받침면, surface_z, joint5 scale 0.05(진동 해결)
+```
+
+### 뺀 것
+```
+finger_closability                       함수 삭제
+reach의 facing 게이팅                     palm_cfg / gate_floor 파라미터 포함
+palm_normal_b (0.19,0.28,0.94) -> (1,0,0)   rewards.py + managers.py
+가중치 reach 10 / palm 8 / action_rate -0.005 -> 0.3 / 1.0 / -0.0003
+별도 curriculum/hard alias
+테이블 (넣었다 뺌)
+```
+**주의: reach/palm_facing weight는 dt=0.4(decimation 24) 시절 값임. 30Hz에선 차분형 에피소드 합이
+12배 작아짐. 지금 main task는 둘 다 0으로 꺼둬서 영향 없지만, 켤 때 반드시 재조정할 것.**
+
+---
+
+## 2026-07-14 다음: functional_grasp
+
+**골격 있음:** `functional_grasp/{chopsticks_grasp_env_cfg.py, cfg_skeleton.py, mdp/{target_grasp,rewards}.py}`
+
+**반드시 바꿀 것:**
+```
+1. action space를 논문처럼: IK(팔) + 관절(손가락), 상대 변위
+   -> IsaacLab DifferentialInverseKinematicsActionCfg
+   -> scale/clip 참사, arm_manipulability 페널티가 전부 불필요해짐
+2. 목표 파지 g = (hp, hr, hj)  -> r_hr이 방향을 직접 보상 -> palm_facing/게이팅 불필요
+3. 손가락 DOF 축소 검토 (논문 5, 우리 12)
+4. 가중치는 논문 그대로 (r_reach 1 / r_hold 25 / r_orient 500 / r_T 5000)
+5. 커리큘럼 (close-start에서 r_man 끔, 물체를 손 5cm 앞, 팔은 manip 높은 중립 자세)
+```
+
+## 2026-07-14 close-start alias 제거 최종 정리
+
+- 예전 curriculum alias와 관련 class/register를 제거함.
+- cube grasp 실행 이름은 `Indy-Wuji-Cube-Grasp` 하나만 남김.
+- `CLOSE_START_CUBE`는 가까운 nominal grasp 배치 상수로 유지함.
+- 과거 hard 배치 상수는 `LEGACY_HARD_CUBE`로 이름만 남겨 공통 cfg 기본값과 구분함.
+- RSL-RL `run_name`은 `cube_grasp_close_start`로 정리함.
+- probe helper는 `/tmp/cube_grasp_probe.py`로 이름을 정리함.
+- functional_grasp/chopsticks skeleton의 예전 alias class/register도 제거함.
+- repo 전체에서 예전 alias/문자열을 검색해 남은 직접 참조가 없음을 확인함.
+- `python -m py_compile` 통과함.
+- `Indy-Wuji-Cube-Grasp --headless --num_envs 1 --max_iterations 1` smoke test 통과함.
+- `/tmp/cube_grasp_probe.py --task Indy-Wuji-Cube-Grasp --headless --num-envs 1` probe 통과함.
+
+## 2026-07-14 hand-only cube grasp 재정리
+
+- cube grasp를 다시 "Wuji hand가 물체를 감쌀 수 있는지"부터 확인하는 hand-only 진단 모드로 바꿈.
+- policy action은 `finger[1-3]_joint[1-4]` 12축만 사용함.
+- arm 6축은 `FixedJointPositionAction` 0D term으로 default joint target을 매 step 유지함.
+- `CubeGraspActionsCfg`에 `arm_hold_action` 슬롯을 추가함.
+- 이 수정 전에는 arm action을 빼면서 arm joint target도 사라져 zero action 30 step만에 arm이 무너지고 cube가 날아갔음.
+- smoke test에서 Action Manager `arm_action=12`, `arm_hold_action=0`, total action shape `12` 확인함.
+- policy observation shape는 `42`임.
+- `cube_to_goal` observation은 제거함.
+- active reward는 `finger_cage_hold=1`, `hand_floor=0.5`, `action_rate=-0.0003` 중심임.
+- `finger_cage_reach`, `palm_facing`, `cube_lift`, `arm_manipulability` weight는 현재 `0`임.
+- RSL-RL run name은 `cube_grasp_hand_only`임.
+- `python -m py_compile` 통과함.
+- `Indy-Wuji-Cube-Grasp --headless --num_envs 1 --max_iterations 1` smoke test 통과함.
+- probe에서 zero action 30 step 후 arm collapse/cube ejection이 사라짐.
+- close action `1.0` 60 step 후 `cage_hold=0.427465`, `cage_inside_frac=0.666667`로 증가함.
+- `--num_envs 128 --max_iterations 20` 짧은 학습 통과함.
+- 짧은 학습에서 `finger_cage_hold`는 초반 `0.003`에서 `0.13~0.18`까지 증가함.
+- 같은 학습에서 `hand_floor` penalty가 커지고 mean reward는 음수로 유지됨.
+- 다음 판단은 GUI에서 손이 받침면을 긁는지 확인한 뒤 `hand_floor`/초기 높이/손가락 action scale을 조정하는 것임.
+
+## 2026-07-14 grasp+lift active 재정리
+
+- `Indy-Wuji-Cube-Grasp`를 다시 arm 6축 + thumb/index/middle 12축, 총 18D action으로 돌림.
+- observation은 joint position 18D, palm 기준 cube 3D, five-fingertip 기준 cube 15D, previous action 18D로 총 54D임.
+- `cube_to_goal` observation은 현재 grasp+lift baseline에서 제거함.
+- active reward는 `finger_cage_reach=3`, `finger_cage_hold=5`, `cube_lift=50`, `cube_support=2`, `palm_facing=0`, `arm_manipulability=0`, `hand_floor=0.2`, `action_rate=-0.0003`임.
+- `cube_support`를 추가해 cube 최하 모서리가 받침면 아래로 내려가면 벌점을 주게 함.
+- `--num_envs 128 --max_iterations 20` 짧은 학습에서는 hold는 켜졌지만 lift는 거의 0이고, cube를 받침 아래로 누르는 실패 모드가 보임.
+- `/tmp/cube_lift_probe.py` scripted feasibility probe를 실행함.
+- 기본 설정에서 close action은 `cage_hold`를 약 `0.40`까지 올리지만 `cube_clearance`는 0 근처이고 `cube_lift_reward_raw=0`임.
+- `joint0~joint5` 단일축 ±1 lift 후보를 모두 넣어도 양의 cube clearance가 나오지 않음.
+- 강한 손/가벼운 큐브 probe(`finger_effort=3`, `stiffness=40`, `cube_mass=0.03`, `friction=2`)에서도 lift는 0임.
+- 결론: 긴 RL 전에 실제로 cube를 들어올리는 scripted arm/hand sequence 또는 초기 자세를 먼저 찾아야 함.
+
+## 2026-07-14 contact/lift 확인 스크립트 추가
+
+- `scripts/debug/check_cube_contact_lift.py` 추가함.
+- policy 없이 `reset -> zero settle -> finger close -> optional arm lift`를 실행하게 함.
+- thumb/index/middle/palm 링크별 cube contact force를 출력하게 함.
+- cube clearance와 `GOOD_CONTACT thumb+middle`, `LIFT_SUCCESS` 판정을 출력하게 함.
+- cube 자체에는 contact reporter가 없어 `Cube -> Support` contact sensor는 제거함.
+- 손 링크 기준 cube contact sensor만 사용함.
+- 짧은 headless 검증 통과함.
+- close-only 확인 결과 `after_close`에서 `index_mid=5.5961N`, `thumb_tip=0.0593N`, middle contact 없음.
+- `after_lift`에서 `thumb_tip=0.4257N`, `middle_mid=0.7081N`로 `GOOD_CONTACT=True`가 늦게 켜짐.
+- 같은 run에서 `max_clearance=0.0003m`라 lift는 실패함.
+- 결론: contact 자체는 생기지만 현재 scripted close-only는 cube를 들어 올리지 못함.
+- 긴 학습 전에 `--sweep-lift` 또는 cube pose sweep으로 `GOOD_CONTACT=True`와 `max_clearance>0.005m`가 나오는 조건을 먼저 찾아야 함.
+
+## 2026-07-14 contact/lift probe finger sweep 추가
+
+- `scripts/debug/check_cube_contact_lift.py`에 `--finger-action` 옵션을 추가함.
+- `--finger-action`은 thumb/index/middle 3개 그룹 값 또는 finger action 12개 값을 직접 받음.
+- `--sweep-fingers` 옵션을 추가함.
+- `--sweep-fingers`는 cube를 고정하고 thumb/index/middle close 값 조합을 훑음.
+- `--contact-mode` 옵션을 추가함.
+- contact 판정은 `thumb_middle`, `thumb_index`, `thumb_any`, `tripod` 중 선택 가능함.
+- 짧은 검증 명령 `--finger-action 1 0 1 --contact-mode thumb_middle` 실행 통과함.
+- 해당 짧은 검증에서는 thumb과 middle이 같은 시점에 안정적으로 물지 못해 `lift_success=False`임.
+- 다음 확인은 cube를 움직이기보다 `--sweep-fingers`로 손가락 joint 명령 조합부터 찾는 것이 우선임.

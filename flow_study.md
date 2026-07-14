@@ -917,3 +917,261 @@ distance = norm(body_pos_w - cube_pos_w)
 - 이 값은 contact patch buffer 여유를 늘리는 설정임.
 - cube, hand collider, 병렬 env 수가 많아지면 patch buffer가 부족해질 수 있음.
 - 이 설정은 reward 구조가 아니라 PhysX GPU contact buffer 설정임.
+
+## 12. Cube Grasp reward 흐름 (2026-07-12 기준)
+
+### 전체 연결
+
+```text
+env_cfg_common.py                          rewards.py                      managers.py
+─────────────────                          ──────────                      ───────────
+CAGE_BODIES  ──────────┐
+  finger1_tip_link     │
+  finger2_tip_link     ├──> cage_points()  ──> _cage_sdf() ──> _box_signed_distance()
+  finger2_link3        │         │                                    │
+  finger3_tip_link     │         │                                    │
+  finger3_link3        │         ├─> object_in_finger_cage()   [hold] │
+                       │         ├─> ObjectCageProgressReward  [reach]│
+                       └─────────┴─> object_lift_in_cage()      [lift]│
+                                                                       │
+palm_link ──────────────────────> palm_facing_object()          [palm]│
+                                                                       │
+                                   _cage_body_names ────────────> _compute_cube_distance_metrics()
+                                   _palm_normal_b                      (reward와 동일한 점을 재구성)
+```
+
+- **핵심: reward와 metric이 같은 가상점을 쓴다.** `managers.py`의 `_cage_body_names`가 `CAGE_BODIES`와 다르면 metric이 reward와 다른 것을 측정하게 됨.
+
+### 가상점 생성 (`cage_points`)
+
+```text
+body_names = [thumb_tip, *opposing]        preserve_order=True 필수
+                │           │
+             기준점      대향 body N개
+
+각 대향 body마다 엄지끝에서 선분을 긋고, 등간격 3점을 찍음
+비율 = [0.25, 0.50, 0.75]  (양 끝점 제외)
+
+현재: 대향 body 4개 (검지끝, 검지중간, 중지끝, 중지중간) x 3점 = 12점
+```
+
+- `preserve_order=False`(기본값)이면 `find_bodies`가 body_ids를 **정렬**해서 엄지가 기준점 자리에서 밀려남.
+- 논문은 엄지↔중지만 써서 6점임. 우리가 12점인 이유는 `r_grasp`가 없어서 검지가 자유로워지기 때문임.
+
+### SDF (`_box_signed_distance`)
+
+```text
+점을 큐브 로컬 좌표로 변환  ->  q = |p_local| - half_extent
+sdf = norm(clamp(q, min=0)) + clamp(max(q.x, q.y, q.z), max=0)
+
+음수 = 큐브 내부
+```
+
+- 큐브는 박스라 **해석식**임. CAD나 사전계산 SDF 불필요함.
+- 젓가락도 원기둥이라 해석식으로 가능함. 임의 메시가 필요해지면 `warp`의 `wp.Mesh`를 씀.
+
+### 4개 reward 항의 역할
+
+```text
+finger_cage_reach   가상점 12개의 표면까지 SDF 평균의 "차분"
+                    -> 파지 간극을 큐브 위로 끌어옴
+                    -> mode="previous" + clamp(min=-1) + reset() seeding
+
+finger_cage_hold    가상점이 큐브 "내부"로 파고든 깊이
+                    -> r = clamp((sphere_radius - sdf) / (sphere_radius + depth_max), 0, 1) 의 평균
+                    -> 오므리면 점들이 큐브 안으로 들어감. "오므리기"가 직접 보상됨
+
+palm_facing         dot(손바닥 법선(로컬 +x), 단위벡터(큐브 - 손바닥))
+                    -> cage 항들은 손 방향을 못 잡음 (선분이 손 방향과 무관하게 큐브를 관통)
+                    -> 손가락은 손바닥 쪽으로 굽으므로, 손바닥 뒤 물체는 못 감쌈
+
+cube_lift           cage_gate x clamp(최하 모서리 높이 / lift_height, 0, 1)
+                    -> 중심 높이를 쓰면 "기울이기"로 해킹당함
+                    -> 최하 모서리를 쓰면 진짜로 띄워야만 보상
+```
+
+### 가중치 순서
+
+```text
+cube_lift (3.0)  >>  finger_cage_hold (1.0)  >  palm_facing (0.5)  >  finger_cage_reach (0.3)
+```
+
+- 논문의 `r_T >> r_orient >> r_hold >> r_reach`를 따름.
+- **쉬운 앞 단계 하위과제에 큰 보상을 주면 정책이 거기 눌러앉음** (논문 Sec. IV-C 명시).
+- 실제로 `reach(0.3) > hold(0.2)`인 역순이었을 때 국소최적에 갇혔음.
+
+### TensorBoard metric 흐름 (`managers.py`)
+
+```text
+compute()  매 step  ->  _compute_cube_distance_metrics()
+                        ├─ sums  += metric * dt      (에피소드 평균용)
+                        ├─ last   = metric           (정착 자세용)   ★
+                        ├─ min    = minimum(...)
+                        └─ max    = maximum(...)
+
+reset()             ->  Metrics/cube/<name>        = sums / max_episode_length_s   (평균, 신뢰 금지)
+                        Metrics/cube_final/<name>  = last                          (★ 이것을 볼 것)
+                        Metrics/cube_min/<name>    = min
+                        Metrics/cube_max/<name>    = max
+                        그리고 _cube_init_pos를 새 에피소드의 큐브 위치로 갱신
+```
+
+- `Metrics/cube/*`(평균)는 **앞 4 step(이동)이 77%를 지배**하므로 성능 지표가 아님.
+- `reset()` 시점에는 event(`reset_cube_position`)가 이미 실행된 뒤라 새 에피소드의 큐브 위치가 들어감.
+
+---
+
+# 24. Action 흐름 — 정책 출력이 PhysX까지 가는 전 경로 (2026-07-13)
+
+**2026-07-13에 여기서 정책 발산이 났음.** `clip_actions`가 설정 안 돼 있었고 `scale`이 너무 작았음.
+
+## 전체 경로
+
+```
+정책 신경망 (rsl_rl)
+   │  a = N(μ, σ).sample()         ← 상한 없음. MLP 마지막 층이 nn.Linear
+   ▼
+┌───────────────────────────────────────────────────────────────────────┐
+│ ①  RslRlVecEnvWrapper.step()                                          │
+│    isaaclab_rl/rsl_rl/vecenv_wrapper.py:151-154                       │
+│      if self.clip_actions is not None:                                │
+│          actions = torch.clamp(actions, -clip_actions, +clip_actions) │
+└───────────────────────────────────────────────────────────────────────┘
+   │  a ∈ [-1, +1]
+   ▼
+┌───────────────────────────────────────────────────────────────────────┐
+│ ②  ManagerBasedRLEnv.step()                                           │
+│    isaaclab/envs/manager_based_rl_env.py:173, 182-188                 │
+│      self.action_manager.process_action(action)    ← step당 1번만!    │
+│      for _ in range(self.cfg.decimation):          ← 물리 step 반복   │
+│          self.action_manager.apply_action()        ← 같은 목표 재전송 │
+│          self.scene.write_data_to_sim()                               │
+│          self.sim.step(render=False)                                  │
+└───────────────────────────────────────────────────────────────────────┘
+   ▼
+┌───────────────────────────────────────────────────────────────────────┐
+│ ③  JointAction.process_actions()          ← scale이 여기서 적용됨     │
+│    isaaclab/envs/mdp/actions/joint_actions.py:169-179                 │
+│      self._raw_actions[:] = actions                                   │
+│      self._processed_actions = self._raw_actions * self._scale        │
+│                                 + self._offset     ← default_joint_pos│
+│      if self.cfg.clip is not None:                 ← 두 번째 clip     │
+│          self._processed_actions = torch.clamp(...)   (우리는 미사용) │
+└───────────────────────────────────────────────────────────────────────┘
+   │  관절 목표 [rad]
+   ▼
+④  JointPositionAction.apply_actions()            joint_actions.py:197-199
+      self._asset.set_joint_position_target(processed_actions, joint_ids=...)
+   ▼
+⑤  Articulation.set_joint_position_target()       articulation.py:1079   (내부 버퍼)
+   ▼
+⑥  Articulation.write_data_to_sim()               articulation.py:218    (PhysX GPU 전송)
+   ▼
+⑦  PhysX 임플리시트 PD 액추에이터 (물리 60 Hz)
+      τ = stiffness x (목표 - 실제) - damping x 속도
+        = 100 x (목표 - 실제) - 20 x 속도          ← indy.py arm 액추에이터
+```
+
+## 핵심 구조: `process_action`은 1번, `apply_action`은 decimation번
+
+```python
+# manager_based_rl_env.py:173, 182-188
+self.action_manager.process_action(action)   # step당 딱 1번.  scale 적용
+for _ in range(self.cfg.decimation):         # decimation번
+    self.action_manager.apply_action()       # 같은 목표를 반복해서 다시 씀
+    self.scene.write_data_to_sim()
+    self.sim.step(render=False)
+```
+**정책이 준 관절 목표를 `decimation`번 동안 고정한 채 PD가 밀어붙임.**
+`decimation=24`였을 땐 같은 목표를 24번(=0.4초) 밀어붙였음 -> **0.4초간 눈감고 운전.**
+바닥에 닿아도 0.4초가 지나야 알아챔 -> 모든 접촉이 슬램이 됨.
+
+## clip이 두 군데인 이유
+
+```
+정책 -> a -> [① clip_actions] -> x scale + default -> [② JointActionCfg.clip] -> 로봇
+             무차원 [-1,1]                             rad 단위
+```
+| | 자르는 것 | 단위 | 설정 위치 |
+|---|---|---|---|
+| ① `clip_actions` | 정책 출력 | 무차원 | `rsl_rl_cfg.py` |
+| ② `JointActionCfg.clip` | 관절 목표 | **rad** | action term |
+
+**우리는 ①만 씀.** `|a| <= 1`이 보장되면 목표가 자동으로 `default ± scale`(= ±1.0 rad) 안에 들어오므로
+②가 불필요함. **2026-07-13 이전엔 ①도 ②도 없었음** -> `|a|=9.66` -> 목표가 `default ± 1.93 rad`까지 날아감.
+
+## 우리 코드에서 값이 정해지는 곳
+
+| 값 | 파일 | 줄 |
+|---|---|---|
+| `clip_actions = 1.0` | `tasks/manipulation/grasp/indy_wuji/learning/rsl_rl_cfg.py` | 21 |
+| ↳ wrapper로 전달 | `scripts/rsl_rl/train.py` (play.py 동일) | 203 |
+| `scale = 1.0` | `tasks/manipulation/grasp/indy_wuji/env_cfg.py` | 64 |
+| `decimation = 2` | `tasks/manipulation/grasp/cube_grasp_env_cfg.py` | 102 |
+| `stiffness / damping / effort_limit` | `assets/indy.py` | 183~211 |
+
+```python
+# scripts/rsl_rl/train.py:203  <- clip_actions가 여기서 wrapper로 들어감
+env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
+                                           └── ReachPPORunnerCfg.clip_actions
+```
+
+---
+
+# 25. 정책은 왜 가우시안 분포인가 (2026-07-13)
+
+## MLP는 "행동"이 아니라 "행동의 평균"을 뱉음
+
+```python
+# rsl_rl/modules/distribution.py:169-179
+def update(self, mlp_output):
+    mean = mlp_output                       # ← MLP 출력이 그대로 평균 mu
+    std  = torch.exp(self.log_std_param)    # ← 별도의 학습 가능 파라미터 sigma
+    self._distribution = Normal(mean, std)  # ← 가우시안 N(mu, sigma)
+
+def sample(self):
+    return self._distribution.sample()      # ← 실제 action은 여기서 뽑음
+```
+```
+obs -> MLP [64,64] -> mu = [18개]     ← 마지막 층이 nn.Linear. tanh/sigmoid 없음
+                                         => 수학적으로 상한이 없음!
+       log_std_param -> sigma = [18개]   ← init_noise_std = 1.0
+       a ~ N(mu, sigma)
+```
+
+## 왜 랜덤하게 뽑나
+1. **탐험(exploration).** 항상 같은 행동만 하면 더 좋은 행동을 영원히 발견 못 함
+2. **PPO가 확률을 요구함.** 핵심 수식 `ratio = pi_new(a|s) / pi_old(a|s)`.
+   결정론적 정책은 확률이 0 또는 1이라 이 비율이 정의되지 않음
+
+## 학습 때와 play 때가 다름
+```python
+학습 (train.py)  a = distribution.sample()             # mu에서 sigma만큼 흔들어 뽑음
+재생 (play.py)   a = deterministic_output(mlp_output)  # = mu. 흔들지 않음
+```
+**중요:** `play.py --print_action`으로 본 `|a| = 1.5`는 **sigma 노이즈가 아니라 mu 자체임.**
+**신경망이 학습해서 "평균 1.5를 뱉도록" 수렴한 것.** 노이즈가 아니라 정책 자체가 발산한 것.
+
+`init_noise_std=1.0`이므로 학습 중엔 sigma=1.0. mu=1.5에 sigma=1.0이면 샘플이 흔히 ±3까지 감.
+그래서 `|Δa|`가 9.66까지 나왔음.
+
+## 2026-07-13에 일어난 일
+```
+clip 없음 (①도 ②도) + scale=0.2가 너무 작아서 |a|=1로는 큐브(55cm 아래)에 못 닿음
+   ↓
+정책이 보상을 얻으려면 mu를 키워야 함  ->  아무도 안 막음  ->  mu가 1.5까지 커짐
+   ↓
+학습 중엔 sigma=1.0이 더해져 샘플이 ±3, |Δa| 최대 9.66
+   ↓
+관절 목표가 한 step에 1.93 rad(110°) 점프  ->  팔이 velocity_limit로 왕복  ->  큐브 67cm 날림
+```
+
+## 수정
+```python
+clip_actions = 1.0   # ① 활성화. |a| <= 1 보장
+scale = 1.0          # |a|=1 이 1.0 rad(57°) -> 큐브 도달 가능
+```
+**둘을 반드시 같이 바꿔야 함.** `clip`만 걸면 `|a|<=1` x `scale 0.2` = 관절이 11°밖에 못 움직여
+**큐브에 영영 못 감.** `scale`만 키우면 여전히 상한이 없어 또 발산.
+
+**결과: `|Δa|` 평균 0.04, 최대 0.90 (clip 상한 2.0 이내). 발산 원천 차단됨.**

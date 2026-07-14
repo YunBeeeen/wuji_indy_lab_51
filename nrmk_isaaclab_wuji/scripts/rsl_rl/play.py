@@ -35,10 +35,28 @@ parser.add_argument(
 )
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
 parser.add_argument(
+    "--print_action",
+    action="store_true",
+    default=False,
+    help="step마다 action / 관절목표-실제 추종오차 / 손 최저높이를 출력. 팔이 튀는 원인이 정책인지 물리인지 가름.",
+)
+parser.add_argument(
+    "--print_action_interval",
+    type=int,
+    default=1,
+    help="--print_action 사용 시 몇 policy step마다 출력할지.",
+)
+parser.add_argument(
+    "--print_action_detail",
+    action="store_true",
+    default=False,
+    help="--print_action 사용 시 joint별 raw/applied/target/actual/error를 표로 출력.",
+)
+parser.add_argument(
     "--render_interval",
     type=int,
     default=2,
-    help="Physics steps between rendered frames. Lower is smoother; pass the task's decimation to keep its training value.",
+    help="렌더 프레임 사이의 physics step 수. 낮을수록 부드러움. task의 decimation을 주면 학습 때 값 그대로.",
 )
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -114,9 +132,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env_cfg.seed = agent_cfg.seed
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
 
-    # Task cfgs set render_interval = decimation so training skips redundant renders. That leaves
-    # the viewport drawing once per policy step (5 Hz for the reach/grasp tasks), which reads as
-    # a stuttering viewport when replaying a policy.
+    # task cfg가 render_interval = decimation이라 policy step당 1프레임만 그림 (2.5 Hz).
+    # 학습에는 맞는 설정이지만 play에서는 뷰포트가 끊기는 것처럼 보임.
     if args_cli.render_interval is not None:
         env_cfg.sim.render_interval = args_cli.render_interval
 
@@ -199,6 +216,25 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # reset environment
     obs = env.get_observations()
     timestep = 0
+
+    # action은 절대 관절 목표임 (target = default_joint_pos + scale * action).
+    # 팔이 튈 때 그게 "정책이 시킨 것"인지 "물리가 명령을 이긴 것"인지 가르려면 목표와 실제를 비교해야 함.
+    #   추종오차 작음(<0.1) + |Δa| 큼(>0.3) -> 팔이 명령대로 발광. 학습/보상 문제
+    #   추종오차 큼  (>0.3)                 -> 물리가 명령을 이김. dt/decimation 문제
+    if args_cli.print_action:
+        robot = env.unwrapped.scene["robot"]
+        action_term = env.unwrapped.action_manager.get_term("arm_action")
+        joint_names = list(action_term._joint_names)
+        arm_ids, _ = robot.find_joints(["joint[0-5]"])
+        hand_ids = [i for i, n in enumerate(robot.body_names) if "finger" in n or "palm" in n]
+        prev_action = torch.zeros_like(policy(obs))
+        print_interval = max(args_cli.print_action_interval, 1)
+        clipped_limit = agent_cfg.clip_actions
+        print(
+            f"\n{'step':>5}{'|raw|':>9}{'|applied|':>10}{'clip%':>8}"
+            f"{'|Δa|평균':>10}{'|Δa|최대':>10}{'추종오차(rad)':>14}{'팔속도':>9}{'손최저z(cm)':>12}"
+        )
+
     # simulate environment
     while simulation_app.is_running():
         start_time = time.time()
@@ -208,6 +244,39 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             actions = policy(obs)
             # env stepping
             obs, _, _, _ = env.step(actions)
+
+            if args_cli.print_action:
+                applied = env.unwrapped.action_manager.action
+                target = action_term.processed_actions
+                actual = robot.data.joint_pos[:, action_term._joint_ids]
+                joint_vel = robot.data.joint_vel[:, action_term._joint_ids]
+                delta = (applied - prev_action).abs()
+                prev_action = applied.clone()
+
+                if timestep % print_interval == 0:
+                    if clipped_limit is None:
+                        clip_ratio = torch.zeros((), device=actions.device)
+                    else:
+                        clip_ratio = (actions.abs() > float(clipped_limit)).float().mean() * 100.0
+                    print(
+                        f"{timestep:>5}{actions.abs().mean():>9.3f}{applied.abs().mean():>10.3f}"
+                        f"{clip_ratio:>8.1f}{delta.mean():>10.3f}{delta.max():>10.3f}"
+                        f"{(target - actual).abs().max():>14.3f}"
+                        f"{robot.data.joint_vel[:, arm_ids].abs().max():>9.2f}"
+                        f"{robot.data.body_pos_w[:, hand_ids, 2].min() * 100:>12.2f}"
+                    )
+
+                    if args_cli.print_action_detail:
+                        print("      joint                  raw   applied    target    actual       err       vel")
+                        for i, name in enumerate(joint_names):
+                            err = target[0, i] - actual[0, i]
+                            print(
+                                f"      {name:<20}"
+                                f"{actions[0, i]:>8.3f}{applied[0, i]:>10.3f}"
+                                f"{target[0, i]:>10.3f}{actual[0, i]:>10.3f}"
+                                f"{err:>10.3f}{joint_vel[0, i]:>10.3f}"
+                            )
+                timestep += 1
         if args_cli.video:
             timestep += 1
             # Exit the play loop after recording one video

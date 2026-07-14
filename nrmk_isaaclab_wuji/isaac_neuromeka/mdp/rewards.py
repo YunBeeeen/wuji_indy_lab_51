@@ -7,7 +7,13 @@ from typing import TYPE_CHECKING
 import torch
 from isaaclab.assets import RigidObject
 from isaaclab.managers import ManagerTermBase, SceneEntityCfg
-from isaaclab.utils.math import combine_frame_transforms, quat_apply_inverse, quat_error_magnitude, quat_mul
+from isaaclab.utils.math import (
+    combine_frame_transforms,
+    quat_apply,
+    quat_apply_inverse,
+    quat_error_magnitude,
+    quat_mul,
+)
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
@@ -76,57 +82,39 @@ def _box_signed_distance(
     box_quat_w: torch.Tensor,
     half_extent: torch.Tensor,
 ) -> torch.Tensor:
-    """Signed distance from world points to an oriented box surface. Negative inside the box.
+    """점 -> 박스 표면까지의 signed distance. 박스 내부이면 음수.
 
-    Args:
-        points_w: (N, P, 3) query points in world frame.
-        box_pos_w: (N, 3) box center.
-        box_quat_w: (N, 4) box orientation (w, x, y, z).
-        half_extent: (3,) box half-extents in its own frame.
-
-    Returns:
-        (N, P) signed distances.
+    박스라서 해석식으로 계산됨. CAD나 사전계산 SDF 불필요.
+    입력 (N,P,3) 점 / (N,3) 박스 중심 / (N,4) 박스 회전 / (3,) 반크기 -> 출력 (N,P).
     """
     rel = points_w - box_pos_w.unsqueeze(1)
     quat = box_quat_w.unsqueeze(1).expand(-1, rel.shape[1], -1)
     local = quat_apply_inverse(quat, rel)
     q = local.abs() - half_extent
     outside = torch.norm(torch.clamp(q, min=0.0), dim=-1)
-    inside = torch.clamp(q.max(dim=-1).values, max=0.0)
+    inside = torch.clamp(q.max(dim=-1).values, max=0.0) # max -> 제일 0에 가까우니까
     return outside + inside
 
 
 def cage_points(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, num_points: int) -> torch.Tensor:
-    """Virtual grasp-aperture points between the thumb tip and every opposing finger body.
+    """엄지끝에서 각 대향 body로 선분을 긋고 그 위에 찍는 "파지 간극" 가상점.
 
-    ``asset_cfg.body_names`` must resolve to ``[thumb_tip, *opposing]`` in that order (so
-    ``preserve_order=True`` is required). One line is drawn from the thumb tip to each opposing
-    body, carrying ``num_points`` equidistant points. Following Dexterous Pre-grasp Manipulation,
-    list each finger twice — its tip (where an object can be pinch-grasped) and its mid-phalanx
-    (where an object is held more securely).
-
-    The paper uses one finger pair (thumb-middle, 6 points) because its ``r_grasp`` term separately
-    pins the hand's rotation and every finger joint to a target grasp. We have no target grasp for a
-    symmetric cube and so no ``r_grasp``; with only the thumb-middle line, the index finger was left
-    completely unconstrained and the policy settled into a palm-up pose with the fingers crossed
-    that still scored a perfect cage. Listing the index as well is the paper's own suggested
-    extension ("it is straightforward to utilize several finger pairs at the same time") and it is
-    what the chopstick grasp needs anyway.
-
-    Returns:
-        (N, len(opposing) * num_points, 3) world points.
+    body_names는 [엄지끝, *대향] 순서여야 함 (preserve_order=True 필수).
+    논문은 엄지-중지만 써서 6점이지만, 논문에는 r_grasp가 손 회전/손가락 관절각을 붙잡음.
+    큐브엔 목표 파지가 없어 r_grasp를 못 쓰므로, 6점만 쓰면 검지가 자유가 되어
+    "손바닥이 하늘 + 검지·중지 교차" 자세로도 만점이 나옴 (2026-07-11 실측). 그래서 검지도 포함해 12점.
     """
     asset: RigidObject = env.scene[asset_cfg.name]
-    body_pos_w = asset.data.body_state_w[:, asset_cfg.body_ids, :3]  # type: ignore
+    body_pos_w = asset.data.body_state_w[:, asset_cfg.body_ids, :3]  # type: ignore / 모든 env에 대해 CAGE_BODIES에 해당하는 body 5개만 골라서 그 body들의 position xyz만 가져와라
     if body_pos_w.shape[1] < 2:
         raise ValueError(
             f"cage terms expect [thumb_tip, *opposing] (2 bodies minimum), got {body_pos_w.shape[1]}."
         )
-    thumb = body_pos_w[:, 0]
+    thumb = body_pos_w[:, 0]    # GPU tensor form / torch.tensor([1,2,3]) -> CPU tensor form
     opposing = body_pos_w[:, 1:]  # (N, M, 3)
 
     # `num_points` equidistant points strictly between the thumb tip and each opposing body.
-    fractions = torch.arange(1, num_points + 1, dtype=thumb.dtype, device=thumb.device) / (num_points + 1)
+    fractions = torch.arange(1, num_points + 1, dtype=thumb.dtype, device=thumb.device) / (num_points + 1) # num_points=3 -> arrange(1,4) -> [1,2,3]/4 -> [0.25, 0.5, 0.75]
     span = opposing - thumb.unsqueeze(1)  # (N, M, 3)
     points = thumb[:, None, None, :] + span.unsqueeze(2) * fractions.view(1, 1, -1, 1)
     return points.reshape(thumb.shape[0], -1, 3)
@@ -139,7 +127,7 @@ def _cage_sdf(
     object_half_extent: tuple[float, float, float],
     num_points: int,
 ) -> torch.Tensor:
-    """(N, M * num_points) signed distance from the cage points to the object surface."""
+    """가상점 -> 물체 표면까지의 signed distance. (N, 대향body수 * num_points)"""
     obj: RigidObject = env.scene[object_cfg.name]
     points = cage_points(env, asset_cfg, num_points)
     half = torch.tensor(object_half_extent, dtype=points.dtype, device=points.device)
@@ -152,42 +140,28 @@ def object_in_finger_cage(
     object_cfg: SceneEntityCfg,
     object_half_extent: tuple[float, float, float] = (0.03, 0.03, 0.03),
     num_points: int = 3,
-    sphere_radius: float = 0.02,
-    depth_max: float = 0.03,
+    sphere_radius: float = 0.005,
+    depth_max: float = 0.02,
 ) -> torch.Tensor:
-    """Reward caging the object between the thumb and an opposing finger (paper Eq. 15).
+    """물체를 손가락 사이에 가두는 것을 보상 (논문 Eq.15, hold).
 
-    Each cage point carries a sphere of ``sphere_radius``; the reward is how deeply those spheres
-    overlap the object. Closing the hand pulls the points toward each other and pushes them inside
-    the object, so enclosing is rewarded directly — no contact sensing needed. A distance-to-object
-    reward does the opposite: touching a free object shoves it away, which *costs* reward, so
-    distance shaping alone drives the hand to hover rather than grasp.
+    가상점을 반지름 sphere_radius의 구로 보고, 그 구가 물체를 파고든 깊이를 보상함.
+    손을 오므리면 점들이 물체 안으로 들어가므로 "오므리기"가 직접 보상됨. 접촉센서 불필요.
+    거리 reward는 정반대임: 만지면 물체가 밀려나 거리가 늘고 감점 -> 접촉이 손해 -> hover만 함.
     """
     sdf = _cage_sdf(env, asset_cfg, object_cfg, object_half_extent, num_points)
-    # How far each virtual sphere reaches into the object. Zero once a point sits more than
-    # `sphere_radius` outside the surface; saturates once it is `depth_max` deep inside.
+    # 구가 물체를 파고든 깊이. sphere_radius보다 멀면 0, depth_max만큼 들어가면 포화(1).
     penetration = sphere_radius - sdf
     return torch.clamp(penetration / (sphere_radius + depth_max), 0.0, 1.0).mean(dim=1)
 
 
 class ObjectCageProgressReward(ManagerTermBase):
-    """Reward closing the grasp aperture onto the object surface (paper Eq. 14).
+    """파지 간극을 물체 표면 위로 끌어오는 것을 보상 (논문 Eq.14, reach).
 
-    Acts on the *same* cage points as :func:`object_in_finger_cage`, which is the whole point: it
-    pulls the gap between the thumb and the opposing finger onto the object, so the object ends up
-    *between* the fingers. Driving fingertips at the object centre instead produces a hand that
-    pokes the object with its thumb while the other fingers hang back — a pose from which closing
-    the hand can only push the cage points back out of the object.
-
-    Differential (t-1 vs t), *not* clamped at zero, and baselined at reset:
-
-    * retreating costs reward, instead of being free;
-    * the episode total telescopes to ``d(reset) - d(final)``, which depends only on where the hand
-      ends up. No pacing trick or first-step swing-out can inflate it.
-
-    A best-so-far variant with a floor at zero has neither property: it pays for the *excursion*
-    rather than the end state, so the policy learns to fling the arm away on step 1 (raising the
-    baseline it gets paid to recover) and to dawdle so that more steps each bank a new best.
+    hold와 "같은" 가상점을 씀. 그래야 물체가 손가락 "사이"로 들어옴.
+    손끝을 물체 중심으로 끌면 "엄지만 박고 나머지는 방치"가 최적해가 되고, 그 자세에선 오므려도 안 감싸짐.
+    차분형(t-1 vs t) + clamp(min=-1) + reset()에서 기준선 seeding, 셋을 다 해야 함.
+    셋 중 하나라도 빠지면 총합이 d(reset)-d(final)로 telescoping되지 않아 swing-out/dawdle 해킹이 남음.
     """
 
     def __init__(self, cfg, env: ManagerBasedRLEnv):
@@ -207,8 +181,7 @@ class ObjectCageProgressReward(ManagerTermBase):
     def reset(self, env_ids: Sequence[int] | None = None) -> None:
         if env_ids is None:
             env_ids = slice(None)
-        # Baseline at the reset pose, before the policy acts. Seeding on the first __call__ instead
-        # would let the first action inflate the baseline for free, which is exactly the swing-out.
+        # 기준선은 "리셋 자세"에서 잡음. 첫 __call__에서 잡으면 첫 액션이 기준선을 공짜로 부풀림(= swing-out).
         self._previous_distance[env_ids] = self._mean_sdf()[env_ids]
 
     def __call__(
@@ -219,11 +192,66 @@ class ObjectCageProgressReward(ManagerTermBase):
         object_half_extent: tuple[float, float, float] = (0.03, 0.03, 0.03),
         num_points: int = 3,
         distance_max: float = 0.5,
+        palm_cfg: SceneEntityCfg | None = None,
+        palm_normal_b: tuple[float, float, float] = (0.19, 0.28, 0.94),
+        gate_floor: float = 0.0,
     ) -> torch.Tensor:
         current = self._mean_sdf()
         progress = self._previous_distance - current
         self._previous_distance[:] = current
-        return torch.clamp(progress / distance_max, min=-1.0, max=1.0)
+        reward = torch.clamp(progress / distance_max, min=-1.0, max=1.0)
+
+        # 순서 강제: 손이 물체를 향하지 않으면 "접근"해도 보상이 없음.
+        # ★ 전진(양수)에만 게이트를 적용할 것. 후퇴(음수)에도 곱하면 telescoping이 깨짐:
+        #   다가감(+0.5) x facing 1.0 = +0.5  |  물러섬(-0.5) x facing 0.0 = 0  <- 페널티 소멸!
+        #   -> "겨누고 다가갔다가 방향 버리고 공짜로 물러서기"를 반복하며 reach를 무한 수확함.
+        if palm_cfg is not None:
+            gate = palm_facing_object(env, palm_cfg, object_cfg, palm_normal_b)
+            gate = gate_floor + (1.0 - gate_floor) * gate
+            reward = torch.where(reward > 0.0, reward * gate, reward)
+        return reward
+
+def box_ground_clearance(
+    env: ManagerBasedRLEnv,
+    object_cfg: SceneEntityCfg,
+    object_half_extent: tuple[float, float, float] = (0.03, 0.03, 0.03),
+    surface_z: float = 0.0,
+) -> torch.Tensor:
+    """박스의 "최하 꼭짓점"이 받침면에서 뜬 높이. 한 모서리라도 닿아 있으면 0.
+
+    중심 높이는 lift 신호가 아님: 바닥의 큐브를 짜면 모서리로 세워져 중심만 몇 mm 올라감.
+    (실측: 중심 +4.28mm인데 최하 모서리는 -0.04mm로 바닥) 최하점을 봐야 진짜 들었을 때만 지급됨.
+    """
+    obj: RigidObject = env.scene[object_cfg.name]
+    half = torch.tensor(object_half_extent, dtype=torch.float, device=env.device)
+    # 박스 자체 좌표계에서의 8개 꼭짓점
+    signs = torch.tensor(
+        [
+            [-1.0, -1.0, -1.0], [-1.0, -1.0, 1.0], [-1.0, 1.0, -1.0], [-1.0, 1.0, 1.0],
+            [1.0, -1.0, -1.0], [1.0, -1.0, 1.0], [1.0, 1.0, -1.0], [1.0, 1.0, 1.0],
+        ],
+        dtype=torch.float,
+        device=env.device,
+    )
+    corners_b = (signs * half).unsqueeze(0).expand(env.num_envs, -1, -1)  # (N, 8, 3)
+    quat = obj.data.root_quat_w.unsqueeze(1).expand(-1, 8, -1)
+    corners_w = obj.data.root_pos_w.unsqueeze(1) + quat_apply(quat, corners_b)
+    lowest_z = corners_w[..., 2].min(dim=1).values
+    return lowest_z - env.scene.env_origins[:, 2] - surface_z
+
+
+def object_below_surface_penalty(
+    env: ManagerBasedRLEnv,
+    object_cfg: SceneEntityCfg,
+    object_half_extent: tuple[float, float, float] = (0.03, 0.03, 0.03),
+    surface_z: float = 0.0,
+    tolerance: float = 0.05,
+) -> torch.Tensor:
+    """Penalize forcing the object below its support surface. Range [-1, 0]."""
+    clearance = box_ground_clearance(env, object_cfg, object_half_extent, surface_z)
+    depth = torch.clamp(-clearance, min=0.0) / tolerance
+    return -torch.clamp(depth, max=1.0)
+
 
 def object_lift_in_cage(
     env: ManagerBasedRLEnv,
@@ -233,34 +261,142 @@ def object_lift_in_cage(
     num_points: int = 3,
     sphere_radius: float = 0.005,
     depth_max: float = 0.02,
-    initial_height: float = 0.03,
     lift_height: float = 0.08,
+    surface_z: float = 0.0,
 ) -> torch.Tensor:
-    """Reward lifting the object, but only for as long as the fingers actually cage it.
+    """물체를 받침면에서 띄우는 것을 보상. 단, 손가락이 감싸고 있는 동안만 (논문 r_lift).
 
-    This is the term that decides which grasps count. A pose that satisfies the cage geometry but
-    cannot take the object's weight is not a grasp, and no amount of pose shaping can tell the two
-    apart — asking the hand to carry the thing can. The paper adds ``r_lift`` for precisely this
-    reason: without it a policy can "satisfy the constraint without actually stably grasping the
-    object" (fake success).
-
-    So we deliberately do *not* prescribe a hand orientation or a nominal finger shape here. The
-    object is symmetric and there is no functional grasp to hit — the paper's ``r_hr``/``r_hj`` exist
-    to hold a drill *so its trigger can be pulled*, which is a requirement we simply don't have. Any
-    pose that lifts the cube is a legitimate grasp; let the load decide.
-
-    Gating on the cage is what stops the obvious cheat, which is to flick the object upward without
-    ever holding it.
+    "어떤 자세를 진짜 파지로 인정할지" 결정하는 항. 들지 못하는 자세는 파지가 아니므로,
+    자세를 지정할 필요 없이 하중을 견디는지만 물으면 됨. 물리가 자세를 결정함.
+    막아야 할 편법 2가지: (1) 중심 대신 "최하 모서리"를 봐야 기울이기가 안 통함.
+    (2) cage_gate를 곱해야 "파지 없이 튕겨 올리기"가 안 통함. 조밀형이라 1mm 상승에도 gradient가 있음.
     """
-    obj: RigidObject = env.scene[object_cfg.name]
     gate = object_in_finger_cage(
         env, asset_cfg, object_cfg, object_half_extent, num_points, sphere_radius, depth_max
     )
-    # Dense in height, so even the millimetre of lift the current policy already produces carries a
-    # gradient. A sparse "is it above N cm" term would sit at exactly zero forever and teach nothing.
-    height = obj.data.root_pos_w[:, 2] - initial_height
-    lift = torch.clamp(height, 0.0, lift_height) / lift_height
+    clearance = box_ground_clearance(env, object_cfg, object_half_extent, surface_z)
+    lift = torch.clamp(clearance, 0.0, lift_height) / lift_height
     return gate * lift
+
+
+def arm_manipulability_penalty(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    j_max: float = 0.02,
+) -> torch.Tensor:
+    """팔이 특이점으로 접히는 것을 벌함 (논문 Eq.17, r_MP). 범위 [-1, 0].
+
+    |J| = sqrt(det(J Jt)) (manipulability). j_max 위면 페널티 0, 특이점이면 -1.
+    이게 없으면 "손바닥을 물체 쪽으로"를 만족시키는 가장 싼 방법이 "팔을 접어 손목만 돌리기"가 됨.
+    접힌 팔은 손을 자유롭게 못 움직여서 물체에 영영 못 감. (실측: manip이 초기 57% -> 13%로 추락,
+    큐브 31cm 앞에서 정지). asset_cfg에 body_names=["palm_link"], joint_names=["joint[0-5]"] 필요.
+    """
+    asset: RigidObject = env.scene[asset_cfg.name]
+    body_id = asset_cfg.body_ids[0]  # type: ignore
+    joint_ids = asset_cfg.joint_ids  # type: ignore
+
+    # fixed-base articulation은 jacobian에 root body가 빠져 있어서 body i가 i-1행에 있음
+    jac = asset.root_physx_view.get_jacobians()[:, body_id - 1, :, :][:, :, joint_ids]  # (N, 6, n)
+    manip = torch.sqrt(torch.clamp(torch.det(jac @ jac.transpose(1, 2)), min=0.0))
+
+    ratio = torch.clamp(manip, max=j_max) / j_max
+    return 1.0 - 2.0 / (1.0 + ratio**3)
+
+
+def hand_floor_penalty(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    clearance: float = 0.02,
+    surface_z: float = 0.0,
+) -> torch.Tensor:
+    """손이 바닥/받침면을 파고드는 것을 벌함. 범위 [-1, 0].
+
+    surface_z + clearance 아래로 내려간 깊이에 비례해 감점함.
+    최대가 0이라 "높이 떠 있기"를 유도하진 않고, 받침면을 파고드는 것만 막음.
+    """
+    asset: RigidObject = env.scene[asset_cfg.name]
+    z = asset.data.body_pos_w[:, asset_cfg.body_ids, 2]  # (N, B)
+    limit_z = env.scene.env_origins[:, 2].unsqueeze(-1) + surface_z + clearance
+    depth = (limit_z - z).clamp(min=0.0) / clearance  # 파고든 깊이, [0, 1]
+    return -depth.clamp(max=1.0).max(dim=-1).values
+
+
+def palm_facing_object(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    object_cfg: SceneEntityCfg,
+    palm_normal_b: tuple[float, float, float] = (0.19, 0.28, 0.94),
+) -> torch.Tensor:
+    """물체가 손의 "파지 개구부" 안에 있는가. [0, 1]. 1이면 엄지-손가락 사이 정면.
+
+    이름과 달리 palm_normal_b는 손바닥 법선이 **아님**. 물체가 엄지와 손가락 사이로 들어가는
+    공간의 방향임. 둘은 65도 어긋나 있고, 파지의 조건은 후자임.
+    실측(palm_link 로컬): 손바닥 법선 = (0.965, -0.008, 0.262) ~= +x.
+    손가락은 +z로 뻗고(편 상태 검지 z=0.195) 오므리면 한 점(0.065, 0.006, 0.097)으로 모임
+    -> 그 사이 공간 = 물체가 들어갈 자리 = (0.19, 0.28, 0.94).
+    손바닥 법선(1,0,0)을 쓰면 hold와 상관계수 +0.003(무상관)이라 오히려 파지를 방해함.
+
+    cage 항이 못 보는 것을 봄: 엄지-손가락 선분은 손 방향과 무관하게 물체를 관통할 수 있어서
+    "손 옆에 물체를 끼고만 있는" 자세도 cage 만점을 받음.
+    축 하나만 제약하고 roll은 자유 -> 대칭 물체의 파지 방식을 고르지 않음.
+    이 함수 자체는 metric용. reward로 쓸 땐 반드시 차분형(PalmFacingProgressReward).
+    """
+    asset: RigidObject = env.scene[asset_cfg.name]
+    obj: RigidObject = env.scene[object_cfg.name]
+
+    body_id = asset_cfg.body_ids[0]  # type: ignore
+    palm_pos_w = asset.data.body_state_w[:, body_id, :3]
+    palm_quat_w = asset.data.body_state_w[:, body_id, 3:7]
+
+    normal_b = torch.tensor(palm_normal_b, dtype=torch.float, device=env.device)
+    normal_b = normal_b / torch.clamp(torch.norm(normal_b), min=1e-6)
+    normal_w = quat_apply(palm_quat_w, normal_b.expand(env.num_envs, 3))
+
+    to_obj = obj.data.root_pos_w - palm_pos_w
+    to_obj = to_obj / torch.clamp(torch.norm(to_obj, dim=-1, keepdim=True), min=1e-6)
+    return torch.clamp(torch.sum(normal_w * to_obj, dim=-1), 0.0, 1.0)
+
+
+class PalmFacingProgressReward(ManagerTermBase):
+    """손바닥을 물체 쪽으로 "돌리는 것"을 보상. 논문 r_hr과 같은 차분형.
+
+    r(t) = facing(t) - facing(t-1), reset()에서 기준선 seeding.
+    총합이 facing(final) - facing(reset)로 telescoping됨 -> 가만히 있으면 정확히 0, 정렬이 깨지면 감점.
+    절대형으로 넣었다가 대참사: 겨누기는 접근보다 훨씬 싸서 weight 0.5에서 전체 보상의 98%를 먹고,
+    정책이 팔을 접어 31cm 밖에서 겨누기만 함 (manip 13%까지 추락).
+    논문의 거의 모든 항이 차분형인 이유가 이것 (절대형은 r_hold 하나뿐). 차분형은 farming 불가.
+    """
+
+    def __init__(self, cfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        self._previous_facing = torch.zeros(env.num_envs, dtype=torch.float, device=env.device)
+
+    def _facing(self) -> torch.Tensor:
+        p = self.cfg.params
+        return palm_facing_object(
+            self._env,
+            p["asset_cfg"],
+            p["object_cfg"],
+            p.get("palm_normal_b", (1.0, 0.0, 0.0)),
+        )
+
+    def reset(self, env_ids: Sequence[int] | None = None) -> None:
+        if env_ids is None:
+            env_ids = slice(None)
+        # 기준선은 "리셋 자세"에서. cage progress와 같은 이유 (첫 액션이 기준선을 부풀리는 것 방지).
+        self._previous_facing[env_ids] = self._facing()[env_ids]
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        asset_cfg: SceneEntityCfg,
+        object_cfg: SceneEntityCfg,
+        palm_normal_b: tuple[float, float, float] = (1.0, 0.0, 0.0),
+    ) -> torch.Tensor:
+        current = self._facing()
+        progress = current - self._previous_facing
+        self._previous_facing[:] = current
+        return torch.clamp(progress, min=-1.0, max=1.0)
 
 
 def object_to_target_position_tracking_bounded(

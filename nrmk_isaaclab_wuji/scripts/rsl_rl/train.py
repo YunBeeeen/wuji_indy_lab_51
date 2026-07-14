@@ -37,9 +37,9 @@ parser.add_argument(
     type=int,
     default=None,
     help=(
-        "Physics steps between rendered frames. Only has any effect when a GUI or an RTX sensor is"
-        " active, so it never slows down --headless runs. Defaults to the task cfg (= decimation),"
-        " which draws one frame per policy step; lower it (e.g. 4) to watch training smoothly."
+        "렌더 프레임 사이의 physics step 수. GUI나 RTX 센서가 켜져 있을 때만 효과가 있으므로"
+        " --headless 학습 속도에는 영향이 없음. 기본값은 task cfg(= decimation)이며 policy step마다"
+        " 1프레임만 그림. GUI로 학습을 볼 때는 4 정도로 낮출 것."
     ),
 )
 # append RSL-RL cli arguments
@@ -129,9 +129,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env_cfg.seed = agent_cfg.seed
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
 
-    # Task cfgs set render_interval = decimation, which draws one frame per policy step. At
-    # decimation 24 over a 1/60 s physics step that is 2.5 frames per simulated second, so watching
-    # training in the GUI looks like a slideshow. Only affects GUI/RTX-sensor runs.
+    # task cfg가 render_interval = decimation이라 policy step당 1프레임만 그림.
+    # decimation 24 + physics 1/60초면 시뮬 1초당 2.5프레임 -> GUI로 보면 슬라이드쇼처럼 보임.
+    # GUI / RTX 센서가 있을 때만 영향을 줌 (headless 학습 속도와 무관).
     if args_cli.render_interval is not None:
         env_cfg.sim.render_interval = args_cli.render_interval
 

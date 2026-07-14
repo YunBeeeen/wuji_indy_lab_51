@@ -9,6 +9,10 @@
 - 기본 task는 `Indy-Wuji-Reach`임.
 - 현재 action dim은 6임.
 - 현재 policy observation dim은 15임.
+- cube grasp task는 `Indy-Wuji-Cube-Grasp` 하나만 사용함.
+- `Indy-Wuji-Cube-Grasp-Easy`는 이전 실험 이름이라 현재 명령에 쓰지 않음.
+- cube grasp action dim은 18임.
+- cube grasp policy observation dim은 57임.
 - 현재 tracking body는 `link6`임.
 - 아래 명령은 변수 없이 바로 복붙 실행하는 형태임.
 
@@ -100,7 +104,7 @@ python scripts/rsl_rl/train.py \
 ```bash
 cd ~/wuji_indy_lab_51/nrmk_isaaclab_wuji
 conda activate env_isaaclab
-tensorboard --logdir logs/rsl_rl/indy_wuji_reach --port 6006 --reload_interval 5
+tensorboard --logdir logs/rsl_rl/indy_wuji_cube_grasp --port 6006 --reload_interval 5
 ```
 
 - 브라우저에서 봄.
@@ -113,6 +117,12 @@ http://localhost:6006
 
 ```bash
 tensorboard --logdir logs/rsl_rl/indy_wuji_reach --port 6007 --reload_interval 5
+```
+
+- cube grasp 로그를 볼 때는 logdir를 바꿈.
+
+```bash
+tensorboard --logdir logs/rsl_rl/indy_wuji_cube_grasp --port 6006 --reload_interval 5
 ```
 
 ## GUI 학습 확인
@@ -134,6 +144,8 @@ python scripts/rsl_rl/train.py \
 
 - 학습된 policy 재생용임.
 - 최신 run을 자동으로 찾아서 재생함.
+- 같은 experiment 안에 과거 smoke/hard/easy run이 섞여 있으면 잘못된 run을 잡을 수 있음.
+- 중요한 확인은 `ls -td logs/rsl_rl/indy_wuji_cube_grasp/20*`로 run 폴더를 눈으로 보고 직접 지정함.
 
 ```bash
 cd ~/wuji_indy_lab_51/nrmk_isaaclab_wuji
@@ -155,7 +167,7 @@ conda activate env_isaaclab
 python scripts/rsl_rl/play.py \
   --task Indy-Wuji-Cube-Grasp \
   --num_envs 1 \
-  --checkpoint "$(find "$(ls -td logs/rsl_rl/indy_wuji_reach/20* | head -n 1)" -name 'model_*.pt' | sort -V | tail -n 1)"
+  --checkpoint "$(find "$(ls -td logs/rsl_rl/indy_wuji_cube_grasp/20* | head -n 1)" -name 'model_*.pt' | sort -V | tail -n 1)"
 ```
 
 ## Headless Play
@@ -205,6 +217,132 @@ python scripts/rsl_rl/train.py \
   --max_iterations 50000 \
   --resume \
   --load_run "$(basename "$(ls -td logs/rsl_rl/indy_wuji_cube_grasp/20* | head -n 1)")"
+```
+
+## 폐기된 Cube Grasp 분기
+
+- `Indy-Wuji-Cube-Grasp-Easy`, Hard resume 구조는 현재 쓰지 않음.
+- 2026-07-14 기준 새 학습/play/smoke test는 전부 `Indy-Wuji-Cube-Grasp`로 실행함.
+- 과거 checkpoint를 볼 때만 예전 run 이름을 참고함.
+
+## Cube Grasp 확인
+
+- 2026-07-14 기준 `Indy-Wuji-Cube-Grasp` 하나만 사용함.
+- 현재 main task는 받침면 `z=0.40` 위에 cube를 놓음.
+- cube 중심은 `(0.692, -0.369, 0.430)`임.
+- probe 기준 reset `palm_facing=0.987`, zero action 30 step 뒤 `0.997`이라 현재 설정에서는 `palm_facing` reward를 꺼도 되는 배치임.
+- smoke test는 headless로 봄.
+
+```bash
+cd ~/wuji_indy_lab_51/nrmk_isaaclab_wuji
+conda activate env_isaaclab
+python scripts/rsl_rl/train.py \
+  --task Indy-Wuji-Cube-Grasp \
+  --headless \
+  --num_envs 1 \
+  --max_iterations 1
+```
+
+- 높이/위치를 눈으로 볼 때는 GUI로 봄.
+
+```bash
+cd ~/wuji_indy_lab_51/nrmk_isaaclab_wuji
+conda activate env_isaaclab
+python scripts/rsl_rl/train.py \
+  --task Indy-Wuji-Cube-Grasp \
+  --num_envs 1 \
+  --max_iterations 1
+```
+
+## Cube Grasp Action 확인
+
+- policy가 이상한 action을 내는지 확인함.
+- `raw`는 policy network 출력임.
+- `applied`는 `clip_actions=1.0` 적용 후 실제 env에 들어간 action임.
+- `target`은 `default_joint_pos + scale * applied`로 만들어진 관절 목표임.
+- `actual`은 현재 실제 관절각임.
+- `err`가 작고 action이 크면 policy/학습 문제임.
+- `err`가 크면 물리/PD/접촉/decimation 문제임.
+
+```bash
+cd ~/wuji_indy_lab_51/nrmk_isaaclab_wuji
+conda activate env_isaaclab
+python scripts/rsl_rl/play.py \
+  --task Indy-Wuji-Cube-Grasp \
+  --num_envs 1 \
+  --load_run "$(basename "$(ls -td logs/rsl_rl/indy_wuji_cube_grasp/20* | head -n 1)")" \
+  --print_action \
+  --print_action_interval 1 \
+  --print_action_detail
+```
+
+## Cube Grasp Contact/Lift 확인
+
+- policy 없이 scripted action으로 확인함.
+- `GOOD_CONTACT thumb+middle`이 `True`인지 봄.
+- `max_clearance(m)`가 `0.005` 이상인지 봄.
+- contact가 `True`인데 lift가 `False`면 잡는 게 아니라 누르는 것임.
+
+```bash
+cd ~/wuji_indy_lab_51/nrmk_isaaclab_wuji
+conda activate env_isaaclab
+python scripts/debug/check_cube_contact_lift.py \
+  --task Indy-Wuji-Cube-Grasp \
+  --headless \
+  --num-envs 1 \
+  --settle-steps 30 \
+  --close-steps 60 \
+  --lift-steps 30
+```
+
+- arm 단일축 lift 후보를 같이 훑음.
+
+```bash
+cd ~/wuji_indy_lab_51/nrmk_isaaclab_wuji
+conda activate env_isaaclab
+python scripts/debug/check_cube_contact_lift.py \
+  --task Indy-Wuji-Cube-Grasp \
+  --headless \
+  --num-envs 1 \
+  --settle-steps 30 \
+  --close-steps 60 \
+  --lift-steps 30 \
+  --sweep-lift
+```
+
+- cube는 고정하고 thumb/index/middle close 값을 훑음.
+- 기본 후보는 각 finger별 `0.0`, `0.5`, `1.0` 조합임.
+- `--contact-mode`는 `thumb_middle`, `thumb_index`, `thumb_any`, `tripod` 중 선택함.
+
+```bash
+cd ~/wuji_indy_lab_51/nrmk_isaaclab_wuji
+conda activate env_isaaclab
+python scripts/debug/check_cube_contact_lift.py \
+  --task Indy-Wuji-Cube-Grasp \
+  --headless \
+  --num-envs 1 \
+  --settle-steps 30 \
+  --close-steps 60 \
+  --lift-steps 30 \
+  --sweep-fingers \
+  --contact-mode thumb_middle
+```
+
+- 특정 손가락 조합만 확인함.
+- 아래 예시는 thumb/middle만 닫고 index는 열어둠.
+
+```bash
+cd ~/wuji_indy_lab_51/nrmk_isaaclab_wuji
+conda activate env_isaaclab
+python scripts/debug/check_cube_contact_lift.py \
+  --task Indy-Wuji-Cube-Grasp \
+  --headless \
+  --num-envs 1 \
+  --settle-steps 30 \
+  --close-steps 60 \
+  --lift-steps 30 \
+  --finger-action 1 0 1 \
+  --contact-mode thumb_middle
 ```
 
 ## GUI Play

@@ -279,40 +279,9 @@ class CubeGraspObservationsCfg:
     policy: PolicyCfg = PolicyCfg()
 
 
-@configclass
-# class CubeGraspTeacherObsCfg(ObservationsCfg):
-#
-#    @configclass
-#    class Proprio(ObsGroup):
-#        """Observations for policy group."""
-
-        # observation terms (order preserved)
-#        joint_pos = ObsTerm(func=mdp.joint_pos_rel, noise=Gnoise(std=0.01), history_length=3)
- #       joint_vel = ObsTerm(func=mdp.finite_joint_vel, noise=Gnoise(std=0.1), history_length=3)
-  #      pose_command = ObsTerm(func=mdp.generated_commands, params={"command_name": "ee_pose"})
-
-#        action_history = ObsTerm(func=mdp.action_history)
-
-#        def __post_init__(self):
- #           self.enable_corruption = True
-  #          self.concatenate_terms = True
-
-#    @configclass
- #   class Privileged(ObsGroup):
-  #      """Observations for policy group."""
-
-        # observation terms (order preserved)
-#        joint_friction = ObsTerm(func=mdp.joint_friction)
- #       joint_damping = ObsTerm(func=mdp.joint_damping)
-  #      action_delay = ObsTerm(func=mdp.action_delay_steps)
-        # TODO: action delay
-
-#        def __post_init__(self):
- #           self.enable_corruption = False
-  #          self.concatenate_terms = True
-
-#    proprioception = Proprio()
- #   privileged = Privileged()
+# CubeGraspTeacherObsCfg (teacher/student proprio + privileged obs groups) lived here. It was never
+# referenced — the cube grasp task only uses the `policy` group — so it is gone rather than commented
+# out. The reach task's TeacherObsCfg is a separate class and is still in use.
 
 
 @configclass
@@ -378,21 +347,14 @@ class CubeGraspEventCfg:
 
 CAGE_BODIES = SceneEntityCfg(
     "robot",
-    # [thumb_tip, *opposing]: a line is drawn from the thumb tip to each opposing body, and each
-    # finger appears twice — its tip (pinch grasp) and its mid-phalanx (secure grasp). 4 lines x 3
-    # points = 12 cage points.
-    #
-    # The paper uses the thumb-middle pair alone (6 points) because its r_grasp term separately pins
-    # the hand rotation and every finger joint to a target grasp. A symmetric cube has no target
-    # grasp, so we have no r_grasp — and with only thumb-middle, the index was left entirely
-    # unconstrained and the policy found a palm-up, fingers-crossed pose that still scored a perfect
-    # cage. Listing the index too is the paper's own suggested extension, and thumb+index+middle is
-    # the chopstick grip we are ultimately after.
-    #
-    # preserve_order: SceneEntityCfg sorts body_ids by default, which would silently move the thumb
-    # out of slot 0 and turn some other finger into the anchor.
+    # [엄지끝, *대향]. 엄지끝에서 각 대향 body로 선분을 긋고 등간격 3점 -> 4선분 x 3점 = 가상점 12개.
+    # 각 손가락은 두 번 등장함: 끝(핀치 파지)과 중간마디(파워 파지).
+    # 논문은 엄지-중지만 써서 6점이지만, 논문에는 r_grasp가 손 회전/손가락 관절각을 붙잡음.
+    # 큐브엔 목표 파지가 없어 r_grasp를 못 쓰므로, 6점만 쓰면 검지가 자유가 되어 "손바닥이 하늘 +
+    # 검지·중지 교차" 자세로도 만점이 나옴 (2026-07-11 실측). 엄지+검지+중지는 젓가락 그립과 동일.
+    # preserve_order=True 필수: 기본값이면 body_ids가 정렬돼서 엄지가 기준점 자리에서 밀려남.
     body_names=[
-        "finger1_tip_link",  # thumb tip: the anchor every line starts from
+        "finger1_tip_link",  # 엄지끝: 모든 선분의 기준점
         "finger2_tip_link",
         "finger2_link3",
         "finger3_tip_link",
@@ -404,40 +366,34 @@ CAGE_BODIES = SceneEntityCfg(
 
 @configclass
 class CubeGraspRewardsCfg:
-    """Reward terms for the MDP.
+    """Cube grasp reward terms.
 
-    Both terms act on the *same* virtual points spanning the grasp aperture — the gap between the
-    thumb tip and the middle finger — which is what makes them compose. reach (Eq. 14) drags that
-    aperture onto the cube; hold (Eq. 15) pays for the points sinking into it, so closing the hand
-    is rewarded directly with no contact sensing.
+    reach/hold/lift가 "같은" 12개 가상점 위에서 동작함. reach가 파지 간극을 큐브 위로 끌어오고,
+    hold가 점들이 큐브 안으로 파고드는 것을 보상함 -> "오므리기"가 직접 보상됨 (접촉센서 불필요).
 
-    Every earlier reward drove *fingertips* at the cube's *centre*. That target is 3 cm inside a
-    6 cm cube, so it is unreachable, and with the thumb weighted 3:1:1 the cheapest way to satisfy
-    it was to bury the thumb and leave the other fingers behind (measured: thumb 0.017 m off the
-    surface, index 0.072, middle 0.078). From that pose the thumb->middle segment does not straddle
-    the cube, so closing the hand pushed the cage points back *out* — forcing the fingers shut drove
-    cage_inside_frac down from 0.47 to 0.40. The policy was right to refuse to close; the reward was
-    wrong. Centre-seeking distance terms also punish contact, since touching a free cube shoves it
-    away and the distance grows. Do not reintroduce them.
+    [절대 다시 넣지 말 것] "손끝 -> 큐브 중심" 거리 reward.
+    큐브 중심은 표면에서 3cm 안쪽이라 손끝이 도달 불가능한 목표이고, 엄지 가중치 3배와 결합하면
+    "엄지만 박고 나머지 방치"가 최적해가 됨 (실측: thumb 0.017 / index 0.072 / middle 0.078).
+    그 자세에선 오므릴수록 가상점이 큐브 밖으로 나감 (강제 오므림 시 inside_frac 0.47 -> 0.40).
+    게다가 거리 reward는 접촉을 처벌함 (만지면 큐브가 밀려나 거리가 늘어남).
     """
 
     finger_cage_reach = RewTerm(
         func=mdp.ObjectCageProgressReward,
-        # Kept well below finger_cage_hold. The paper scales rewards by their position in the
-        # sub-task sequence (r_T >> r_orient >> r_hold >> r_reach) precisely to stop the policy from
-        # settling for the easier earlier sub-task, which is exactly what happened when reach
-        # outweighed hold.
-        weight=0.3,
+        # 2026-07-13_21-57-31 run 값
+        weight=10.0,
         params={
             "asset_cfg": CAGE_BODIES,
             "object_cfg": SceneEntityCfg("cube"),
             "object_half_extent": (0.03, 0.03, 0.03),
             "num_points": 3,
-            # Normalises the per-step improvement. Keep it above the largest realistic per-step gain
-            # (~0.15 m during the approach) so the term never saturates: a saturating progress reward
-            # pays per *step* that banks an improvement, which rewards dawdling.
+            # step당 개선량의 정규화 상수 (거리 임계값 아님).
+            # 실제 step당 최대 개선량(약 0.15m)보다 충분히 커야 함. 포화되면 "천천히 접근하기"를 보상함.
             "distance_max": 0.5,
-        },
+            # 순서 강제 게이트 (양수에만 적용)
+            "palm_cfg": SceneEntityCfg("robot", body_names=["palm_link"]),
+            "palm_normal_b": (0.19, 0.28, 0.94),
+            "gate_floor": 0.0,        },
     )
 
     finger_cage_hold = RewTerm(
@@ -448,24 +404,19 @@ class CubeGraspRewardsCfg:
             "object_cfg": SceneEntityCfg("cube"),
             "object_half_extent": (0.03, 0.03, 0.03),
             "num_points": 3,
-            # Tuned by sweeping this term over a flexion sweep of the settled 2026-07-10 policy:
-            # a larger sphere_radius pays out just for having the cube between open fingers. At
-            # 0.005/0.02 an open hand scores 0.19 and a closed one 0.46 (2.4x); at 0.02/0.03 it was
-            # 0.30 -> 0.49 (1.6x), i.e. mostly a constant the critic subtracts out.
+            # 손가락 굴곡 sweep으로 실측 튜닝함. sphere_radius가 크면 손가락을 벌린 채 큐브가
+            # 사이에 있기만 해도 점수가 나와 대비가 죽음.
+            # 0.005/0.02 -> 벌림 0.19 / 오므림 0.46 (2.4배).  0.02/0.03 -> 0.30 / 0.49 (1.6배).
             "sphere_radius": 0.005,
             "depth_max": 0.02,
         },
     )
 
-    # The paper's r_lift, and the term that decides which grasps count. The cage geometry alone can
-    # be satisfied by a pose that never takes the cube's weight — a 2026-07-11 run reached
-    # opposition +0.92 and inside_frac 0.84 while lifting the cube by 2 mm, with the palm turned up
-    # and the fingers crossed. Rather than prescribe a hand orientation to rule that out (arbitrary:
-    # a symmetric cube has no functional grasp to hit, which is the whole reason the paper's r_hr and
-    # r_hj are unavailable to us), just require the hand to carry the thing. Any pose that lifts the
-    # cube is a real grasp.
-    #
-    # Weighted above hold, per the paper's ordering r_T >> r_orient >> r_hold >> r_reach.
+    # 논문 r_lift. "어떤 자세를 진짜 파지로 인정할지" 결정하는 항.
+    # cage만으로는 하중을 못 견디는 자세도 만점이 나옴 (2026-07-11 run: opposition +0.92,
+    # inside_frac 0.84인데 lift는 2mm. 손바닥은 하늘, 손가락은 교차).
+    # 자세를 지정하지 않고 "들 수 있는가"만 물음. 드는 자세면 뭐든 진짜 파지임.
+    # hold보다 무겁게 (논문 순서 r_T >> r_hold >> r_reach).
     cube_lift = RewTerm(
         func=mdp.object_lift_in_cage,
         weight=3.0,
@@ -476,17 +427,342 @@ class CubeGraspRewardsCfg:
             "num_points": 3,
             "sphere_radius": 0.005,
             "depth_max": 0.02,
-            "initial_height": 0.03,  # the cube's spawn height; reset only randomises x/y
             "lift_height": 0.08,
         },
     )
 
-    action_rate = RewTerm(func=mdp.action_rate_l2, weight=-0.0003)
+    # 자의적 제약이 아니라 물리적 필요조건: 손가락은 손바닥 쪽으로 굽으므로 손바닥 뒤의 물체는 못 감쌈.
+    # cage 항은 이걸 못 봄 (선분이 손 방향과 무관하게 큐브를 관통) -> 손바닥이 하늘인데도 cage 만점이 나옴.
+    # 법선 축만 제약하고 roll은 자유 -> 대칭 물체의 파지 방식을 고르지 않음.
+    # 넣기 전에 도달성 먼저 검증함: 팔 관절 40만개 샘플링 결과 "큐브에 닿으면서 정면(+1.000)"인 자세가 존재함.
+    #
+    # 논문 r_hr처럼 차분형. 손바닥을 "돌리는 것"에만 지급하고, 겨눈 채 유지하는 것엔 지급 안 함.
+    # 절대형(weight 0.5)으로 넣었다가 전체 보상의 98%를 먹음: 겨누기는 접근보다 훨씬 싸서
+    # 정책이 팔을 접어 31cm 밖에서 겨누기만 하고 접근을 안 함 (manip이 최적의 13%까지 추락).
+    # 차분형은 총액이 (final - reset)으로 고정이라 아무리 weight를 키워도 farming이 불가능함.
+    palm_facing = RewTerm(
+        func=mdp.PalmFacingProgressReward,
+        # 2026-07-13_21-57-31 run 값
+        weight=8.0,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=["palm_link"]),
+            "object_cfg": SceneEntityCfg("cube"),
+            # 손가락을 오므릴 때 손끝이 이동하는 방향으로 실측한 palm_link의 안쪽 법선
+            "palm_normal_b": (0.19, 0.28, 0.94),
+        },
+    )
+
+    # 논문 Eq.17 (r_MP). 이게 없으면 "손바닥을 큐브 쪽으로"를 만족시키는 가장 싼 방법이
+    # "팔을 접어 손목만 돌리기"가 됨. 접힌 팔은 손을 못 움직여서 큐브에 영영 못 감.
+    # (실측: manip이 초기 57% -> 13%로 추락, 큐브 31cm 앞에서 정지)
+    # 논문대로 스케일 안 함(1.0). 범위 [-1, 0]: 특이점에서 멀면 0.
+    arm_manipulability = RewTerm(
+        func=mdp.arm_manipulability_penalty,
+        weight=1.0,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=["palm_link"], joint_names=["joint[0-5]"]),
+            # 논문은 "관측 최대 |J|의 15%". 실측 최대가 약 0.113이므로 0.017 -> 0.02로 잡음.
+            "j_max": 0.02,
+        },
+    )
+
+    # 큐브가 지면(z=0.03)에 있어서 cage를 만들려면 손끝이 바닥 근처까지 내려와야 함. 조금만 지나치면
+    # 팔이 바닥을 뚫을 기세로 밀고 반작용으로 손이 87cm까지 튕겨 오르며 큐브를 67cm 날림 (model_350 실측).
+    # 종료 조건이 time_out뿐이라 지금까지 바닥을 쳐도 아무 벌이 없었음.
+    # 범위 [-1, 0]이라 최대가 0 -> "안전하게 높이 떠 있기"를 유도하지는 않음.
+    hand_floor = RewTerm(
+        func=mdp.hand_floor_penalty,
+        # 절대형이라 dt 보정 불필요. 최악 -2.0 (reach 1.0의 2배). 더 키우면 정책이 바닥을 피하려고
+        # 아예 안 내려와서 지면의 큐브에 영영 못 감 (호버링 실패 모드).
+        weight=0.5,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=["palm_link", "finger.*"]),
+            # 큐브 중심이 z=0.03이므로 2cm까지는 자유롭게 내려갈 수 있어야 감쌀 수 있음
+            "clearance": 0.02,
+        },
+    )
+    action_rate = RewTerm(func=mdp.action_rate_l2, weight=-0.005)
 
 
 
 @configclass
 class CubeGraspTerminationsCfg:
+    """Termination terms for the MDP."""
+
+    time_out = DoneTerm(func=mdp.time_out, time_out=True)
+
+
+
+
+
+
+# -----------------------------------------------------------------------------
+# mdp for functional_grasp
+
+@configclass
+class ChopsticksGraspCommandsCfg:
+    """Command terms for the MDP."""
+    pass
+
+
+@configclass
+class ChopsticksGraspActionsCfg:
+    """Action specifications for the MDP."""
+    arm_action: ActionTerm = MISSING
+    gripper_action: ActionTerm | None = None
+
+
+@configclass
+class ChopsticksGraspObservationsCfg:
+    """Observation specifications for the MDP."""
+    @configclass
+    class PolicyCfg(ObsGroup):
+        """Observations for policy group."""
+
+        joint_pos = ObsTerm(func=mdp.joint_pos)
+        cube_pos = ObsTerm(
+            func=mdp.object_position_relative,
+            params={
+                "asset_cfg": SceneEntityCfg("robot", body_names=["palm_link"]),
+                "object_cfg": SceneEntityCfg("cube"),
+            },
+        )
+        cube_in_fingertips = ObsTerm(
+            func=mdp.object_position_relative_to_bodies,
+            params={
+                "asset_cfg": SceneEntityCfg(
+                    "robot",
+                    body_names=["finger1_tip_link", "finger2_tip_link", "finger3_tip_link", "finger4_tip_link", "finger5_tip_link"],
+                ),
+                "object_cfg": SceneEntityCfg("cube"),
+            },
+        )
+        cube_to_goal = ObsTerm(
+            func=mdp.object_position_error_to_target,
+            params={
+                "object_cfg": SceneEntityCfg("cube"),
+                "target_pos": (0.55, -0.05, 0.12),
+            },
+        )
+
+        action_history = ObsTerm(func=mdp.action_history)
+
+        def __post_init__(self):
+            self.enable_corruption = True
+            self.concatenate_terms = True
+
+    # observation groups
+    policy: PolicyCfg = PolicyCfg()
+
+
+# CubeGraspTeacherObsCfg (teacher/student proprio + privileged obs groups) lived here. It was never
+# referenced — the cube grasp task only uses the `policy` group — so it is gone rather than commented
+# out. The reach task's TeacherObsCfg is a separate class and is still in use.
+
+
+@configclass
+class ChopsticksGraspEventCfg:
+    """Configuration for events."""
+
+    # reset_robot_joints = EventTerm(
+    #     func=mdp.reset_joints_by_scale,
+    #     mode="reset",
+    #     params={
+    #         "position_range": (0.5, 1.5),
+    #         "velocity_range": (0.0, 0.0),
+    #     },
+    # )
+    reset_all = EventTerm(func=mdp.reset_scene_to_default, mode="reset")
+
+    reset_cube_position = EventTerm(
+        func=mdp.reset_root_state_uniform,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg("cube"),
+            "pose_range": {
+                "x": (-0.06, 0.06),
+                "y": (-0.08, 0.08),
+                "z": (0.0, 0.0),
+            },
+            "velocity_range": {},
+        },
+    )
+
+    # randomize_joint_friction = EventTerm(
+    #     func=mdp.randomize_joint_parameters,
+    #     mode="reset",
+    #     params={
+    #         "asset_cfg": SceneEntityCfg("robot", joint_names="joint.*"),
+    #         "friction_distribution_params": (0.7, 1.3),
+    #         "armature_distribution_params": (0.75, 1.25),
+    #         "operation": "abs",
+    #         "distribution": "uniform",
+    #     },
+    # )
+
+    # randomize_joint_stiffness_and_damping = EventTerm(
+    #     func=mdp.randomize_actuator_gains,
+    #     mode="reset",
+    #     params={
+    #         "asset_cfg": SceneEntityCfg("robot"),
+    #         "stiffness_range": (94.0, 106.0),  # (100 - 6, 100 + 6)
+    #         "damping_range": (17.0, 23.0),  # (20 - 3, 20 + 3)
+    #         "operation": "abs",  # if use "reset" + "add", the sampled values are added to previous iter values.
+    #         "distribution": "uniform",
+    #     },
+    # )
+
+    # randomize_delay = EventTerm(
+    #     func=mdp.randomize_delay,
+    #     mode="reset",
+    #     params={
+    #         "delay_step_range": {"low": 20, "high": 24}
+    #     }
+    # )
+
+
+CAGE_BODIES = SceneEntityCfg(
+    "robot",
+    # [엄지끝, *대향]. 엄지끝에서 각 대향 body로 선분을 긋고 등간격 3점 -> 4선분 x 3점 = 가상점 12개.
+    # 각 손가락은 두 번 등장함: 끝(핀치 파지)과 중간마디(파워 파지).
+    # 논문은 엄지-중지만 써서 6점이지만, 논문에는 r_grasp가 손 회전/손가락 관절각을 붙잡음.
+    # 큐브엔 목표 파지가 없어 r_grasp를 못 쓰므로, 6점만 쓰면 검지가 자유가 되어 "손바닥이 하늘 +
+    # 검지·중지 교차" 자세로도 만점이 나옴 (2026-07-11 실측). 엄지+검지+중지는 젓가락 그립과 동일.
+    # preserve_order=True 필수: 기본값이면 body_ids가 정렬돼서 엄지가 기준점 자리에서 밀려남.
+    body_names=[
+        "finger1_tip_link",  # 엄지끝: 모든 선분의 기준점
+        "finger2_tip_link",
+        "finger2_link3",
+        "finger3_tip_link",
+        "finger3_link3",
+    ],
+    preserve_order=True,
+)
+
+
+@configclass
+class ChopsticksGraspRewardsCfg:
+    """Cube grasp reward terms.
+
+    reach/hold/lift가 "같은" 12개 가상점 위에서 동작함. reach가 파지 간극을 큐브 위로 끌어오고,
+    hold가 점들이 큐브 안으로 파고드는 것을 보상함 -> "오므리기"가 직접 보상됨 (접촉센서 불필요).
+
+    [절대 다시 넣지 말 것] "손끝 -> 큐브 중심" 거리 reward.
+    큐브 중심은 표면에서 3cm 안쪽이라 손끝이 도달 불가능한 목표이고, 엄지 가중치 3배와 결합하면
+    "엄지만 박고 나머지 방치"가 최적해가 됨 (실측: thumb 0.017 / index 0.072 / middle 0.078).
+    그 자세에선 오므릴수록 가상점이 큐브 밖으로 나감 (강제 오므림 시 inside_frac 0.47 -> 0.40).
+    게다가 거리 reward는 접촉을 처벌함 (만지면 큐브가 밀려나 거리가 늘어남).
+    """
+
+    finger_cage_reach = RewTerm(
+        func=mdp.ObjectCageProgressReward,
+        # 2026-07-13_21-57-31 run 값
+        weight=10.0,
+        params={
+            "asset_cfg": CAGE_BODIES,
+            "object_cfg": SceneEntityCfg("cube"),
+            "object_half_extent": (0.03, 0.03, 0.03),
+            "num_points": 3,
+            # step당 개선량의 정규화 상수 (거리 임계값 아님).
+            # 실제 step당 최대 개선량(약 0.15m)보다 충분히 커야 함. 포화되면 "천천히 접근하기"를 보상함.
+            "distance_max": 0.5,
+            # 순서 강제 게이트 (양수에만 적용)
+            "palm_cfg": SceneEntityCfg("robot", body_names=["palm_link"]),
+            "palm_normal_b": (0.19, 0.28, 0.94),
+            "gate_floor": 0.0,        },
+    )
+
+    finger_cage_hold = RewTerm(
+        func=mdp.object_in_finger_cage,
+        weight=1.0,
+        params={
+            "asset_cfg": CAGE_BODIES,
+            "object_cfg": SceneEntityCfg("cube"),
+            "object_half_extent": (0.03, 0.03, 0.03),
+            "num_points": 3,
+            # 손가락 굴곡 sweep으로 실측 튜닝함. sphere_radius가 크면 손가락을 벌린 채 큐브가
+            # 사이에 있기만 해도 점수가 나와 대비가 죽음.
+            # 0.005/0.02 -> 벌림 0.19 / 오므림 0.46 (2.4배).  0.02/0.03 -> 0.30 / 0.49 (1.6배).
+            "sphere_radius": 0.005,
+            "depth_max": 0.02,
+        },
+    )
+
+    # 논문 r_lift. "어떤 자세를 진짜 파지로 인정할지" 결정하는 항.
+    # cage만으로는 하중을 못 견디는 자세도 만점이 나옴 (2026-07-11 run: opposition +0.92,
+    # inside_frac 0.84인데 lift는 2mm. 손바닥은 하늘, 손가락은 교차).
+    # 자세를 지정하지 않고 "들 수 있는가"만 물음. 드는 자세면 뭐든 진짜 파지임.
+    # hold보다 무겁게 (논문 순서 r_T >> r_hold >> r_reach).
+    cube_lift = RewTerm(
+        func=mdp.object_lift_in_cage,
+        weight=3.0,
+        params={
+            "asset_cfg": CAGE_BODIES,
+            "object_cfg": SceneEntityCfg("cube"),
+            "object_half_extent": (0.03, 0.03, 0.03),
+            "num_points": 3,
+            "sphere_radius": 0.005,
+            "depth_max": 0.02,
+            "lift_height": 0.08,
+        },
+    )
+
+    # 자의적 제약이 아니라 물리적 필요조건: 손가락은 손바닥 쪽으로 굽으므로 손바닥 뒤의 물체는 못 감쌈.
+    # cage 항은 이걸 못 봄 (선분이 손 방향과 무관하게 큐브를 관통) -> 손바닥이 하늘인데도 cage 만점이 나옴.
+    # 법선 축만 제약하고 roll은 자유 -> 대칭 물체의 파지 방식을 고르지 않음.
+    # 넣기 전에 도달성 먼저 검증함: 팔 관절 40만개 샘플링 결과 "큐브에 닿으면서 정면(+1.000)"인 자세가 존재함.
+    #
+    # 논문 r_hr처럼 차분형. 손바닥을 "돌리는 것"에만 지급하고, 겨눈 채 유지하는 것엔 지급 안 함.
+    # 절대형(weight 0.5)으로 넣었다가 전체 보상의 98%를 먹음: 겨누기는 접근보다 훨씬 싸서
+    # 정책이 팔을 접어 31cm 밖에서 겨누기만 하고 접근을 안 함 (manip이 최적의 13%까지 추락).
+    # 차분형은 총액이 (final - reset)으로 고정이라 아무리 weight를 키워도 farming이 불가능함.
+    palm_facing = RewTerm(
+        func=mdp.PalmFacingProgressReward,
+        # 2026-07-13_21-57-31 run 값
+        weight=8.0,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=["palm_link"]),
+            "object_cfg": SceneEntityCfg("cube"),
+            # 손가락을 오므릴 때 손끝이 이동하는 방향으로 실측한 palm_link의 안쪽 법선
+            "palm_normal_b": (0.19, 0.28, 0.94),
+        },
+    )
+
+    # 논문 Eq.17 (r_MP). 이게 없으면 "손바닥을 큐브 쪽으로"를 만족시키는 가장 싼 방법이
+    # "팔을 접어 손목만 돌리기"가 됨. 접힌 팔은 손을 못 움직여서 큐브에 영영 못 감.
+    # (실측: manip이 초기 57% -> 13%로 추락, 큐브 31cm 앞에서 정지)
+    # 논문대로 스케일 안 함(1.0). 범위 [-1, 0]: 특이점에서 멀면 0.
+    arm_manipulability = RewTerm(
+        func=mdp.arm_manipulability_penalty,
+        weight=1.0,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=["palm_link"], joint_names=["joint[0-5]"]),
+            # 논문은 "관측 최대 |J|의 15%". 실측 최대가 약 0.113이므로 0.017 -> 0.02로 잡음.
+            "j_max": 0.02,
+        },
+    )
+
+    # 큐브가 지면(z=0.03)에 있어서 cage를 만들려면 손끝이 바닥 근처까지 내려와야 함. 조금만 지나치면
+    # 팔이 바닥을 뚫을 기세로 밀고 반작용으로 손이 87cm까지 튕겨 오르며 큐브를 67cm 날림 (model_350 실측).
+    # 종료 조건이 time_out뿐이라 지금까지 바닥을 쳐도 아무 벌이 없었음.
+    # 범위 [-1, 0]이라 최대가 0 -> "안전하게 높이 떠 있기"를 유도하지는 않음.
+    hand_floor = RewTerm(
+        func=mdp.hand_floor_penalty,
+        # 절대형이라 dt 보정 불필요. 최악 -2.0 (reach 1.0의 2배). 더 키우면 정책이 바닥을 피하려고
+        # 아예 안 내려와서 지면의 큐브에 영영 못 감 (호버링 실패 모드).
+        weight=0.5,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=["palm_link", "finger.*"]),
+            # 큐브 중심이 z=0.03이므로 2cm까지는 자유롭게 내려갈 수 있어야 감쌀 수 있음
+            "clearance": 0.02,
+        },
+    )
+    action_rate = RewTerm(func=mdp.action_rate_l2, weight=-0.005)
+
+
+
+@configclass
+class ChopsticksGraspTerminationsCfg:
     """Termination terms for the MDP."""
 
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
