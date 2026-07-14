@@ -60,7 +60,7 @@ class CubeGraspSceneCfg(ReachSceneCfg):
                 solver_velocity_iteration_count=1,
                 max_depenetration_velocity=5.0,
             ),
-            mass_props=sim_utils.MassPropertiesCfg(mass=0.30),
+            mass_props=sim_utils.MassPropertiesCfg(mass=0.10),
             collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
             physics_material=sim_utils.RigidBodyMaterialCfg(
                 static_friction=1.0,
@@ -110,7 +110,7 @@ class CubeGraspEnvCfg(NrmkRLEnvCfg):
         # 15 Hz(dec 4)면 판단 사이에 손이 3.3cm(큐브 반 개) 움직여서 아슬아슬함.
         self.sim.dt = 1.0 / 60.0
         self.decimation = 2  # 33ms/step -> 30 Hz
-        self.episode_length_s = 8.0  # -> 240 step/episode (기존 20)
+        self.episode_length_s = 6.0  # -> 240 step/episode (기존 20)
         # 2026-07-10 run이 2**18에서 약 263k patch로 overflow남. 지금은 finger_cage_hold가 손가락을
         # 오므리게 해서 접촉이 더 늘어남. overflow는 크래시가 아니라 "접촉을 조용히 버림" -> 손이
         # 큐브를 통과하고 cage reward가 안 오름 -> "reward 설계가 잘못됨"과 구별이 불가능해짐.

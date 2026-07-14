@@ -368,6 +368,10 @@ cd ~/wuji_indy_lab_51/nrmk_isaaclab_wuji
 ls -td logs/rsl_rl/indy_wuji_reach/*
 ```
 
+python scripts/rsl_rl/play.py   --task Indy-Wuji-Cube-Grasp   --num_envs 1   --load_run "$(basename "$(ls -td logs/rsl_rl/indy_wuji_cube_grasp/20* | head -n 1)")" --print_action   --print_action_detail   --print_action_interval 1
+
+
+
 ## 로그에서 볼 것
 
 - `Mean reward` 봄.

@@ -21,6 +21,14 @@ if TYPE_CHECKING:
 from isaac_neuromeka.assets.articulation import FiniteArticulation
 
 
+# TensorBoard reward 이름은 여기 함수명이 아니라 env_cfg_common.py의 RewTerm 필드명이 됨.
+# 예: finger_cage_hold = RewTerm(func=mdp.object_in_finger_cage, ...)
+#   -> Episode_Reward/finger_cage_hold
+#   -> Episode_Reward_Raw/finger_cage_hold
+# Metrics/cube/* 값들은 reward가 아니라 CustomRewardManager에서 따로 기록하는 진단값임.
+
+
+# TensorBoard: current task reward로 직접 쓰이지 않음. command error helper 성격.
 def position_command_error(env: ManagerBasedRLEnv, command_name: str, asset_cfg: SceneEntityCfg) -> torch.Tensor:
     """Penalize tracking of the position error using L2-norm.
 
@@ -38,6 +46,7 @@ def position_command_error(env: ManagerBasedRLEnv, command_name: str, asset_cfg:
     return torch.norm(curr_pos_w - des_pos_w, dim=1)
 
 
+# TensorBoard: current task reward로 직접 쓰이지 않음. command error helper 성격.
 def orientation_command_error(env: ManagerBasedRLEnv, command_name: str, asset_cfg: SceneEntityCfg) -> torch.Tensor:
     """Penalize tracking orientation error using shortest path.
 
@@ -55,6 +64,10 @@ def orientation_command_error(env: ManagerBasedRLEnv, command_name: str, asset_c
     return quat_error_magnitude(curr_quat_w, des_quat_w)
 
 
+# TensorBoard:
+# - Indy-Wuji-Reach: Episode_Reward/end_effector_position_tracking
+# - Indy-Wuji-Reach: Episode_Reward_Raw/end_effector_position_tracking
+# env_cfg_common.py: RewardsCfg.end_effector_position_tracking 에서 연결됨.
 def end_effector_position_tracking_bounded(
     env: ManagerBasedRLEnv,
     command_name: str,
@@ -76,6 +89,7 @@ def end_effector_position_tracking_bounded(
     return distance_bonus
 
 
+# TensorBoard: 직접 reward 이름 없음. 아래 cage reward들의 공통 helper.
 def _box_signed_distance(
     points_w: torch.Tensor,
     box_pos_w: torch.Tensor,
@@ -96,6 +110,7 @@ def _box_signed_distance(
     return outside + inside
 
 
+# TensorBoard: 직접 reward 이름 없음. finger_cage_reach / finger_cage_hold / cube_lift 공통 helper.
 def cage_points(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, num_points: int) -> torch.Tensor:
     """엄지끝에서 각 대향 body로 선분을 긋고 그 위에 찍는 "파지 간극" 가상점.
 
@@ -120,6 +135,7 @@ def cage_points(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, num_points: i
     return points.reshape(thumb.shape[0], -1, 3)
 
 
+# TensorBoard: 직접 reward 이름 없음. finger_cage_reach / finger_cage_hold / cube_lift 공통 helper.
 def _cage_sdf(
     env: ManagerBasedRLEnv,
     asset_cfg: SceneEntityCfg,
@@ -134,6 +150,10 @@ def _cage_sdf(
     return _box_signed_distance(points, obj.data.root_pos_w, obj.data.root_quat_w, half)
 
 
+# TensorBoard:
+# - Indy-Wuji-Cube-Grasp: Episode_Reward/finger_cage_hold
+# - Indy-Wuji-Cube-Grasp: Episode_Reward_Raw/finger_cage_hold
+# env_cfg_common.py: CubeGraspRewardsCfg.finger_cage_hold 에서 연결됨.
 def object_in_finger_cage(
     env: ManagerBasedRLEnv,
     asset_cfg: SceneEntityCfg,
@@ -155,6 +175,10 @@ def object_in_finger_cage(
     return torch.clamp(penetration / (sphere_radius + depth_max), 0.0, 1.0).mean(dim=1)
 
 
+# TensorBoard:
+# - Indy-Wuji-Cube-Grasp: Episode_Reward/finger_cage_reach
+# - Indy-Wuji-Cube-Grasp: Episode_Reward_Raw/finger_cage_reach
+# env_cfg_common.py: CubeGraspRewardsCfg.finger_cage_reach 에서 연결됨.
 class ObjectCageProgressReward(ManagerTermBase):
     """파지 간극을 물체 표면 위로 끌어오는 것을 보상 (논문 Eq.14, reach).
 
@@ -211,6 +235,10 @@ class ObjectCageProgressReward(ManagerTermBase):
             reward = torch.where(reward > 0.0, reward * gate, reward)
         return reward
 
+# TensorBoard:
+# - reward 이름으로는 직접 기록되지 않음.
+# - CustomRewardManager metric: Metrics/cube/cube_clearance, Metrics/cube_final/cube_clearance 등에서 사용됨.
+# - object_lift_in_cage 내부 helper로도 사용됨.
 def box_ground_clearance(
     env: ManagerBasedRLEnv,
     object_cfg: SceneEntityCfg,
@@ -240,6 +268,9 @@ def box_ground_clearance(
     return lowest_z - env.scene.env_origins[:, 2] - surface_z
 
 
+# TensorBoard:
+# - 현재 7/13 복원 CubeGraspRewardsCfg에는 active term 아님.
+# - 예전 cube_support term을 켜면 Episode_Reward/cube_support 로 기록될 수 있는 helper.
 def object_below_surface_penalty(
     env: ManagerBasedRLEnv,
     object_cfg: SceneEntityCfg,
@@ -253,6 +284,10 @@ def object_below_surface_penalty(
     return -torch.clamp(depth, max=1.0)
 
 
+# TensorBoard:
+# - Indy-Wuji-Cube-Grasp: Episode_Reward/cube_lift
+# - Indy-Wuji-Cube-Grasp: Episode_Reward_Raw/cube_lift
+# env_cfg_common.py: CubeGraspRewardsCfg.cube_lift 에서 연결됨.
 def object_lift_in_cage(
     env: ManagerBasedRLEnv,
     asset_cfg: SceneEntityCfg,
@@ -279,6 +314,10 @@ def object_lift_in_cage(
     return gate * lift
 
 
+# TensorBoard:
+# - Indy-Wuji-Cube-Grasp: Episode_Reward/arm_manipulability
+# - Indy-Wuji-Cube-Grasp: Episode_Reward_Raw/arm_manipulability
+# env_cfg_common.py: CubeGraspRewardsCfg.arm_manipulability 에서 연결됨.
 def arm_manipulability_penalty(
     env: ManagerBasedRLEnv,
     asset_cfg: SceneEntityCfg,
@@ -303,6 +342,10 @@ def arm_manipulability_penalty(
     return 1.0 - 2.0 / (1.0 + ratio**3)
 
 
+# TensorBoard:
+# - Indy-Wuji-Cube-Grasp: Episode_Reward/hand_floor
+# - Indy-Wuji-Cube-Grasp: Episode_Reward_Raw/hand_floor
+# env_cfg_common.py: CubeGraspRewardsCfg.hand_floor 에서 연결됨.
 def hand_floor_penalty(
     env: ManagerBasedRLEnv,
     asset_cfg: SceneEntityCfg,
@@ -321,6 +364,11 @@ def hand_floor_penalty(
     return -depth.clamp(max=1.0).max(dim=-1).values
 
 
+# TensorBoard:
+# - reward 이름으로는 직접 기록되지 않음.
+# - PalmFacingProgressReward 내부 raw 계산으로 쓰이면 Episode_Reward/palm_facing 에 반영됨.
+# - ObjectCageProgressReward의 양수 progress gate로 쓰이면 Episode_Reward/finger_cage_reach 에 반영됨.
+# - CustomRewardManager metric: Metrics/cube/palm_facing, Metrics/cube_final/palm_facing 등과 같은 개념.
 def palm_facing_object(
     env: ManagerBasedRLEnv,
     asset_cfg: SceneEntityCfg,
@@ -357,6 +405,10 @@ def palm_facing_object(
     return torch.clamp(torch.sum(normal_w * to_obj, dim=-1), 0.0, 1.0)
 
 
+# TensorBoard:
+# - Indy-Wuji-Cube-Grasp: Episode_Reward/palm_facing
+# - Indy-Wuji-Cube-Grasp: Episode_Reward_Raw/palm_facing
+# env_cfg_common.py: CubeGraspRewardsCfg.palm_facing 에서 연결됨.
 class PalmFacingProgressReward(ManagerTermBase):
     """손바닥을 물체 쪽으로 "돌리는 것"을 보상. 논문 r_hr과 같은 차분형.
 
@@ -399,6 +451,9 @@ class PalmFacingProgressReward(ManagerTermBase):
         return torch.clamp(progress, min=-1.0, max=1.0)
 
 
+# TensorBoard:
+# - 현재 active cube grasp/reach cfg에는 연결되지 않음.
+# - 예전/실험용 object goal term을 켜면 cube_goal_tracking 류 이름으로 기록될 수 있음.
 def object_to_target_position_tracking_bounded(
     env: ManagerBasedRLEnv,
     object_cfg: SceneEntityCfg,
@@ -415,6 +470,10 @@ def object_to_target_position_tracking_bounded(
     return torch.where(lifted, distance_bonus, torch.zeros_like(distance_bonus))
 
 
+# TensorBoard:
+# - 현재 Indy-Wuji-Reach에서는 비활성 처리됨.
+# - 켜면 Episode_Reward/end_effector_orientation_tracking 으로 기록됨.
+# - Dual-arm reach cfg에서는 left/right term 이름으로 기록될 수 있음.
 def end_effector_orientation_tracking_distance_bounded(
     env: ManagerBasedRLEnv, command_name: str, asset_cfg: SceneEntityCfg, distance_max: float = 0.5
 ) -> torch.Tensor:
@@ -444,6 +503,9 @@ def end_effector_orientation_tracking_distance_bounded(
     return total_reward
 
 
+# TensorBoard:
+# - 현재 Indy-Wuji-Reach에서는 비활성 처리됨.
+# - 켜면 Episode_Reward/end_effector_speed 로 기록됨.
 def end_effector_speed(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
     """Penalize the end-effector speed using L2-norm.
 
@@ -456,6 +518,9 @@ def end_effector_speed(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg) -> tor
     return torch.norm(speed, dim=1)
 
 
+# TensorBoard:
+# - 현재 Indy-Wuji-Reach에서는 비활성 처리됨.
+# - 켜면 Episode_Reward/joint_vel 로 기록됨.
 def finite_joint_vel_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
     """Penalize joint velocities on the articulation using L1-kernel.
 
@@ -466,6 +531,9 @@ def finite_joint_vel_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = Scen
     return torch.sum(torch.square(asset._finite_joint_vel[:, asset_cfg.joint_ids]), dim=1)
 
 
+# TensorBoard:
+# - 현재 active cfg에는 연결되지 않음.
+# - 켜면 Episode_Reward/action_second_rate 로 기록됨.
 def action_second_rate_l2(env: ManagerBasedRLEnv) -> torch.Tensor:
     # TODO: currently broken
     return torch.sum(

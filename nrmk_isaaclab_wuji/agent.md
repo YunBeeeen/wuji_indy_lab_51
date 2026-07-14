@@ -543,3 +543,31 @@ python scripts/debug/check_cube_contact_lift.py \
 - cube를 움직이기 전에는 `--sweep-fingers`로 thumb/index/middle close 값 조합부터 확인함.
 - 특정 조합은 `--finger-action`으로 직접 확인함. 예: `--finger-action 1 0 1`.
 - contact 판정은 `--contact-mode thumb_middle`, `thumb_index`, `thumb_any`, `tripod`으로 바꿈.
+
+## Isaac Sim 측정 시 함정 (2026-07-14 파지 검증에서 실측)
+
+- **물체를 매 step `write_root_state_to_sim`으로 고정하지 말 것.** 접촉 관통이 누적되어
+  PhysX가 손가락을 관절 한계 밖으로 폭발시킴. "쥐여주기"는 중력 차단(`set_disable_gravities`)
+  + 매 step 속도만 0 (`write_root_velocity_to_sim`)으로. 위치는 물리에 맡김
+- **`finger*_tip_link` 원점은 손끝 패드가 아니라 마지막 관절 위치** (패드보다 2~3cm 손바닥 쪽).
+  tip 원점 중점에 물체를 놓으면 손바닥/접힌 손가락 위에 얹힘
+- **Indy7 joint1은 감소(-0.45→-0.95)가 손 '하강' 방향.** 들기 테스트 부호 주의
+- **판정 기준은 조작 방향과 함께 검증할 것.** "z0 유지" 기준은 팔이 내려가면 성공도 실패로 판정
+- **불가능한 숫자가 나오면 물리 폭발부터 의심.** 관절 오차가 (목표상한-관절하한)보다 크면
+  인덱싱이 아니라 관통 폭발임
+- **Wuji 손 기하 (FK 실측):** 엄지-중지 물리는 창은 오므림 30~50%뿐 (40%에서 최소 2.8cm,
+  70%에서 6.3cm로 재벌어짐). 60%+ 조이면 6cm 큐브를 짜냄. 검지-중지는 항상 붙어 다님
+- 검증 도구: `scripts/debug/hand_geometry.py` (FK 간격 곡선), `scripts/debug/grip_capacity.py`
+  (쥐여주기→놓기→들기, `--gui` 지원)
+
+## Wuji 손가락 액추에이터 스펙 (indy7_wuji_right.urdf 실측, 2026-07-14)
+
+- URDF `<limit effort>` 관절별 값: joint1=1.0 (엄지 0.6), joint2=0.2 (엄지 0.6), joint3/4=0.3 N·m
+- velocity: 8.2~13.6 rad/s
+- sim의 일괄 `effort_limit=0.6`은 이 0.2~1.0 범위의 근사 평균. Allegro(0.7)/LEAP(0.9)와 동급
+- **이 스펙(0.6)으로 0.30kg 하중 유지 검증됨 → 힘 부족은 파지 실패의 원인이 아님**
+  - 단, 그 "4/4"의 실체는 palm-up 자세의 새끼/손바닥 받침 hold (GUI 확인: 엄지·중지 미접촉)
+  - 엄지+중지 집게(pinch)는 미검증. 새 자세(joint3/4=-1.61/-1.62)+편 손가락+집게 판정에선 0/32
+  - 판정 코드에 "무엇으로 잡았는지"(엄지·중지 거리)를 반드시 포함할 것 — held만 보면 속음
+- effort를 크게 올리면(예: 6.0) 나쁜 자세를 힘으로 버티는 crush 정책이 나올 수 있음 (실기 재현 불가)
+- 개선하려면 일괄 0.6 대신 URDF 관절별 값(1.0/0.2/0.3)을 넣는 것이 맞고, 단독 변수로 A/B 할 것

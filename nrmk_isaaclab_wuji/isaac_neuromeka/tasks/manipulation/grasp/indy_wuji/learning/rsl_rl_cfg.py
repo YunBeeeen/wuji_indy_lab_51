@@ -13,7 +13,7 @@ class ReachPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     max_iterations = 50000
     save_interval = 50
     experiment_name = "indy_wuji_cube_grasp"
-    run_name = "cube_grasp_lift_close_start"
+    run_name = ""
     resume = False
     empirical_normalization = False
     # 없으면 None -> action에 상한이 전혀 없음. 정책 출력이 그대로 관절 목표가 되어 발산함

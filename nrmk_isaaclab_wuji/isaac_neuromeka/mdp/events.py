@@ -90,3 +90,20 @@ def reset_pose_mesh_terrain(
     # set into the physics simulation
     asset.write_root_pose_to_sim(torch.cat([positions, orientations], dim=-1), env_ids=env_ids)
     asset.write_root_velocity_to_sim(velocities, env_ids=env_ids)
+
+
+def hold_joints_at_default(
+    env: ManagerBasedRLEnv,
+    env_ids: torch.Tensor,
+    asset_cfg: SceneEntityCfg,
+):
+    """액션에 없는 관절의 '위치 목표'를 기본 자세로 고정한다.
+
+    리셋은 관절 '상태'만 기본값으로 되돌리고 위치 '목표' 버퍼는 채우지 않는다. 액션 텀은
+    자기 관절만 목표를 쓰므로, 나머지 관절은 목표 0을 향해 저절로 움직인다.
+    (실측: 접어둔 약지/새끼(1.2rad)가 매 에피소드 시작 직후 0으로 펴지며 파지 지점을 쓸었음)
+    """
+    asset = env.scene[asset_cfg.name]
+    joint_ids = asset_cfg.joint_ids
+    target = asset.data.default_joint_pos[env_ids][:, joint_ids]
+    asset.set_joint_position_target(target, joint_ids=joint_ids, env_ids=env_ids)
