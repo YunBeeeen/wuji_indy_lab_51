@@ -1,7 +1,7 @@
 from dataclasses import MISSING  # noqa: F401
 
 import isaaclab.sim as sim_utils
-from isaaclab.envs.mdp.actions.actions_cfg import JointActionCfg
+from isaaclab.envs.mdp.actions.actions_cfg import JointActionCfg, JointPositionActionCfg
 from isaaclab.managers.action_manager import ActionTerm, ActionTermCfg
 from isaaclab.markers.visualization_markers import VisualizationMarkersCfg
 from isaaclab.utils import configclass
@@ -14,6 +14,7 @@ from isaac_neuromeka.mdp.actions.base_actions import (
 from isaac_neuromeka.mdp.actions.joint_actions import (
     ClampedJointPositionAction,
     JointResidualAction,
+    MimicJointPositionAction,
 )
 
 
@@ -52,6 +53,19 @@ class ClampedJointActionCfg(JointActionCfg):
     cmd_name: str = "ee_pose"
 
     use_default_offset = True
+
+
+@configclass
+class MimicJointActionCfg(JointPositionActionCfg):
+    """CustomJointPositionAction + follower 커플링.
+
+    mimic: {follower 관절 이름: source(액션) 관절 이름}. follower는 joint_names에 넣지 말 것
+    (액션/관측 차원에 안 들어가고 목표만 복사받음). MimicJointPositionAction 참고.
+    """
+
+    class_type: type[ActionTerm] = MimicJointPositionAction
+
+    mimic: dict[str, str] = {}
 
 
 @configclass

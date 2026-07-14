@@ -2773,3 +2773,24 @@ palm_normal_b (0.19,0.28,0.94) -> (1,0,0)   rewards.py + managers.py
 - hold 고점 = 손끝이 표면에 닿은 상태로만 달성 가능 → lift gate가 진짜 파지에서만 열림
 - 다음 런에서 Episode_Reward/finger_cage_hold의 절대값이 낮아지는 건 정상 (기준이 엄격해짐)
 - 진행 중인 런(가중치 실험)과는 별개 — 이 변경은 다음 재학습부터 적용
+
+## 2026-07-14 (밤 2) — 약지/새끼 커플링 (Schunk SIH 방식)
+
+### 동기 (사용자 제안)
+- "새끼손가락까지 grasping에 도움을 주면 잘 들 것 같다" — 근거 있음: palm-up 실측에서
+  0.30kg을 버틴 주체가 바로 새끼/손바닥. 받침 능력은 이미 검증됨
+- 이 손의 집게는 물리는 창이 좁아(오므림 30~50%) 받침 손가락이 있으면 성공 조건이 느슨해짐
+
+### 구현: 액션/관측 차원 그대로, 약지/새끼가 중지를 따라감
+- `MimicJointPositionAction` (mdp/actions/joint_actions.py) + `MimicJointActionCfg` (action_cfgs.py)
+  - follower 목표 = source 목표 + (follower 기본 − source 기본). apply마다 복사
+  - follower는 action_dim/관측에 안 들어감 → 18D/57D 유지, 논문(Schunk SIH 커플링)과 같은 발상
+- env_cfg.py: `mimic={finger4/5_joint[1-4] ← finger3_joint[1-4]}` (8쌍)
+- 손가락 게인: cube grasp env에서만 전 손가락 제조사 값(kp 2/2/1/1, kd 0.05)으로 통일.
+  asset 기본(finger4-5 kp 20)은 유지 — chopsticks/functional_grasp가 접힘 유지에 필요
+- `hold_folded_fingers` 이벤트는 유지 (리셋~첫 액션 사이 한 스텝 공백을 메움)
+- CAGE_BODIES는 그대로 — 커플링이라 중지 보상만으로 약지/새끼가 따라 감쌈 (별도 유인 불필요)
+
+### 검증 대기 (학습 중이라 Isaac 실행 금지)
+- [ ] smoke test: 환경 생성 + 1 rollout (obs 57 확인)
+- [ ] grip_capacity `--gui`: 같이 오므릴 때 이웃 손가락 충돌 여부, 받침 효과 확인

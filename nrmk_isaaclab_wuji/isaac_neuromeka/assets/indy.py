@@ -211,7 +211,9 @@ INDY7_WUJI_RIGHT_CFG = FiniteArticulationCfg(
         #   (오므림 0.32~0.60 대부분 4/4 vs 기존은 0.40~0.50만). joint3/4는 1.0으로 통일
         # ★ 약지/새끼(finger4-5)는 예외로 뻣뻣하게: 정책 액션에 없어서 gain만으로 자세를
         #   유지해야 함. kp 1~2로는 접힘(1.2)을 못 버티고 저절로 펴지며(-0.5까지) 파지 지점을
-        #   쓸었음 (2026-07-14 실측). 지금은 편 자세(0)라 부하가 작지만 충돌에 안 밀리게 유지
+        #   쓸었음 (2026-07-14 실측). chopsticks/functional_grasp의 접힌 자세 유지용으로 필요.
+        #   cube grasp는 커플링 액션이 finger4-5를 매 스텝 구동하므로 env_cfg에서 전 손가락을
+        #   제조사 값으로 override함 (indy_wuji/env_cfg.py 참고)
         "fingers": ImplicitActuatorCfg(
             joint_names_expr=["finger[1-5]_joint[1-4]"],
             effort_limit=0.6,

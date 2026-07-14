@@ -300,6 +300,7 @@ class CubeGraspEventCfg:
 
     # 약지/새끼 목표 채우기: 리셋은 상태만 되돌리고 목표 버퍼는 0이라서, 액션에 없는
     # finger4-5는 매 에피소드 시작 직후 접힘(1.2)에서 0으로 저절로 펴지며 큐브를 쳐냈음
+    # (커플링 액션(MimicJointPositionAction)을 쓰는 env에서는 리셋~첫 액션 공백만 메움)
     hold_folded_fingers = EventTerm(
         func=mdp.hold_joints_at_default,
         mode="reset",
@@ -597,6 +598,7 @@ class ChopsticksGraspEventCfg:
 
     # 약지/새끼 목표 채우기: 리셋은 상태만 되돌리고 목표 버퍼는 0이라서, 액션에 없는
     # finger4-5는 매 에피소드 시작 직후 접힘(1.2)에서 0으로 저절로 펴지며 큐브를 쳐냈음
+    # (커플링 액션(MimicJointPositionAction)을 쓰는 env에서는 리셋~첫 액션 공백만 메움)
     hold_folded_fingers = EventTerm(
         func=mdp.hold_joints_at_default,
         mode="reset",
@@ -686,7 +688,7 @@ class ChopsticksGraspRewardsCfg:
     finger_cage_reach = RewTerm(
         func=mdp.ObjectCageProgressReward,
         # 2026-07-13_21-57-31 run 값
-        weight=10.0,
+        weight=8.0,
         params={
             "asset_cfg": CAGE_BODIES,
             "object_cfg": SceneEntityCfg("cube"),
@@ -703,7 +705,7 @@ class ChopsticksGraspRewardsCfg:
 
     finger_cage_hold = RewTerm(
         func=mdp.object_in_finger_cage,
-        weight=1.0,
+        weight=15.0,
         params={
             "asset_cfg": CAGE_BODIES,
             "object_cfg": SceneEntityCfg("cube"),
@@ -724,7 +726,7 @@ class ChopsticksGraspRewardsCfg:
     # hold보다 무겁게 (논문 순서 r_T >> r_hold >> r_reach).
     cube_lift = RewTerm(
         func=mdp.object_lift_in_cage,
-        weight=3.0,
+        weight=50.0,
         params={
             "asset_cfg": CAGE_BODIES,
             "object_cfg": SceneEntityCfg("cube"),
@@ -748,7 +750,7 @@ class ChopsticksGraspRewardsCfg:
     palm_facing = RewTerm(
         func=mdp.PalmFacingProgressReward,
         # 2026-07-13_21-57-31 run 값
-        weight=8.0,
+        weight=4.0,
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=["palm_link"]),
             "object_cfg": SceneEntityCfg("cube"),
@@ -779,7 +781,7 @@ class ChopsticksGraspRewardsCfg:
         func=mdp.hand_floor_penalty,
         # 절대형이라 dt 보정 불필요. 최악 -2.0 (reach 1.0의 2배). 더 키우면 정책이 바닥을 피하려고
         # 아예 안 내려와서 지면의 큐브에 영영 못 감 (호버링 실패 모드).
-        weight=0.5,
+        weight=1.0,
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=["palm_link", "finger.*"]),
             # 큐브 중심이 z=0.03이므로 2cm까지는 자유롭게 내려갈 수 있어야 감쌀 수 있음

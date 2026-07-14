@@ -12,7 +12,7 @@ from isaaclab.managers.action_manager import ActionTerm
 from isaac_neuromeka.env.rl_task_custom_env import RLEnvWithIK
 
 if TYPE_CHECKING:
-    from .action_cfgs import ClampedJointActionCfg, ResidualJointActionCfg
+    from .action_cfgs import ClampedJointActionCfg, MimicJointActionCfg, ResidualJointActionCfg
 
 
 class FixedJointPositionAction(ActionTerm):
@@ -91,6 +91,59 @@ class CustomJointPositionAction(JointAction):
     #     if self._joint_ids is not None and self._joint_ids != slice(None):
     #         env_ids = env_ids.unsqueeze(-1)
     #     self._asset.set_joint_position_target(target, joint_ids=self._joint_ids, env_ids=env_ids)  # TODO: fix required
+
+
+class MimicJointPositionAction(CustomJointPositionAction):
+    """커플링 위치 액션: 액션에 없는 follower 관절이 액션(source) 관절의 목표를 따라간다.
+
+    논문 하드웨어(Schunk SIH)의 기계식 관절 커플링을 흉내냄 — 제어 DOF를 늘리지 않고
+    감싸는 손가락을 늘림. follower는 action_dim/관측에 포함되지 않으며, apply 시점에
+    follower 목표 = source 목표 + (follower 기본자세 - source 기본자세) 로 복사받는다.
+
+    부수 효과: 리셋이 관절 '상태'만 되돌리고 목표 버퍼를 안 채워서 액션 밖 관절이
+    저절로 움직이던 문제(2026-07-14, hold_joints_at_default 참고)가 follower에 한해
+    리셋~첫 액션 사이 한 스텝으로 줄어든다.
+    """
+
+    cfg: MimicJointActionCfg
+
+    def __init__(self, cfg: MimicJointActionCfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        if not cfg.mimic:
+            raise ValueError(
+                "MimicJointPositionAction: cfg.mimic이 비어 있음. CustomJointPositionAction을 쓸 것."
+            )
+        follower_ids, follower_names = self._asset.find_joints(
+            list(cfg.mimic.keys()), preserve_order=True
+        )
+        overlap = set(follower_names) & set(self._joint_names)
+        if overlap:
+            raise ValueError(f"mimic follower가 액션 관절에도 있음: {sorted(overlap)}")
+
+        src_indices: list[int] = []
+        for name in follower_names:
+            src = cfg.mimic[name]
+            if src not in self._joint_names:
+                raise ValueError(
+                    f"mimic source '{src}' (follower '{name}')가 액션 관절 목록에 없음: {self._joint_names}"
+                )
+            src_indices.append(self._joint_names.index(src))
+
+        self._mimic_joint_ids = follower_ids
+        self._mimic_src_idx = torch.tensor(src_indices, dtype=torch.long, device=self.device)
+        action_joint_ids = self._joint_ids
+        if isinstance(action_joint_ids, slice):
+            action_joint_ids = list(range(self._asset.num_joints))
+        src_joint_ids = [action_joint_ids[i] for i in src_indices]
+        default = self._asset.data.default_joint_pos
+        self._mimic_offset = default[:, follower_ids] - default[:, src_joint_ids]
+
+    def apply_actions(self, env_ids: Sequence[int] | None = None):
+        super().apply_actions(env_ids)
+        if env_ids is None:
+            env_ids = slice(None)
+        target = self.processed_actions[env_ids][:, self._mimic_src_idx] + self._mimic_offset[env_ids]
+        self._asset.set_joint_position_target(target, joint_ids=self._mimic_joint_ids, env_ids=env_ids)
 
 
 class JointResidualAction(JointAction):
