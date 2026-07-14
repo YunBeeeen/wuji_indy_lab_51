@@ -78,13 +78,6 @@ class Indy7WujiCubeGraspEnvCfg(CubeGraspEnvCfg):
                 "finger5_joint3": "finger3_joint3",
                 "finger5_joint4": "finger3_joint4",
             },
-            # 2026-07-14 손가락 목표는 음수 금지 (물리 한계는 그대로 -> 수동 순응성 유지).
-            # 시작 자세(0)가 이미 최대 폄이라 음수 목표는 기능이 없고, 실제로는 과신전으로
-            # 벌어진 채 바닥에 박혀 kp 2로 못 접히고 에피소드가 끝나는 실패 모드만 만들었음.
-            # 파지에 필요한 동작은 전부 양수 방향 (grip_capacity 오므림 sweep으로 검증).
-            # 부작용: 액션 [-1,0]이 전부 "완전 폄"에 매핑되는 데드존. 폄 근처에서 미적대면
-            # 리매핑(offset 0.8 / scale 0.8)으로 교체할 것.
-            target_clamp={"finger[1-3]_joint[1-4]": (0.0, None)},
         )
 
         # 커플링으로 finger4-5도 매 스텝 목표를 받으므로, 접힘을 gain으로 붙들던 예외(kp 20,

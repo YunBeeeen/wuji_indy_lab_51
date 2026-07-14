@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
@@ -138,35 +137,6 @@ class MimicJointPositionAction(CustomJointPositionAction):
         src_joint_ids = [action_joint_ids[i] for i in src_indices]
         default = self._asset.data.default_joint_pos
         self._mimic_offset = default[:, follower_ids] - default[:, src_joint_ids]
-
-        # 관절 '목표' 클램프 (물리 한계는 그대로 -> 접촉에 밀리는 수동 순응성 유지).
-        # 목적: 음수 목표로 손가락이 과신전 되어 벌어진 채 바닥에 박히는 실패 모드 차단
-        # (2026-07-14 실측: kp 2로는 바닥 접촉을 못 이기고 못 접힌 채 에피소드 종료).
-        # process_actions에서 클램프하므로 mimic follower도 클램프된 목표를 복사받음.
-        self._clamp_active = bool(cfg.target_clamp)
-        if self._clamp_active:
-            n = len(self._joint_names)
-            self._clamp_min = torch.full((n,), -torch.inf, device=self.device)
-            self._clamp_max = torch.full((n,), torch.inf, device=self.device)
-            matched = {expr: False for expr in cfg.target_clamp}
-            for j, name in enumerate(self._joint_names):
-                for expr, (lo, hi) in cfg.target_clamp.items():
-                    if re.fullmatch(expr, name):
-                        if lo is not None:
-                            self._clamp_min[j] = lo
-                        if hi is not None:
-                            self._clamp_max[j] = hi
-                        matched[expr] = True
-            unmatched = [e for e, m in matched.items() if not m]
-            if unmatched:
-                raise ValueError(f"target_clamp 패턴이 액션 관절에 하나도 안 맞음: {unmatched}")
-
-    def process_actions(self, actions: torch.Tensor):
-        super().process_actions(actions)
-        if self._clamp_active:
-            self._processed_actions = torch.clamp(
-                self._processed_actions, min=self._clamp_min, max=self._clamp_max
-            )
 
     def apply_actions(self, env_ids: Sequence[int] | None = None):
         super().apply_actions(env_ids)
