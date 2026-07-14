@@ -395,6 +395,10 @@ class CubeGraspRewardsCfg:
             "object_cfg": SceneEntityCfg("cube"),
             "object_half_extent": (0.03, 0.03, 0.03),
             "num_points": 3,
+            # 2026-07-14: 가상점을 손끝 쪽으로 (기본 [0.25,0.5,0.75] -> [0.1,0.5,0.9]).
+            # 내부 등분점은 간격 10cm의 헐렁한 새장에서도 큐브에 박혀 고점이 나와서
+            # "손끝을 표면까지 가져가라"는 gradient가 없었음. hold/lift와 반드시 같은 점.
+            "point_fractions": (0.1, 0.5, 0.9),
             # step당 개선량의 정규화 상수 (거리 임계값 아님).
             # 실제 step당 최대 개선량(약 0.15m)보다 충분히 커야 함. 포화되면 "천천히 접근하기"를 보상함.
             "distance_max": 0.5,
@@ -412,11 +416,17 @@ class CubeGraspRewardsCfg:
             "object_cfg": SceneEntityCfg("cube"),
             "object_half_extent": (0.03, 0.03, 0.03),
             "num_points": 3,
+            # 2026-07-14: reach와 같은 점 (0.1 = 엄지끝 근처, 0.9 = 대향 손끝 근처).
+            # 끝점이 표면에 닿아야(간격 ~6cm) 고점 -> 진짜 오므리기가 직접 보상됨
+            "point_fractions": (0.1, 0.5, 0.9),
             # 손가락 굴곡 sweep으로 실측 튜닝함. sphere_radius가 크면 손가락을 벌린 채 큐브가
             # 사이에 있기만 해도 점수가 나와 대비가 죽음.
             # 0.005/0.02 -> 벌림 0.19 / 오므림 0.46 (2.4배).  0.02/0.03 -> 0.30 / 0.49 (1.6배).
             "sphere_radius": 0.005,
-            "depth_max": 0.02,
+            # 2026-07-14: 0.02 -> 0.005. 끝쪽 가상점과 쓰면 0.02는 접촉 후에도 "더 조여라"가
+            # 남는데, 이 손은 40%+ 오므리면 간격 2.8cm까지 줄며 6cm 큐브를 짜냄(수박씨).
+            # 0.005면 끝점 기준 간격 ~6.2cm(접촉 직후)에서 포화 -> "닿으면 만족"
+            "depth_max": 0.005,
         },
     )
 
@@ -433,8 +443,11 @@ class CubeGraspRewardsCfg:
             "object_cfg": SceneEntityCfg("cube"),
             "object_half_extent": (0.03, 0.03, 0.03),
             "num_points": 3,
+            # 2026-07-14: hold와 동일 (gate가 곧 hold). 느슨한 gate + lift 가중치 50이면
+            # "쳐서 튕겨 올리기"가 열리므로, gate는 "진짜 잡았을 때"만 열리게 조임
+            "point_fractions": (0.1, 0.5, 0.9),
             "sphere_radius": 0.005,
-            "depth_max": 0.02,
+            "depth_max": 0.005,
             "lift_height": 0.08,
         },
     )

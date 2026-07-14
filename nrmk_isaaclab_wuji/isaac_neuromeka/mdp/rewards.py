@@ -111,13 +111,25 @@ def _box_signed_distance(
 
 
 # TensorBoard: 직접 reward 이름 없음. finger_cage_reach / finger_cage_hold / cube_lift 공통 helper.
-def cage_points(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, num_points: int) -> torch.Tensor:
+def cage_points(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    num_points: int,
+    point_fractions: tuple[float, ...] | None = None,
+) -> torch.Tensor:
     """엄지끝에서 각 대향 body로 선분을 긋고 그 위에 찍는 "파지 간극" 가상점.
 
     body_names는 [엄지끝, *대향] 순서여야 함 (preserve_order=True 필수).
     논문은 엄지-중지만 써서 6점이지만, 논문에는 r_grasp가 손 회전/손가락 관절각을 붙잡음.
     큐브엔 목표 파지가 없어 r_grasp를 못 쓰므로, 6점만 쓰면 검지가 자유가 되어
     "손바닥이 하늘 + 검지·중지 교차" 자세로도 만점이 나옴 (2026-07-11 실측). 그래서 검지도 포함해 12점.
+
+    point_fractions: 선분 위 점 위치 (0=엄지끝, 1=대향 body). 주면 num_points 무시.
+    기본(내부 등분 [0.25,0.5,0.75])은 중앙점이 헐렁한 새장에서도 큐브 깊숙이 박혀 포화됨
+    -> 손끝이 표면에서 2~3cm 떠도 hold 고점 (2026-07-14 실측: 간격 10cm에서도 고점).
+    끝쪽으로 치우친 값(예: 0.1/0.9)을 주면 손끝을 표면까지 가져가야 점수가 나옴.
+    1.0까지 보내지 말 것: tip_link 원점은 패드가 아니라 마지막 관절이라 (패드는 2~3cm 앞),
+    "원점이 표면에" = 패드가 큐브를 2cm 파고든 상태임.
     """
     asset: RigidObject = env.scene[asset_cfg.name]
     body_pos_w = asset.data.body_state_w[:, asset_cfg.body_ids, :3]  # type: ignore / 모든 env에 대해 CAGE_BODIES에 해당하는 body 5개만 골라서 그 body들의 position xyz만 가져와라
@@ -128,8 +140,11 @@ def cage_points(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, num_points: i
     thumb = body_pos_w[:, 0]    # GPU tensor form / torch.tensor([1,2,3]) -> CPU tensor form
     opposing = body_pos_w[:, 1:]  # (N, M, 3)
 
-    # `num_points` equidistant points strictly between the thumb tip and each opposing body.
-    fractions = torch.arange(1, num_points + 1, dtype=thumb.dtype, device=thumb.device) / (num_points + 1) # num_points=3 -> arrange(1,4) -> [1,2,3]/4 -> [0.25, 0.5, 0.75]
+    if point_fractions is not None:
+        fractions = torch.tensor(point_fractions, dtype=thumb.dtype, device=thumb.device)
+    else:
+        # `num_points` equidistant points strictly between the thumb tip and each opposing body.
+        fractions = torch.arange(1, num_points + 1, dtype=thumb.dtype, device=thumb.device) / (num_points + 1) # num_points=3 -> arrange(1,4) -> [1,2,3]/4 -> [0.25, 0.5, 0.75]
     span = opposing - thumb.unsqueeze(1)  # (N, M, 3)
     points = thumb[:, None, None, :] + span.unsqueeze(2) * fractions.view(1, 1, -1, 1)
     return points.reshape(thumb.shape[0], -1, 3)
@@ -142,10 +157,11 @@ def _cage_sdf(
     object_cfg: SceneEntityCfg,
     object_half_extent: tuple[float, float, float],
     num_points: int,
+    point_fractions: tuple[float, ...] | None = None,
 ) -> torch.Tensor:
     """가상점 -> 물체 표면까지의 signed distance. (N, 대향body수 * num_points)"""
     obj: RigidObject = env.scene[object_cfg.name]
-    points = cage_points(env, asset_cfg, num_points)
+    points = cage_points(env, asset_cfg, num_points, point_fractions)
     half = torch.tensor(object_half_extent, dtype=points.dtype, device=points.device)
     return _box_signed_distance(points, obj.data.root_pos_w, obj.data.root_quat_w, half)
 
@@ -162,14 +178,19 @@ def object_in_finger_cage(
     num_points: int = 3,
     sphere_radius: float = 0.005,
     depth_max: float = 0.02,
+    point_fractions: tuple[float, ...] | None = None,
 ) -> torch.Tensor:
     """물체를 손가락 사이에 가두는 것을 보상 (논문 Eq.15, hold).
 
     가상점을 반지름 sphere_radius의 구로 보고, 그 구가 물체를 파고든 깊이를 보상함.
     손을 오므리면 점들이 물체 안으로 들어가므로 "오므리기"가 직접 보상됨. 접촉센서 불필요.
     거리 reward는 정반대임: 만지면 물체가 밀려나 거리가 늘고 감점 -> 접촉이 손해 -> hover만 함.
+
+    depth_max: 이만큼 파고들면 포화. 끝쪽 point_fractions와 쓸 때는 작게(예: 0.005) 둘 것 —
+    크면 접촉 후에도 "더 조여라"가 남는데, 이 손은 40%+ 오므리면 간격이 2.8cm까지 줄며
+    6cm 큐브를 수박씨처럼 짜냄 (2026-07-14 실측). "닿으면 만족"으로 포화시키는 게 안전함.
     """
-    sdf = _cage_sdf(env, asset_cfg, object_cfg, object_half_extent, num_points)
+    sdf = _cage_sdf(env, asset_cfg, object_cfg, object_half_extent, num_points, point_fractions)
     # 구가 물체를 파고든 깊이. sphere_radius보다 멀면 0, depth_max만큼 들어가면 포화(1).
     penetration = sphere_radius - sdf
     return torch.clamp(penetration / (sphere_radius + depth_max), 0.0, 1.0).mean(dim=1)
@@ -200,6 +221,7 @@ class ObjectCageProgressReward(ManagerTermBase):
             p["object_cfg"],
             p.get("object_half_extent", (0.03, 0.03, 0.03)),
             p.get("num_points", 3),
+            p.get("point_fractions"),
         ).mean(dim=1)
 
     def reset(self, env_ids: Sequence[int] | None = None) -> None:
@@ -215,6 +237,7 @@ class ObjectCageProgressReward(ManagerTermBase):
         object_cfg: SceneEntityCfg,
         object_half_extent: tuple[float, float, float] = (0.03, 0.03, 0.03),
         num_points: int = 3,
+        point_fractions: tuple[float, ...] | None = None,
         distance_max: float = 0.5,
         palm_cfg: SceneEntityCfg | None = None,
         palm_normal_b: tuple[float, float, float] = (0.19, 0.28, 0.94),
@@ -298,6 +321,7 @@ def object_lift_in_cage(
     depth_max: float = 0.02,
     lift_height: float = 0.08,
     surface_z: float = 0.0,
+    point_fractions: tuple[float, ...] | None = None,
 ) -> torch.Tensor:
     """물체를 받침면에서 띄우는 것을 보상. 단, 손가락이 감싸고 있는 동안만 (논문 r_lift).
 
@@ -307,7 +331,8 @@ def object_lift_in_cage(
     (2) cage_gate를 곱해야 "파지 없이 튕겨 올리기"가 안 통함. 조밀형이라 1mm 상승에도 gradient가 있음.
     """
     gate = object_in_finger_cage(
-        env, asset_cfg, object_cfg, object_half_extent, num_points, sphere_radius, depth_max
+        env, asset_cfg, object_cfg, object_half_extent, num_points, sphere_radius, depth_max,
+        point_fractions,
     )
     clearance = box_ground_clearance(env, object_cfg, object_half_extent, surface_z)
     lift = torch.clamp(clearance, 0.0, lift_height) / lift_height

@@ -2751,3 +2751,25 @@ palm_normal_b (0.19,0.28,0.94) -> (1,0,0)   rewards.py + managers.py
 - 큐브 질량 0.30→0.10 kg, episode 8→6 s
 - 가중치: reach 10→8, hold 1→25, lift 3→50, palm_facing 8→4, hand_floor 0.5→1.0
 - 관찰: 조금 들려고는 하나 hold 자세가 불완전해 lift가 어려움 → 가상점 개선 논의로 이어짐
+
+## 2026-07-14 (밤) — cage 가상점을 손끝 쪽으로 (커밋 분리 2)
+
+### 문제: "느슨한 hold"로도 고점 → lift gate가 헛것에 열림
+- 가상점이 선분 내부 등분 [0.25, 0.5, 0.75]라, 엄지-중지 간격 10cm의 헐렁한 새장에서도
+  중앙점이 큐브 깊숙이 박혀 포화 → 손끝이 표면에서 2~3cm 떠도 hold 고점
+- cube_lift는 hold를 gate로 곱하므로, 가짜 hold 상태에서 lift 시도 → 못 들고 미끄러짐
+  (관찰: "조금 들려고 하는데 hold 자세가 불완전" — 사용자 보고와 일치)
+
+### 변경 (rewards.py + env_cfg_common.py CubeGraspRewardsCfg)
+- `cage_points`에 `point_fractions` 파라미터 추가 (0=엄지끝, 1=대향 body). 기본값 None이면
+  기존 등분 동작 그대로 (ChopsticksGraspRewardsCfg 등 다른 소비자 무영향)
+- reach/hold/lift 셋 다 `point_fractions=(0.1, 0.5, 0.9)` — 반드시 같은 점 공유 (점을 나누면
+  "엄지만 박기" 해킹 재발)
+- hold/lift `depth_max` 0.02 → 0.005: 끝점 기준 간격 ~6.2cm(접촉 직후)에서 포화.
+  0.02면 접촉 후에도 "더 조여라"가 남아 수박씨 짜냄 유도 (물리는 창 30~50% 실측 근거)
+- 1.0까지 보내지 않는 이유: tip_link 원점은 패드가 아니라 마지막 관절 (패드는 2~3cm 앞)
+
+### 기대 효과 / 확인할 것
+- hold 고점 = 손끝이 표면에 닿은 상태로만 달성 가능 → lift gate가 진짜 파지에서만 열림
+- 다음 런에서 Episode_Reward/finger_cage_hold의 절대값이 낮아지는 건 정상 (기준이 엄격해짐)
+- 진행 중인 런(가중치 실험)과는 별개 — 이 변경은 다음 재학습부터 적용
