@@ -56,7 +56,7 @@ class CubeGraspSceneCfg(ReachSceneCfg):
             pos=(CUBE_POS[0], CUBE_POS[1], BASE_Z / 2),
         ),
         spawn=sim_utils.CuboidCfg(
-            size=(0.5, 1.5, BASE_Z),
+            size=(0.5, 1.0, BASE_Z),
             rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
             collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
             visual_material=sim_utils.PreviewSurfaceCfg(
