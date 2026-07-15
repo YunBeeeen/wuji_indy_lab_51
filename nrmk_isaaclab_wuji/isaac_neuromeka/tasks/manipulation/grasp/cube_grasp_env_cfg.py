@@ -142,6 +142,8 @@ class CubeGraspEnvCfg(NrmkRLEnvCfg):
         # 테이블 상판이어야 함. metrics(managers.py:244)는 cube_lift 것을 자동으로 읽음.
         self.rewards.cube_lift.params["surface_z"] = BASE_Z
         self.rewards.hand_floor.params["surface_z"] = BASE_Z
-        self.terminations.success.params["surface_z"] = BASE_Z
+        # 2026-07-15 A/B: r_T(success/lift_success) 주석처리 중이라 아래도 같이 잠금.
+        # 재활성 시 env_cfg_common.py의 두 항과 함께 살릴 것.
+        # self.terminations.success.params["surface_z"] = BASE_Z
         # viewer settings
         self.viewer.eye = (2.5, 2.5, 2.5)

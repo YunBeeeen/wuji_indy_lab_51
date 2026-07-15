@@ -2931,3 +2931,14 @@ palm_normal_b (0.19,0.28,0.94) -> (1,0,0)   rewards.py + managers.py
 - 가중치: reach 8 / hold 15 / lift 100 / lift_success 15000 / palm 4 / floor 1.0, 질량 0.20, episode 8s
 - 관찰 포인트: ① Episode_Termination/success 비율 ② 팔꿈치가 서는가 (스크린샷)
   ③ palm-up scoop이 유지되는가 ④ 8cm 직전 서성임(성공 회피) 지문
+
+### 오전 2 후속 — A/B 통제: r_T 임시 제외 + 팔 링크 페널티 추가
+- r_T(success 종료 + lift_success) 주석처리 (사용자 지적: 테이블 효과를 분리하려면 전 런과
+  보상 구성이 같아야 함). 재활성 시 env_cfg_common 두 항 + cube_grasp_env_cfg의
+  success surface_z 오버라이드를 세트로 살릴 것
+- arm_floor 페널티 추가 (weight 2.0): link[2-6]이 바닥 0.12m 아래로 내려간 깊이 비례 감점.
+  링크 선정은 시작 자세 실측 기준 (link1=0.08은 항상 낮아 제외; link2~6 = 0.30~0.71).
+  기준면은 테이블이 아니라 바닥 — 팔꿈치는 테이블 옆에 정상적으로 존재 가능
+- 절대 페널티(≤0)라 자세가 좋으면 0 → 테이블이 자세를 고치면 이 항은 침묵 (A/B 오염 최소)
+- 스모크 테스트 통과: 종료항 1개(time_out), arm_floor 등록, action 18 / obs 57
+- 이번 런 = 전 런(scoop) 대비 차이: 테이블 + arm_floor 둘뿐

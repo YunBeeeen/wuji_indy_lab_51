@@ -458,11 +458,14 @@ class CubeGraspRewardsCfg:
     # hold 캠핑의 에피소드 총액 상한(만점이어도 15 x 240 / 30 = 120)을 압도해야
     # "가만히 물고 있기"의 기대수익을 이김 (2026-07-14 실측: 팔로 눌러 정지 캠핑 수렴).
     # 일회성 + 종료라 아무리 커도 farming 불가 (차분형 telescoping과 같은 안전성).
-    lift_success = RewTerm(
-        func=mdp.is_terminated_term,
-        weight=15000.0,
-        params={"term_keys": "success"},
-    )
+    # 2026-07-15 A/B: 테이블 효과만 분리하기 위해 이번 런에서 임시 주석처리 (성공 종료와 세트).
+    # 재활성 시 CubeGraspTerminationsCfg.success와 cube_grasp_env_cfg.py의 surface_z 오버라이드도
+    # 같이 살릴 것.
+    # lift_success = RewTerm(
+    #     func=mdp.is_terminated_term,
+    #     weight=15000.0,
+    #     params={"term_keys": "success"},
+    # )
 
     # 자의적 제약이 아니라 물리적 필요조건: 손가락은 손바닥 쪽으로 굽으므로 손바닥 뒤의 물체는 못 감쌈.
     # cage 항은 이걸 못 봄 (선분이 손 방향과 무관하게 큐브를 관통) -> 손바닥이 하늘인데도 cage 만점이 나옴.
@@ -514,6 +517,21 @@ class CubeGraspRewardsCfg:
             "clearance": 0.02,
         },
     )
+
+    # 2026-07-15 팔 링크가 바닥에 눕는 것(scoop 웅크림)을 직접 감점. 자세는 브랜치/manip 문제가
+    # 아니라 "팔꿈치 링크의 월드 높이" 문제로 판정됨 (manip 0.35~0.5로 r_MP는 데드존).
+    # 기준면은 테이블이 아니라 바닥(surface_z 기본 0.0) — 팔꿈치는 테이블 옆 공간에 정상적으로
+    # 있을 수 있음 (hand_floor의 BASE_Z 오버라이드와 다른 이유).
+    # 링크 선정 실측(시작 자세 z): link1=0.08(항상 낮음, 제외) link2=0.30 link3=0.71
+    # link4=0.53 link5=0.56 link6=0.62 -> link[2-6]. 절대 페널티(<=0)라 자세가 좋으면 0.
+    arm_floor = RewTerm(
+        func=mdp.hand_floor_penalty,
+        weight=2.0,
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=["link[2-6]"]),
+            "clearance": 0.12,
+        },
+    )
     action_rate = RewTerm(func=mdp.action_rate_l2, weight=-0.005)
 
 
@@ -527,24 +545,25 @@ class CubeGraspTerminationsCfg:
     # 논문 r_T의 성공 종료 (2026-07-15). "들어서 유지"가 성공의 정의 — 자세는 지정 안 함.
     # 즉시 종료가 핵심: 성공 후에도/대신에도 hold를 계속 수확하는 경로를 끊음.
     # gate/가상점 파라미터는 CubeGraspRewardsCfg.cube_lift와 반드시 동일하게 유지할 것.
-    success = DoneTerm(
-        func=mdp.ObjectLiftedHeld,
-        params={
-            "asset_cfg": CAGE_BODIES,
-            "object_cfg": SceneEntityCfg("cube"),
-            "object_half_extent": (0.03, 0.03, 0.03),
-            "num_points": 3,
-            "point_fractions": (0.1, 0.5, 0.9),
-            "sphere_radius": 0.005,
-            "depth_max": 0.005,
-            # lift_height(0.08)와 동일 높이. 캠핑(clearance 0)과 들썩(순간)은 여기서 걸러짐
-            "min_height": 0.08,
-            # 2026-07-14 실측: 바닥 캠핑도 gate 0.58까지 나옴 -> gate만으로는 구분 불가,
-            # 높이+유지와 결합해야 함. 0.3은 "손가락이 표면에 닿아 있음" 수준
-            "gate_threshold": 0.3,
-            "hold_steps": 15,  # 0.5s @ 30Hz — fling은 유지가 안 됨
-        },
-    )
+    # 2026-07-15 A/B: 테이블 효과 분리를 위해 임시 주석처리 (lift_success와 세트)
+    # success = DoneTerm(
+    #     func=mdp.ObjectLiftedHeld,
+    #     params={
+    #         "asset_cfg": CAGE_BODIES,
+    #         "object_cfg": SceneEntityCfg("cube"),
+    #         "object_half_extent": (0.03, 0.03, 0.03),
+    #         "num_points": 3,
+    #         "point_fractions": (0.1, 0.5, 0.9),
+    #         "sphere_radius": 0.005,
+    #         "depth_max": 0.005,
+    #         # lift_height(0.08)와 동일 높이. 캠핑(clearance 0)과 들썩(순간)은 여기서 걸러짐
+    #         "min_height": 0.08,
+    #         # 2026-07-14 실측: 바닥 캠핑도 gate 0.58까지 나옴 -> gate만으로는 구분 불가,
+    #         # 높이+유지와 결합해야 함. 0.3은 "손가락이 표면에 닿아 있음" 수준
+    #         "gate_threshold": 0.3,
+    #         "hold_steps": 15,  # 0.5s @ 30Hz — fling은 유지가 안 됨
+    #     },
+    # )
 
 
 
