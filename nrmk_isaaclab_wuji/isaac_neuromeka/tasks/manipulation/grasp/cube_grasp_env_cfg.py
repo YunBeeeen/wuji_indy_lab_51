@@ -147,10 +147,16 @@ class CubeGraspEnvCfg(NrmkRLEnvCfg):
         # 낙하 종료: 큐브 중심이 상판 5cm 아래 = 테이블 밖으로 확실히 떨어진 상태.
         # 정상 파지 중 큐브 중심은 BASE_Z + 0.03이라 절대 안 걸림.
         self.terminations.cube_dropped.params["minimum_height"] = BASE_Z - 0.05
-        # 운반 goal 샘플 범위: 테이블 상판 위 공중 (BASE_Z 파생). x/y는 큐브 스폰 주변.
-        self.commands.cube_goal.ranges.pos_x = (CUBE_POS[0] - 0.12, CUBE_POS[0] + 0.10)
-        self.commands.cube_goal.ranges.pos_y = (CUBE_POS[1] - 0.25, CUBE_POS[1] + 0.25)
-        self.commands.cube_goal.ranges.pos_z = (BASE_Z + 0.10, BASE_Z + 0.30)
+        # 운반 goal (커리큘럼 1단계, 2026-07-15): 스폰 바로 위 +20cm "고정점" —
+        # "잡아서 들고 그 높이에서 멈춰 유지"부터. lo=hi라 매 에피소드 같은 goal.
+        # (스폰 랜덤 ±6/8cm 대비 goal은 공칭점 위라 약간의 횡이동 포함 — 무시 가능 수준)
+        # 1단계가 되면 2단계로 범위를 박스로 확장:
+        #   pos_x = (CUBE_POS[0] - 0.12, CUBE_POS[0] + 0.10)
+        #   pos_y = (CUBE_POS[1] - 0.25, CUBE_POS[1] + 0.25)
+        #   pos_z = (BASE_Z + 0.10, BASE_Z + 0.30)
+        self.commands.cube_goal.ranges.pos_x = (CUBE_POS[0], CUBE_POS[0])
+        self.commands.cube_goal.ranges.pos_y = (CUBE_POS[1], CUBE_POS[1])
+        self.commands.cube_goal.ranges.pos_z = (BASE_Z + 0.20, BASE_Z + 0.20)
         # (참고) 옛 lift 기반 r_T(ObjectLiftedHeld, 주석 상태)를 되살릴 때만 surface_z 오버라이드
         # 필요. 현재 success는 goal 기반(ObjectAtGoalHeld)이라 surface_z 파라미터가 없음.
         # viewer settings
