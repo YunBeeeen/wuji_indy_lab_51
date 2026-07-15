@@ -2986,3 +2986,7 @@ palm_normal_b (0.19,0.28,0.94) -> (1,0,0)   rewards.py + managers.py
   (lo=hi). 기계는 동일 — 운반 차분층·r_T·마커 전부 그대로, 범위만 축퇴
 - 2단계(랜덤 박스) 확장값은 post_init에 주석으로 보존. 논문 curriculum(close-start) 정신
 - lift dense는 8cm 포화라 8→20cm 구간의 gradient는 운반 차분층이 담당 (역할 분담 자연스러움)
+
+### 운반 env 스모크 테스트 통과 (2026-07-15)
+- 1 env 1 iter: cube_goal 커맨드, cube_transport(500) + transport_success(15000) 보상,
+  cube_dropped + success 종료 전부 등록. action 18 / obs 57 불변. 4096 학습 준비 완료
