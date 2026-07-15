@@ -343,12 +343,15 @@ def object_lift_in_cage(
 # - Episode_Reward/cube_transport 로 기록됨.
 # env_cfg_common.py: CubeGraspRewardsCfg.cube_transport 에서 연결됨.
 class ObjectToGoalProgressReward(ManagerTermBase):
-    """운반 차분층 (논문 orient(500) 자리의 우리 번역): 잡은 채 goal에 접근한 양을 지불.
+    """운반 층 (논문 orient(500) 자리의 우리 번역): 잡은 채 goal 거리 "신기록"을 깬 양만 지불.
 
-    - 차분형(일시불): goal 근처에 "머무는 것"에는 연금이 없음 -> 도착 서성임 farming 불가.
-      마지막 돈은 r_T(ObjectAtGoalHeld)에만 있음.
-    - gate(잡음, 연속값)를 '양수에만' 곱함: 잡지 않고 밀거나 던져서 접근시킨 건 지불 안 함,
-      멀어지는 건 잡았든 아니든 전액 감점 (telescoping 보존 — 부호 안 나누면 왕복 farming).
+    - best-so-far 차분 (2026-07-15, 단일 부호 원칙): 에피소드 최소거리보다 줄인 만큼만 +.
+      총액이 (시작거리 − 에피소드 최소거리)로 고정 → farming 불가. 후퇴/왕복/이미 온 길
+      재접근은 전부 0원. 항이 + 전용이라 weight가 한 가지 일만 하고 TB 곡선 = 순수 전진량.
+    - 낙하/거친 취급의 비용은 이 항이 아니라 별도 순수 페널티(drop_penalty, 낙하 종료 정액
+      벌금)가 담당함 — "페널티면 페널티, 리워드면 리워드" 분리. (이전 ± 혼합형은 벌금이
+      "굴러간 거리에 비례"라 물리 우연에 과세하는 문제도 있었음)
+    - gate(잡음, 연속값)를 곱함: 잡지 않고 밀거나 던져서 접근시킨 건 지불 안 함.
     - 기준선은 리셋 후 '첫 호출'에서 seeding: reward reset(managers 순서 375)이 command
       resample(381)보다 먼저라 reset()에서 잡으면 이전 에피소드 goal로 오염됨. 첫 스텝
       보상 0은 무해 — 리셋 직후 손은 큐브에서 떨어져 있어 첫 액션으로 큐브를 못 움직임.
@@ -356,7 +359,7 @@ class ObjectToGoalProgressReward(ManagerTermBase):
 
     def __init__(self, cfg, env: ManagerBasedRLEnv):
         super().__init__(cfg, env)
-        self._prev = torch.zeros(env.num_envs, device=env.device)
+        self._best = torch.zeros(env.num_envs, device=env.device)
         self._pending = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
 
     def reset(self, env_ids: Sequence[int] | None = None) -> None:
@@ -381,17 +384,17 @@ class ObjectToGoalProgressReward(ManagerTermBase):
         goal_w = env.scene.env_origins + env.command_manager.get_command(command_name)
         dist = torch.norm(goal_w - obj.data.root_pos_w, dim=1)
 
-        self._prev = torch.where(self._pending, dist, self._prev)
+        self._best = torch.where(self._pending, dist, self._best)
         self._pending[:] = False
-        progress = self._prev - dist
-        self._prev = dist
+        progress = torch.clamp(self._best - dist, min=0.0)  # 신기록 갱신분만
+        self._best = torch.minimum(self._best, dist)
 
-        reward = torch.clamp(progress / distance_max, -1.0, 1.0)
+        reward = torch.clamp(progress / distance_max, max=1.0)
         gate = object_in_finger_cage(
             env, asset_cfg, object_cfg, object_half_extent, num_points, sphere_radius,
             depth_max, point_fractions,
         )
-        return torch.where(reward > 0.0, reward * gate, reward)
+        return reward * gate
 
 
 # TensorBoard:

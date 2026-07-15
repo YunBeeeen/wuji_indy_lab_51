@@ -482,8 +482,9 @@ class CubeGraspRewardsCfg:
     #     params={"term_keys": "success"},
     # )
 
-    # 2026-07-15 운반 차분층 — 논문 사다리의 orient(500) 자리 번역: hold(15) < 운반 < r_T.
-    # 잡은 채(gate 곱, 양수만) goal에 접근한 양을 지불. 차분형이라 도착 서성임 연금 없음.
+    # 2026-07-15 운반 층 — 논문 사다리의 orient(500) 자리 번역: hold(15) < 운반 < r_T.
+    # best-so-far 차분 (+ 전용): 잡은 채(gate 곱) goal 거리 신기록을 깬 양만 지불.
+    # 후퇴/왕복 0원, 도착 서성임 연금 없음. 낙하 비용은 아래 drop_penalty가 별도 담당.
     cube_transport = RewTerm(
         func=mdp.ObjectToGoalProgressReward,
         weight=500.0,
@@ -506,6 +507,16 @@ class CubeGraspRewardsCfg:
         func=mdp.is_terminated_term,
         weight=15000.0,
         params={"term_keys": "success"},
+    )
+
+    # 2026-07-15 낙하 정액 벌금 (− 전용): cube_dropped 종료 시 한 방 −100 (−3000 x dt).
+    # transport를 + 전용(best-so-far)으로 바꾸면서 "놓치면 손해" 압력이 여기로 이사함
+    # (파인튜닝 초기: 회당 ~−20 청구서로 낙하율 44%→33% 회복 확인 → 그 5배, r_T의 1/5).
+    # 굴러간 거리 비례가 아닌 정액이라 물리 우연에 과세하지 않음.
+    drop_penalty = RewTerm(
+        func=mdp.is_terminated_term,
+        weight=-3000.0,
+        params={"term_keys": "cube_dropped"},
     )
 
     # 자의적 제약이 아니라 물리적 필요조건: 손가락은 손바닥 쪽으로 굽으므로 손바닥 뒤의 물체는 못 감쌈.
