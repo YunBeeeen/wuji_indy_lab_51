@@ -1,6 +1,22 @@
 # AGENTS.md
 
 - 이 문서는 Codex/Claude가 프로젝트 상태와 작업 규칙을 공유하기 위한 인수인계 문서임.
+- Codex 자체의 실수/병목 회고는 사용자 연구 기록에 섞지 않고 root `codex.md`에 따로 남김.
+- 같은 내용의 핵심 요약은 아래 `Codex 운영 메모` 섹션을 우선 확인함.
+
+## Codex 운영 메모
+
+- Codex 실수/병목 상세 기록은 `codex.md`에 둠. `WORKLOG.md`, `ACTIVITY_*.md`, `study.md`, `thesis.md`에는 Codex 시행착오를 섞지 않음.
+- `Stage1`, `Easy`, `Hard`처럼 task/run 이름을 늘리면 checkpoint 선택과 해석이 꼬임. 현재는 `Indy-Wuji-Cube-Grasp` 하나를 기준으로 보고, run은 확인한 폴더명을 우선함.
+- checkpoint load 전에는 action dim, observation dim, reward cfg, env cfg를 먼저 확인함. shape가 다르면 `runner.load()`에서 size mismatch가 남.
+- scene 배치는 학습 전에 눈과 probe로 확인함. cube 높이, support/table 높이, hand 시작 높이, palm/cage 방향을 확인하지 않고 reward만 조정하지 않음.
+- TensorBoard 평균 `Metrics/cube/*`만으로 판단하지 않음. `Metrics/cube_final/*`, `cube_clearance`, `cage_inside_frac`, contact, `cube_speed`를 같이 봄.
+- `palm_facing`은 초기 방향이 맞는지 검증하기 전에는 끄지 않음. 절대형 양수 facing reward는 farming 위험이 크므로 차분형 또는 gate로만 사용함.
+- `cube_lift` weight를 키우기 전에 raw lift가 실제로 발생하는지 확인함. raw lift가 0이면 weight를 키워도 신호는 0임.
+- 2026-07-15 현재 성공 종료는 `clearance > 0.08`, `gate > 0.3`, `hold_steps=15` 기준임. play에서 episode가 빨리 끝나면 time-out이 아니라 `success` termination일 수 있음.
+- 자세가 아쉬운 lift는 height를 더 키우기보다 stable lift 조건을 봄: `cube_speed`, contact group, stricter cage gate, 유지 시간.
+- `play.py --print_contact`나 joint detail을 interval 1로 켜면 GUI가 매우 느려짐. 기본 진단은 `--print_diagnostics --print_action_interval 10` 정도로 시작함.
+- 긴 학습 전에 scripted probe로 `GOOD_CONTACT`, `max_clearance`, cage/contact 유지 여부를 먼저 확인함.
 
 ## Project Context
 
@@ -402,6 +418,9 @@
 - **`init_state.joint_pos` 정규식 키 중복 매칭 주의.** `finger[1-5]` 키는 pop 후 세분화 키를 넣을 것.
 - **`object_below_surface_penalty`는 "누르기" 감지에 못 씀.** 바닥이 강체라 관통 -0.04mm 수준(실측). 압착 억제는 r_T(성공 종료) 구조로 해결함.
 - **파일이 세션 밖에서 바뀜** (사용자/다른 에이전트). 수정 전 재확인(`git diff`) 필수.
+- **`cube_grasp_env_cfg.py`의 `__post_init__` surface_z 배선 블록(★ 표시)은 절대 지우지 말 것.**
+  2026-07-15 편집 중 유실됨 — 없으면 상판 큐브의 clearance가 스폰부터 +BASE_Z라 lift 보상이
+  만점에서 시작하는 대형 버그. 파일 구간을 재작성할 때 기존 오버라이드 줄을 보존할 것.
 - **headless + 카메라 렌더 스크립트 행 걸림 이력** (grip_snapshot.py 24분). 눈 확인은 GUI 모드로.
 - **CRLF/멀티라인 XML은 정규식이 조용히 실패함.** ElementTree로 파싱할 것.
 - **물체 고정은 매 스텝 teleport 금지** (관통 누적 → PhysX 폭발). gravity off + 매 스텝 속도 0.

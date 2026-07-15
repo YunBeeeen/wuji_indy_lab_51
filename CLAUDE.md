@@ -33,6 +33,9 @@
 ### 동시 작업/도구
 - **파일이 세션 밖에서 바뀐다** (사용자·codex 동시 작업). Edit 전에 해당 구간을 다시 Read하고
   `git diff`로 상태를 확인할 것. old_string 불일치가 그 신호.
+- **`cube_grasp_env_cfg.py`의 `__post_init__` surface_z 배선 블록(★ 표시)은 절대 지우지 말 것.**
+  2026-07-15 편집 중 유실됨 — 없으면 상판 큐브의 clearance가 스폰부터 +BASE_Z라 lift 보상이
+  만점에서 시작하는 대형 버그. 파일 구간을 재작성할 때 기존 오버라이드 줄을 보존할 것.
 - **headless + 카메라 렌더 스크립트는 행 걸림** (grip_snapshot.py 24분 무응답 이력).
   눈으로 확인할 건 `grip_capacity.py --gui` 방식으로.
 - **CRLF/멀티라인 XML은 정규식 매칭이 조용히 실패** — 제조사 MuJoCo XML 파싱은 ElementTree로.
