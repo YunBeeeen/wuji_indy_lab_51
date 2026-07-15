@@ -524,14 +524,15 @@ class CubeGraspRewardsCfg:
     # 있을 수 있음 (hand_floor의 BASE_Z 오버라이드와 다른 이유).
     # 링크 선정 실측(시작 자세 z): link1=0.08(항상 낮음, 제외) link2=0.30 link3=0.71
     # link4=0.53 link5=0.56 link6=0.62 -> link[2-6]. 절대 페널티(<=0)라 자세가 좋으면 0.
-    arm_floor = RewTerm(
-        func=mdp.hand_floor_penalty,
-        weight=2.0,
-        params={
-            "asset_cfg": SceneEntityCfg("robot", body_names=["link[2-6]"]),
-            "clearance": 0.12,
-        },
-    )
+    #arm_floor = RewTerm(
+    #    func=mdp.hand_floor_penalty,
+    #    weight=2.0,
+    #    params={
+    #        "asset_cfg": SceneEntityCfg("robot", body_names=["link[2-6]"]),
+    #        "clearance": 0.12,
+    #    },
+    #)
+    
     action_rate = RewTerm(func=mdp.action_rate_l2, weight=-0.005)
 
 
@@ -541,6 +542,16 @@ class CubeGraspTerminationsCfg:
     """Termination terms for the MDP."""
 
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
+
+    # 2026-07-15 낙하 실패 종료: 큐브가 상판 아래로 확실히 떨어지면 회수 불가 -> 즉시 리셋.
+    # 남은 에피소드 낭비를 끊어 처리량을 올리고, 떨어진 큐브를 쫓아 테이블 아래로 웅크리는
+    # 행동(reach 차분이 접근에 지불함)을 차단함. 음수 배경 보상이 없으므로 "일부러 떨구고
+    # 리셋" 유인은 없음 (떨구면 hold/lift 연금을 잃는 것 자체가 손해).
+    # minimum_height는 cube_grasp_env_cfg.__post_init__가 BASE_Z - 0.05로 오버라이드함.
+    cube_dropped = DoneTerm(
+        func=mdp.root_height_below_minimum,
+        params={"minimum_height": -0.05, "asset_cfg": SceneEntityCfg("cube")},
+    )
 
     # 논문 r_T의 성공 종료 (2026-07-15). "들어서 유지"가 성공의 정의 — 자세는 지정 안 함.
     # 즉시 종료가 핵심: 성공 후에도/대신에도 hold를 계속 수확하는 경로를 끊음.

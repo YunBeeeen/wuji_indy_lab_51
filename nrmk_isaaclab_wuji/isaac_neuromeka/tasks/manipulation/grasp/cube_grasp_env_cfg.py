@@ -24,9 +24,9 @@ from isaac_neuromeka.tasks.manipulation.reach.reach_env_cfg import (
 # 팔꿈치 바닥). 큐브를 손 시작 높이(~0.6m) 근처로 올려 하강량을 60cm -> ~17cm로 줄임.
 # lift/floor/success/metrics는 전부 테이블 상판(surface_z=BASE_Z) 기준으로 배선됨
 # (__post_init__ 참고. metrics는 managers.py:244가 cube_lift.params에서 자동으로 읽음).
-BASE_Z = 0.40                     # 테이블 상판 높이
+BASE_Z = 0.25                     # 테이블 상판 높이
 CUBE_HALF = 0.03
-CUBE_POS = (0.62, -0.18)          # 2026-07-13_21-57-31 큐브 x/y (유지)
+CUBE_POS = (0.62, -0.20)          # 2026-07-13_21-57-31 큐브 x/y (유지)
 
 
 import isaac_neuromeka.mdp as mdp  # noqa: F401
@@ -56,7 +56,7 @@ class CubeGraspSceneCfg(ReachSceneCfg):
             pos=(CUBE_POS[0], CUBE_POS[1], BASE_Z / 2),
         ),
         spawn=sim_utils.CuboidCfg(
-            size=(0.5, 0.5, BASE_Z),
+            size=(0.5, 1.5, BASE_Z),
             rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
             collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
             visual_material=sim_utils.PreviewSurfaceCfg(
@@ -138,12 +138,16 @@ class CubeGraspEnvCfg(NrmkRLEnvCfg):
         # 오므리게 해서 접촉이 더 늘어남. overflow는 크래시가 아니라 "접촉을 조용히 버림" -> 손이
         # 큐브를 통과하고 cage reward가 안 오름 -> "reward 설계가 잘못됨"과 구별이 불가능해짐.
         self.sim.physx.gpu_max_rigid_patch_count = 2**20
-        # 받침면 기준 배선: BASE_Z > 0이면 "든 높이"와 "바닥 뚫기"의 기준이 전부
-        # 테이블 상판이어야 함. metrics(managers.py:244)는 cube_lift 것을 자동으로 읽음.
+        # ★ 받침면 기준 배선 (지우면 안 됨): BASE_Z > 0이면 "든 높이"와 "바닥 뚫기"의 기준이
+        # 전부 테이블 상판이어야 함. 이게 빠지면 상판 위 큐브의 clearance가 스폰부터 +BASE_Z라
+        # lift 보상이 "만점에서 시작"하는 대형 버그가 됨 (2026-07-15 실제로 한 번 지워졌었음).
+        # metrics(managers.py:244)는 cube_lift 것을 자동으로 읽어감.
         self.rewards.cube_lift.params["surface_z"] = BASE_Z
         self.rewards.hand_floor.params["surface_z"] = BASE_Z
-        # 2026-07-15 A/B: r_T(success/lift_success) 주석처리 중이라 아래도 같이 잠금.
-        # 재활성 시 env_cfg_common.py의 두 항과 함께 살릴 것.
+        # 낙하 종료: 큐브 중심이 상판 5cm 아래 = 테이블 밖으로 확실히 떨어진 상태.
+        # 정상 파지 중 큐브 중심은 BASE_Z + 0.03이라 절대 안 걸림.
+        self.terminations.cube_dropped.params["minimum_height"] = BASE_Z - 0.05
+        # r_T 재활성 시 같이 살릴 것:
         # self.terminations.success.params["surface_z"] = BASE_Z
         # viewer settings
         self.viewer.eye = (2.5, 2.5, 2.5)

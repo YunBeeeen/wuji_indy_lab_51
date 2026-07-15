@@ -2942,3 +2942,14 @@ palm_normal_b (0.19,0.28,0.94) -> (1,0,0)   rewards.py + managers.py
 - 절대 페널티(≤0)라 자세가 좋으면 0 → 테이블이 자세를 고치면 이 항은 침묵 (A/B 오염 최소)
 - 스모크 테스트 통과: 종료항 1개(time_out), arm_floor 등록, action 18 / obs 57
 - 이번 런 = 전 런(scoop) 대비 차이: 테이블 + arm_floor 둘뿐
+
+### 낙하 종료 추가 + surface_z 배선 복구 (2026-07-15 오후)
+- cube_dropped 종료 추가: 큐브 중심 < 상판 - 5cm → 즉시 리셋 (테이블 도입으로 생긴
+  "떨어뜨림 후 회수불가 에피소드 낭비 + 쫓아 내려가기" 차단). Metrics/cube_lift 음수가
+  이 실패 모드의 지문이었음 (보상은 clamp라 음수 불가, metric은 스폰 대비 변위)
+- ⚠ 사고 복구: __post_init__의 surface_z 배선(cube_lift/hand_floor)이 편집 중 삭제돼 있었음.
+  이대로 학습하면 상판 큐브 clearance가 스폰부터 +BASE_Z → lift 만점에서 시작하는 버그.
+  복구 + "지우면 안 됨" 경고 주석. cube_dropped의 minimum_height도 BASE_Z 파생으로 배선
+- 사용자 변경 반영된 현재 구성: BASE_Z 0.25, 테이블 0.5×1.5 (y 확장 — 낙하 감소),
+  큐브 (0.62, -0.20), arm_floor 주석 (테이블 단독 A/B)
+- 스모크 통과: 종료항 time_out + cube_dropped, action 18 / obs 57
