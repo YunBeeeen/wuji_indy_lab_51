@@ -2855,3 +2855,28 @@ palm_normal_b (0.19,0.28,0.94) -> (1,0,0)   rewards.py + managers.py
 - 코드는 커플링 커밋(2f1111e) 상태로 복원. 음수 과신전 실패 모드는 미해결로 남음
 - 남은 카드: ① 리매핑 (offset 0.8/scale 0.8 -> 목표 [0,1.6], 데드존 없음) ② 그냥 두고
   학습이 스스로 피하는지 관찰 (hand_floor 페널티가 벌어진 채 바닥 박기를 이미 감점함)
+
+## 2026-07-14 (밤 5) — play 진단 출력 추가 + 현재 정책 판정
+
+- `scripts/rsl_rl/play.py`에 최신 run 자동 선택 옵션을 추가함.
+  - `--latest_run`
+  - `--load_run latest` 또는 `--load_run last`
+- `play.py`에 GUI와 같이 보는 진단 옵션을 추가함.
+  - `--print_diagnostics`: joint별 torque/velocity/reward/cube metric 출력
+  - `--print_contact`: thumb/index/middle/palm contact force 출력
+- 별도 상세 스크립트 `scripts/debug/policy_joint_diagnostics.py`도 추가함.
+- `python -m py_compile`로 `play.py`와 `policy_joint_diagnostics.py` 문법 확인함.
+- 성능 주의: `--print_diagnostics --print_contact --print_action_interval 1`은 터미널 출력/metric/contact 계산 때문에 GUI가 크게 느려짐.
+  - 평소에는 `--print_action_interval 10~20` 권장.
+  - contact는 필요한 순간에만 켤 것.
+- 사용자 play 로그 판정:
+  - 안정 구간(step 약 580~710)에서 `|raw| ~= 2.5`, `|applied| ~= 0.83`, `clip ~= 66.7%`.
+  - arm 관절은 토크 부족이 아님. `joint1` torque가 약 `3~4%`, err가 약 `0.14rad` 수준.
+  - finger 관절은 다수 `tq%=100`으로 effort limit에 붙음.
+  - reward raw는 `finger_cage_hold ~= 0.46~0.48`, `cube_lift ~= 0`, `clearance ~= 0`.
+  - metric은 `cage_inside_frac ~= 0.58`, `cage_span ~= 0.11m`, `thumb_middle_opposition ~= 0.52`, `thumb_index_opposition ~= 0~0.08`.
+- 결론:
+  - 현재 정책은 "대충 cage/hold는 만족하지만 실제 하중 지지/lift는 못 하는" local optimum.
+  - arm 힘 부족이 아니라 finger action 포화, 불완전한 파지, lift/r_T 계층 부재가 핵심.
+  - 다음 수정 후보는 finger action range/scale, finger joint2 처리, negative target 처리, contact/lift/r_T 성공 조건임.
+  - reset 직후 출력은 판단에서 제외할 것. reset 직후에는 raw action이 크게 튀고 hold/cage가 0으로 돌아감.

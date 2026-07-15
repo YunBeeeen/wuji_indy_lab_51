@@ -9,6 +9,7 @@
 
 import argparse
 import sys
+from pathlib import Path
 
 from isaaclab.app import AppLauncher
 
@@ -53,6 +54,24 @@ parser.add_argument(
     help="--print_action 사용 시 joint별 raw/applied/target/actual/error를 표로 출력.",
 )
 parser.add_argument(
+    "--print_diagnostics",
+    action="store_true",
+    default=False,
+    help="play 화면을 띄우면서 joint별 torque/velocity/reward/cube metric까지 같이 출력.",
+)
+parser.add_argument(
+    "--print_contact",
+    action="store_true",
+    default=False,
+    help="--print_diagnostics 사용 시 thumb/index/middle/palm과 cube contact force도 출력.",
+)
+parser.add_argument(
+    "--latest_run",
+    action="store_true",
+    default=False,
+    help="logs/rsl_rl/<experiment_name> 아래 가장 최근 run을 load_run으로 사용.",
+)
+parser.add_argument(
     "--render_interval",
     type=int,
     default=2,
@@ -67,6 +86,12 @@ args_cli, hydra_args = parser.parse_known_args()
 # always enable cameras to record video
 if args_cli.video:
     args_cli.enable_cameras = True
+if args_cli.print_diagnostics:
+    args_cli.print_action = True
+    args_cli.print_action_detail = True
+if args_cli.print_contact:
+    args_cli.print_action = True
+    args_cli.print_diagnostics = True
 
 # clear out sys.argv for Hydra
 sys.argv = [sys.argv[0]] + hydra_args
@@ -96,6 +121,7 @@ from isaaclab.envs import (
 )
 from isaaclab.utils.assets import retrieve_file_path
 from isaaclab.utils.dict import print_dict
+from isaaclab.sensors import ContactSensorCfg
 try:
     from isaaclab.utils.pretrained_checkpoint import get_published_pretrained_checkpoint
 except ModuleNotFoundError:
@@ -112,7 +138,156 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 from rsl_rl.runners import DistillationRunner, OnPolicyRunner
 
 # Neuromeka tasks
+import isaac_neuromeka.mdp as mdp
 import isaac_neuromeka.tasks  # noqa: F401
+
+
+CONTACT_BODIES = {
+    "thumb_tip": "finger1_tip_link",
+    "index_tip": "finger2_tip_link",
+    "index_mid": "finger2_link3",
+    "middle_tip": "finger3_tip_link",
+    "middle_mid": "finger3_link3",
+    "palm": "palm_link",
+}
+
+
+def _latest_run_name(log_root_path: str) -> str:
+    root = Path(log_root_path)
+    candidates = [path for path in root.glob("20*") if path.is_dir()]
+    if not candidates:
+        raise FileNotFoundError(f"No timestamped run directory found under: {root}")
+    return max(candidates, key=lambda path: path.stat().st_mtime).name
+
+
+def _add_contact_sensors(env_cfg) -> list[str]:
+    sensor_names = []
+    for label, body_name in CONTACT_BODIES.items():
+        name = f"diag_{label}_cube_contact"
+        setattr(
+            env_cfg.scene,
+            name,
+            ContactSensorCfg(
+                prim_path=f"{{ENV_REGEX_NS}}/Robot/{body_name}",
+                filter_prim_paths_expr=["{ENV_REGEX_NS}/Cube"],
+                update_period=0.0,
+                history_length=1,
+                debug_vis=False,
+                track_pose=True,
+            ),
+        )
+        sensor_names.append(name)
+    return sensor_names
+
+
+def _contact_force(env, sensor_name: str) -> torch.Tensor:
+    sensor = env.unwrapped.scene.sensors[sensor_name]
+    force_w = getattr(sensor.data, "force_matrix_w", None)
+    if force_w is None:
+        force_w = getattr(sensor.data, "net_forces_w", None)
+    if force_w is None:
+        return torch.zeros(env.unwrapped.num_envs, device=env.unwrapped.device)
+    force = torch.linalg.norm(force_w, dim=-1)
+    while force.dim() > 1:
+        force = force.sum(dim=-1)
+    return force
+
+
+def _ratio(value: torch.Tensor, limit: torch.Tensor) -> float:
+    limit_value = float(torch.abs(limit).item())
+    if limit_value <= 1.0e-8:
+        return 0.0
+    return abs(float(value.item())) / limit_value
+
+
+def _reward_snapshot(env) -> dict[str, tuple[float, float]]:
+    manager = env.unwrapped.reward_manager
+    names = list(getattr(manager, "_term_names", []))
+    cfgs = list(getattr(manager, "_term_cfgs", []))
+    step_reward = getattr(manager, "_step_reward", None)
+    if step_reward is None:
+        return {}
+    out = {}
+    for idx, (name, cfg) in enumerate(zip(names, cfgs)):
+        weighted = float(step_reward[0, idx].item())
+        weight = float(cfg.weight)
+        raw = weighted / weight if abs(weight) > 1.0e-8 else 0.0
+        out[name] = (weighted, raw)
+    return out
+
+
+def _cube_snapshot(env) -> dict[str, float]:
+    unwrapped = env.unwrapped
+    out = {}
+    if "cube" not in unwrapped.scene.rigid_objects:
+        return out
+    cube = unwrapped.scene["cube"]
+    out["cube_z"] = float(cube.data.root_pos_w[0, 2].item())
+    out["cube_speed"] = float(torch.linalg.norm(cube.data.root_lin_vel_w[0]).item())
+
+    rewards_cfg = getattr(unwrapped.cfg, "rewards", None)
+    lift_cfg = getattr(rewards_cfg, "cube_lift", None)
+    if lift_cfg is not None:
+        params = lift_cfg.params
+        clearance = mdp.box_ground_clearance(
+            unwrapped,
+            params["object_cfg"],
+            params.get("object_half_extent", (0.03, 0.03, 0.03)),
+            params.get("surface_z", 0.0),
+        )
+        out["clearance"] = float(clearance[0].item())
+
+    reward_manager = unwrapped.reward_manager
+    if hasattr(reward_manager, "_compute_cube_distance_metrics"):
+        try:
+            metrics = reward_manager._compute_cube_distance_metrics()
+        except Exception:
+            metrics = {}
+        for key in (
+            "palm_facing",
+            "cage_inside_frac",
+            "cage_sdf_mean",
+            "cage_sdf_min",
+            "cage_span",
+            "thumb_index_opposition",
+            "thumb_middle_opposition",
+            "arm_manipulability",
+            "action_track_err",
+            "action_delta",
+        ):
+            if key in metrics:
+                out[key] = float(metrics[key][0].item())
+    return out
+
+
+def _print_reward_cube_diagnostics(env) -> None:
+    rewards = _reward_snapshot(env)
+    cube = _cube_snapshot(env)
+    reach_raw = rewards.get("finger_cage_reach", (0.0, 0.0))[1]
+    hold_raw = rewards.get("finger_cage_hold", (0.0, 0.0))[1]
+    lift_raw = rewards.get("cube_lift", (0.0, 0.0))[1]
+    facing_raw = rewards.get("palm_facing", (0.0, 0.0))[1]
+    print(
+        "      reward/raw "
+        f"reach={reach_raw:+.4f} hold={hold_raw:+.4f} lift={lift_raw:+.4f} facing={facing_raw:+.4f} | "
+        f"clearance={cube.get('clearance', float('nan')):+.4f}m "
+        f"cage={cube.get('cage_inside_frac', float('nan')):.3f} "
+        f"span={cube.get('cage_span', float('nan')):.3f} "
+        f"opp_i/m={cube.get('thumb_index_opposition', float('nan')):+.3f}/"
+        f"{cube.get('thumb_middle_opposition', float('nan')):+.3f} "
+        f"cube_speed={cube.get('cube_speed', float('nan')):.3f}",
+        flush=True,
+    )
+
+
+def _print_contacts(env, sensor_names: list[str]) -> None:
+    if not sensor_names:
+        return
+    values = []
+    for sensor_name in sensor_names:
+        label = sensor_name.removeprefix("diag_").removesuffix("_cube_contact")
+        values.append(f"{label}={_contact_force(env, sensor_name)[0].item():.3f}N")
+    print("      contact " + " ".join(values), flush=True)
 
 
 @hydra_task_config(args_cli.task, args_cli.agent)
@@ -141,6 +316,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
     log_root_path = os.path.abspath(log_root_path)
     print(f"[INFO] Loading experiment from directory: {log_root_path}")
+    if args_cli.latest_run or agent_cfg.load_run in ("latest", "last"):
+        agent_cfg.load_run = _latest_run_name(log_root_path)
+        print(f"[INFO] Resolved latest run: {agent_cfg.load_run}")
     if args_cli.use_pretrained_checkpoint:
         resume_path = get_published_pretrained_checkpoint("rsl_rl", train_task_name)
         if not resume_path:
@@ -155,6 +333,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # set the log directory for the environment (works for all environment types)
     env_cfg.log_dir = log_dir
+
+    contact_sensor_names = _add_contact_sensors(env_cfg) if args_cli.print_contact else []
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
@@ -267,15 +447,30 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                     )
 
                     if args_cli.print_action_detail:
-                        print("      joint                  raw   applied    target    actual       err       vel")
+                        print(
+                            "      joint                  raw   applied    target    actual       err"
+                            "       vel    v%   torque   tq%   comp"
+                        )
                         for i, name in enumerate(joint_names):
+                            joint_id = action_term._joint_ids[i]
                             err = target[0, i] - actual[0, i]
+                            vel = joint_vel[0, i]
+                            torque = robot.data.applied_torque[0, joint_id]
+                            comp_torque = robot.data.computed_torque[0, joint_id]
+                            effort_limit = robot.data.joint_effort_limits[0, joint_id]
+                            vel_limit = robot.data.joint_vel_limits[0, joint_id]
+                            vel_pct = _ratio(vel, vel_limit) * 100.0
+                            torque_pct = _ratio(torque, effort_limit) * 100.0
                             print(
                                 f"      {name:<20}"
                                 f"{actions[0, i]:>8.3f}{applied[0, i]:>10.3f}"
                                 f"{target[0, i]:>10.3f}{actual[0, i]:>10.3f}"
-                                f"{err:>10.3f}{joint_vel[0, i]:>10.3f}"
+                                f"{err:>10.3f}{vel:>10.3f}{vel_pct:>6.0f}"
+                                f"{torque:>9.2f}{torque_pct:>6.0f}{comp_torque:>8.2f}"
                             )
+                    if args_cli.print_diagnostics:
+                        _print_reward_cube_diagnostics(env)
+                        _print_contacts(env, contact_sensor_names)
                 timestep += 1
         if args_cli.video:
             timestep += 1

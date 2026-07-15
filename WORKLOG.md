@@ -799,3 +799,17 @@ python scripts/rsl_rl/train.py \
 - 짧은 검증 명령 `--finger-action 1 0 1 --contact-mode thumb_middle` 실행 통과함.
 - 해당 짧은 검증에서는 thumb과 middle이 같은 시점에 안정적으로 물지 못해 `lift_success=False`임.
 - 다음 확인은 cube를 움직이기보다 `--sweep-fingers`로 손가락 joint 명령 조합부터 찾는 것이 우선임.
+
+## 2026-07-14 play diagnostics 추가 및 현재 정책 판정
+
+- `scripts/rsl_rl/play.py`에 `--latest_run`, `--load_run latest/last`, `--print_diagnostics`, `--print_contact`를 추가함.
+- 별도 상세 진단 스크립트 `scripts/debug/policy_joint_diagnostics.py`도 추가함.
+- `--print_diagnostics --print_contact --print_action_interval 1`은 렉이 심함. 평소에는 interval 10~20 권장.
+- 사용자 play 로그 판정:
+  - 안정 구간에서 `|raw| ~= 2.5`, `|applied| ~= 0.83`, clip 약 `66.7%`.
+  - arm torque 부족 아님. `joint1` torque 약 `3~4%`, err 약 `0.14rad`.
+  - finger는 여러 관절이 effort limit에 붙음 (`tq%=100`).
+  - `finger_cage_hold` raw는 약 `0.46~0.48`이지만 `cube_lift`와 `clearance`는 0 근처.
+  - `cage_inside_frac ~= 0.58`, `cage_span ~= 0.11m`, `thumb_middle_opposition ~= 0.52`, `thumb_index_opposition ~= 0~0.08`.
+- 결론: 현재 정책은 "잡는 듯한 cage/hold 점수"는 먹지만 실제 하중 지지/lift는 못 하는 local optimum임.
+- 다음 레버는 arm torque가 아니라 finger action range/scale, finger joint2 처리, negative target 처리, contact/lift/r_T 계층임.

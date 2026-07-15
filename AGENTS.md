@@ -358,6 +358,20 @@
 
 ## Asset Notes
 
+## 2026-07-14 Play Diagnostics Notes
+
+- `scripts/rsl_rl/play.py`는 이제 `--latest_run` 또는 `--load_run latest`로 최신 cube grasp run을 직접 열 수 있음.
+- `--print_diagnostics`는 기존 action detail에 joint torque/velocity, reward raw, cube clearance/cage/opposition을 같이 출력함.
+- `--print_contact`는 thumb/index/middle/palm contact force도 출력함.
+- 이 진단은 출력량이 많아 GUI가 느려짐. 평소에는 `--print_action_interval 10~20`을 쓰고 contact는 필요할 때만 켬.
+- 2026-07-14 play 로그 기준 현재 정책은 arm torque 부족이 아님.
+  - 안정 구간에서 `joint1` torque는 약 `3~4%`, err는 약 `0.14rad`.
+  - finger 관절은 다수 `tq%=100`으로 effort limit에 붙음.
+  - `finger_cage_hold` raw는 약 `0.46~0.48`이지만 `cube_lift`/`clearance`는 0 근처.
+  - 결론: cage/hold local optimum이며 실제 lift 파지는 아님. 다음 레버는 finger action range/scale, finger joint2/negative target 처리, contact/lift/r_T 계층임.
+
+## Asset Notes
+
 - Wuji collision 문제는 `indy7_wuji_right_simplified.usd` 기준으로 post-process 처리함.
 - 26개 Wuji hand collision STL을 USD Mesh collider로 삽입함.
 - 직접 삽입한 collision mesh prim에 `PhysicsCollisionAPI` 등을 적용함.
@@ -449,10 +463,9 @@ python scripts/rsl_rl/train.py --task Indy-Wuji-Cube-Grasp --headless --num_envs
 python scripts/rsl_rl/play.py \
   --task Indy-Wuji-Cube-Grasp \
   --num_envs 1 \
-  --load_run "$(basename "$(ls -td logs/rsl_rl/indy_wuji_cube_grasp/20* | head -n 1)")" \
-  --print_action \
-  --print_action_interval 1 \
-  --print_action_detail
+  --latest_run \
+  --print_diagnostics \
+  --print_action_interval 10
 ```
 
 - cube grasp contact/lift scripted 확인 실행함.

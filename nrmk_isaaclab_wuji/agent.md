@@ -595,3 +595,21 @@ python scripts/debug/check_cube_contact_lift.py \
   그대로 종료. 시작 자세(0)가 이미 최대 폄이므로 음수 목표는 기능적으로 무의미함
 - 일자 들기 실패: ① 관절공간 절대 액션엔 "위" 방향이 없음 (단일 관절 회전은 호 + 파지축 회전)
   ② "들고 유지" 층(r_T) 부재로 순간 clearance와 안정 유지가 구분 안 됨
+
+## 2026-07-14 play diagnostics 결과: 잡지만 못 드는 상태
+
+- `scripts/rsl_rl/play.py`에 `--latest_run`, `--print_diagnostics`, `--print_contact`를 추가함.
+- 별도 상세 진단 스크립트 `scripts/debug/policy_joint_diagnostics.py`도 추가함.
+- `--print_diagnostics --print_contact --print_action_interval 1`은 GUI가 크게 느려짐.
+- 평소에는 `--print_action_interval 10~20`으로 볼 것. contact는 필요한 순간에만 켤 것.
+- 관찰 로그 안정 구간(step 약 580~710):
+  - `|raw| ~= 2.5`, `|applied| ~= 0.83`, `clip ~= 66.7%`.
+  - arm 쪽은 토크 부족이 아님. 예: `joint1` target `-1.45`, actual 약 `-1.30`, err 약 `0.14rad`, torque 약 `3~4%`.
+  - finger 쪽은 여러 관절이 effort limit에 걸림. `finger2_joint1/2`, `finger3_joint1/2/4` 등이 `tq%=100`.
+  - reward raw는 `finger_cage_hold ~= 0.46~0.48`, `cube_lift ~= 0`, `clearance ~= 0`.
+  - metric은 `cage_inside_frac ~= 0.58`, `cage_span ~= 0.11m`, `thumb_middle_opposition ~= 0.52`, `thumb_index_opposition ~= 0~0.08`.
+- 결론:
+  - "팔 힘이 약해서 못 든다"가 아니라, finger action이 clipping/torque saturation 상태에서 cage/hold 점수만 먹고 실제 lift를 만들지 못하는 local optimum임.
+  - `cage_hold`는 켜졌지만 실제 하중을 지지하는 파지로 충분하지 않음. `cube_clearance`가 최종 판단 기준임.
+  - 다음 레버는 arm torque가 아니라 finger action range/scale, finger joint2 처리, negative target 처리, contact/lift/r_T 계층임.
+  - reset 직후 줄은 제외하고 볼 것. reset 직후에는 `hold=0`, `cage=0`, raw action이 크게 튀어 정상 정착 상태 판단에 쓰면 안 됨.
