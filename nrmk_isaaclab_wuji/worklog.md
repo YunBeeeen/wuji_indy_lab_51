@@ -2990,3 +2990,14 @@ palm_normal_b (0.19,0.28,0.94) -> (1,0,0)   rewards.py + managers.py
 ### 운반 env 스모크 테스트 통과 (2026-07-15)
 - 1 env 1 iter: cube_goal 커맨드, cube_transport(500) + transport_success(15000) 보상,
   cube_dropped + success 종료 전부 등록. action 18 / obs 57 불변. 4096 학습 준비 완료
+
+## 로드맵 확정 (2026-07-15, 사용자)
+1. 고정 위치 운반 (진행 중)
+2. 큐브 → 직육면체 교체 (젓가락 프록시 기하로 접근)
+   - 선행 작업: object_half_extent 6군데 하드코딩 중앙화 (BASE_Z 패턴)
+3. 랜덤 위치 운반 (구현 완료 — post_init 주석 3줄 복원이 전부)
+4. 랜덤 크기 직육면체
+   - startup 스케일 랜덤화 + SDF의 env별 half_extent 텐서화 + 관측에 크기 추가(obs 단절)
+5. 랜덤 위치+회전+크기 통합
+   - 회전 관측 필요 → ④에서 obs 스키마 개정 시 크기+방향을 한 번에 넣어 단절 1회로 묶기
+6. 젓가락 (functional grasp) — IK 전환 결정 지점, 목표 파지 g 정의
