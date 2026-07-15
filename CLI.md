@@ -406,3 +406,17 @@ python scripts/rsl_rl/play.py   --task Indy-Wuji-Cube-Grasp   --num_envs 1   --l
 - 긴 학습은 `4096 env / 50000 iter`임.
 - GUI 확인은 `1 env / 1 iter`임.
 - play 확인은 최신 run의 마지막 checkpoint 기준임.
+
+## 옛 체크포인트 play (코드가 앞서갔을 때)
+
+- 차원(obs/action)이 같으면 현재 코드에서 그냥 play 가능함. 되돌리기 불필요.
+- 차원이 바뀐 뒤에는 worktree로 그 런의 커밋을 옆에 펴서 play함:
+
+```bash
+git worktree add ~/wuji_play_old <그 런을 학습시킨 커밋>
+ln -s ~/wuji_indy_lab_51/nrmk_isaaclab_wuji/logs ~/wuji_play_old/nrmk_isaaclab_wuji/logs
+cd ~/wuji_play_old/nrmk_isaaclab_wuji && python scripts/rsl_rl/play.py --task ... --load_run ...
+# 정리: git worktree remove ~/wuji_play_old
+```
+
+- 전제: 런 시작 전 커밋 = 그 런의 코드 스냅샷. 런-커밋 대응은 worklog에 기록함.
