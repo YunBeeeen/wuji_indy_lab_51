@@ -392,6 +392,22 @@
 - 실행 흐름과 핵심 코드 연결은 root `flow_study.md`에 정리함.
 - cube grasp reward 설계용으로 functional grasp/pre-grasp 논문을 주 기준으로 보고, DexPoint, TriFinger transfer, SimToolReal reward 구조는 보조 참고로 정리함.
 
+## Agent Pitfalls (작업 중 막힌 지점, 2026-07-15 정리)
+
+- 사용자 실험 기록(worklog/ACTIVITY/agent.md)에는 에이전트 도구 함정을 섞지 않음. 이 섹션과 root `CLAUDE.md`에만 기록함.
+- **`ChopsticksGraspRewardsCfg`는 미사용 클래스임.** `Indy-Wuji-Cube-Grasp`는 `CubeGraspRewardsCfg`(`cube_grasp_env_cfg.py:90`)를 씀. Chopsticks 쪽을 고치면 조용히 무시됨 (2026-07-14 가중치 실험 미적용 사고).
+- **보상 가중치에는 dt(1/30)가 곱해짐** (`env/managers.py:427`). 일회성 보상의 로그 스케일 한 방 = weight/30. `lift_success` weight 15000 = +500.
+- **`is_terminated_term`은 isaaclab 클래스형 reward term임.** 종료 계산이 보상 계산보다 먼저라 성공 종료 스텝에 같은 스텝 지급됨.
+- **리셋은 관절 상태만 복원하고 위치 목표 버퍼는 안 채움.** 액션 밖 관절은 목표 0으로 저절로 이동함. `hold_joints_at_default` 리셋 이벤트로 해결함.
+- **`init_state.joint_pos` 정규식 키 중복 매칭 주의.** `finger[1-5]` 키는 pop 후 세분화 키를 넣을 것.
+- **`object_below_surface_penalty`는 "누르기" 감지에 못 씀.** 바닥이 강체라 관통 -0.04mm 수준(실측). 압착 억제는 r_T(성공 종료) 구조로 해결함.
+- **파일이 세션 밖에서 바뀜** (사용자/다른 에이전트). 수정 전 재확인(`git diff`) 필수.
+- **headless + 카메라 렌더 스크립트 행 걸림 이력** (grip_snapshot.py 24분). 눈 확인은 GUI 모드로.
+- **CRLF/멀티라인 XML은 정규식이 조용히 실패함.** ElementTree로 파싱할 것.
+- **물체 고정은 매 스텝 teleport 금지** (관통 누적 → PhysX 폭발). gravity off + 매 스텝 속도 0.
+- **`finger*_tip_link` 원점은 마지막 관절임** (패드는 2~3cm 앞). **`joint1`은 감소가 하강임.**
+- **git 멀티라인 커밋은 heredoc으로.** 사용자 터미널 복붙은 실패 이력 있음.
+
 ## Working Rules
 
 - 관련 없는 IsaacLab core 파일은 수정하지 않음.
