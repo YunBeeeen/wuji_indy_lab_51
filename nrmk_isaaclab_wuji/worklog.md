@@ -2880,3 +2880,29 @@ palm_normal_b (0.19,0.28,0.94) -> (1,0,0)   rewards.py + managers.py
   - arm 힘 부족이 아니라 finger action 포화, 불완전한 파지, lift/r_T 계층 부재가 핵심.
   - 다음 수정 후보는 finger action range/scale, finger joint2 처리, negative target 처리, contact/lift/r_T 성공 조건임.
   - reset 직후 출력은 판단에서 제외할 것. reset 직후에는 raw action이 크게 튀고 hold/cage가 0으로 돌아감.
+
+## 2026-07-15 (아침) — 밤샘 런이 캠핑을 탈출해 들었다 + r_T 구현
+
+### 밤샘 런 결과 (사용자 관찰 + 스크린샷)
+- TensorBoard: lift reward 지수꼴 증가, Metrics lift > 0.01m 통과 → 밤새 계속 돌림 (사용자 결정)
+- 아침 GUI: **큐브를 들었음.** 단, 자세는 손바닥을 하늘로 뒤집어 밑에서 받친 scoop —
+  중력이 큐브를 손 안으로 눌러줘서 손가락 힘(0.6 N·m)이 거의 필요 없는 가장 싼 파지법.
+  팔은 팔꿈치가 바닥 근처까지 접힘 (manipulability 낮음)
+- 평가: 해킹 아님 (최하 꼭짓점 clearance로 진짜 듦). "드는 자세면 뭐든 진짜 파지" 정의상 합격.
+  어제 play가 보여준 캠핑은 그 시점 체크포인트의 모습이었고, 학습이 그 국소최적을 탈출한 것
+- 남는 문제: ① 접힌 팔로는 이동/배치가 어려움 ② scoop은 pinch가 아니라 functional grasp로
+  재사용 불가. 둘 다 보상이 "스타일"을 요구한 적 없어서 생긴 정의의 문제
+
+### r_T 구현 완료 (다음 런부터 적용)
+- `ObjectLiftedHeld` 종료 판정 (rewards.py): clearance > 8cm AND gate > 0.3을 15스텝(0.5s)
+  연속 유지 → 성공 종료. 캠핑(clearance 0)·들썩(순간)·쳐올리기(유지 불가) 전부 걸러짐
+- `CubeGraspTerminationsCfg.success` + `CubeGraspRewardsCfg.lift_success`
+  (is_terminated_term, weight 15000 = 로그 스케일 한 방 +500 ≫ hold 캠핑 총액 상한 120)
+- 즉시 종료가 마개: "성공 후 hold 연금"과 "hold만 캠핑" 둘 다 기대수익에서 짐
+- 사용자 가중치(이번 런): hold 15 / lift 100 / reach 8 / palm 4 (CubeGraspRewardsCfg에 반영됨)
+
+### 열린 결정 (사용자)
+1. 이 런 계속 vs r_T 얹어 재학습/resume — scoop이 이미 나왔으니 r_T는 "성공을 빨리 끝내고
+   다음 에피소드"로 처리량을 올리고 캠핑 회귀를 막는 용도
+2. scoop 자세 수용 여부 — 지금 r_T 정의로는 scoop도 성공. 스타일(위에서 pinch)을 원하면
+   성공 조건이나 방향 항에 추가 조건이 필요 (박스 yaw 정렬 카드가 후보)

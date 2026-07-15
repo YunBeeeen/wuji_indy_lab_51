@@ -411,7 +411,7 @@ class CubeGraspRewardsCfg:
 
     finger_cage_hold = RewTerm(
         func=mdp.object_in_finger_cage,
-        weight=25.0,
+        weight=15.0,
         params={
             "asset_cfg": CAGE_BODIES,
             "object_cfg": SceneEntityCfg("cube"),
@@ -438,7 +438,7 @@ class CubeGraspRewardsCfg:
     # hold보다 무겁게 (논문 순서 r_T >> r_hold >> r_reach).
     cube_lift = RewTerm(
         func=mdp.object_lift_in_cage,
-        weight=50.0,
+        weight=100.0,
         params={
             "asset_cfg": CAGE_BODIES,
             "object_cfg": SceneEntityCfg("cube"),
@@ -451,6 +451,17 @@ class CubeGraspRewardsCfg:
             "depth_max": 0.005,
             "lift_height": 0.08,
         },
+    )
+
+    # 논문 r_T (5000): 성공 한 방 + 즉시 종료 (CubeGraspTerminationsCfg.success 참고).
+    # RewardManager가 weight x dt(1/30)를 곱하므로 로그 스케일 한 방은 15000/30 = +500.
+    # hold 캠핑의 에피소드 총액 상한(만점이어도 15 x 240 / 30 = 120)을 압도해야
+    # "가만히 물고 있기"의 기대수익을 이김 (2026-07-14 실측: 팔로 눌러 정지 캠핑 수렴).
+    # 일회성 + 종료라 아무리 커도 farming 불가 (차분형 telescoping과 같은 안전성).
+    lift_success = RewTerm(
+        func=mdp.is_terminated_term,
+        weight=15000.0,
+        params={"term_keys": "success"},
     )
 
     # 자의적 제약이 아니라 물리적 필요조건: 손가락은 손바닥 쪽으로 굽으므로 손바닥 뒤의 물체는 못 감쌈.
@@ -512,6 +523,28 @@ class CubeGraspTerminationsCfg:
     """Termination terms for the MDP."""
 
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
+
+    # 논문 r_T의 성공 종료 (2026-07-15). "들어서 유지"가 성공의 정의 — 자세는 지정 안 함.
+    # 즉시 종료가 핵심: 성공 후에도/대신에도 hold를 계속 수확하는 경로를 끊음.
+    # gate/가상점 파라미터는 CubeGraspRewardsCfg.cube_lift와 반드시 동일하게 유지할 것.
+    success = DoneTerm(
+        func=mdp.ObjectLiftedHeld,
+        params={
+            "asset_cfg": CAGE_BODIES,
+            "object_cfg": SceneEntityCfg("cube"),
+            "object_half_extent": (0.03, 0.03, 0.03),
+            "num_points": 3,
+            "point_fractions": (0.1, 0.5, 0.9),
+            "sphere_radius": 0.005,
+            "depth_max": 0.005,
+            # lift_height(0.08)와 동일 높이. 캠핑(clearance 0)과 들썩(순간)은 여기서 걸러짐
+            "min_height": 0.08,
+            # 2026-07-14 실측: 바닥 캠핑도 gate 0.58까지 나옴 -> gate만으로는 구분 불가,
+            # 높이+유지와 결합해야 함. 0.3은 "손가락이 표면에 닿아 있음" 수준
+            "gate_threshold": 0.3,
+            "hold_steps": 15,  # 0.5s @ 30Hz — fling은 유지가 안 됨
+        },
+    )
 
 
 
@@ -705,7 +738,7 @@ class ChopsticksGraspRewardsCfg:
 
     finger_cage_hold = RewTerm(
         func=mdp.object_in_finger_cage,
-        weight=15.0,
+        weight=12.0,
         params={
             "asset_cfg": CAGE_BODIES,
             "object_cfg": SceneEntityCfg("cube"),
@@ -726,7 +759,7 @@ class ChopsticksGraspRewardsCfg:
     # hold보다 무겁게 (논문 순서 r_T >> r_hold >> r_reach).
     cube_lift = RewTerm(
         func=mdp.object_lift_in_cage,
-        weight=50.0,
+        weight=100.0,
         params={
             "asset_cfg": CAGE_BODIES,
             "object_cfg": SceneEntityCfg("cube"),
