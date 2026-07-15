@@ -107,3 +107,84 @@ class EmptyPoseCommand(UniformPoseCommand):
 
     def _update_command(self):
         pass
+
+
+# =============================================================================
+# 큐브 운반 goal 커맨드 (2026-07-15)
+# =============================================================================
+import isaaclab.sim as _sim_utils  # noqa: E402
+from isaaclab.managers import CommandTerm, CommandTermCfg  # noqa: E402
+from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg  # noqa: E402
+
+
+class UniformCubeGoalCommand(CommandTerm):
+    """에피소드마다 큐브 운반 goal 위치를 env-로컬 박스에서 균일 샘플.
+
+    command는 (N, 3) env-로컬 위치. 월드 좌표가 필요하면 env_origins를 더할 것 —
+    기존 object_position_error_to_target이 이 보정을 빼먹어서 다중 env에서 goal 관측이
+    env마다 다른 상수(사실상 잡음 채널)였던 것을 고치는 구현임 (2026-07-15 발견).
+    resampling_time_range를 에피소드보다 길게 두면 리셋에서만 리샘플됨 (에피소드 내 고정
+    -> 운반 차분 보상의 telescoping이 깨지지 않음).
+    """
+
+    cfg: "UniformCubeGoalCommandCfg"
+
+    def __init__(self, cfg: "UniformCubeGoalCommandCfg", env):
+        super().__init__(cfg, env)
+        self.cube = env.scene[cfg.asset_name]
+        self.goal_pos_e = torch.zeros(self.num_envs, 3, device=self.device)
+        self.metrics["error_pos"] = torch.zeros(self.num_envs, device=self.device)
+
+    @property
+    def command(self) -> torch.Tensor:
+        return self.goal_pos_e
+
+    def _resample_command(self, env_ids: Sequence[int]):
+        r = self.cfg.ranges
+        for i, (lo, hi) in enumerate((r.pos_x, r.pos_y, r.pos_z)):
+            self.goal_pos_e[env_ids, i] = (
+                torch.rand(len(env_ids), device=self.device) * (hi - lo) + lo
+            )
+
+    def _update_command(self):
+        pass
+
+    def _update_metrics(self):
+        goal_w = self._env.scene.env_origins + self.goal_pos_e
+        self.metrics["error_pos"] = torch.norm(goal_w - self.cube.data.root_pos_w, dim=1)
+
+    def _set_debug_vis_impl(self, debug_vis: bool):
+        if debug_vis:
+            if not hasattr(self, "goal_visualizer"):
+                self.goal_visualizer = VisualizationMarkers(self.cfg.goal_marker_cfg)
+            self.goal_visualizer.set_visibility(True)
+        elif hasattr(self, "goal_visualizer"):
+            self.goal_visualizer.set_visibility(False)
+
+    def _debug_vis_callback(self, event):
+        self.goal_visualizer.visualize(translations=self._env.scene.env_origins + self.goal_pos_e)
+
+
+@configclass
+class UniformCubeGoalCommandCfg(CommandTermCfg):
+    class_type: type = UniformCubeGoalCommand
+
+    asset_name: str = "cube"
+
+    @configclass
+    class Ranges:
+        pos_x: tuple[float, float] = MISSING
+        pos_y: tuple[float, float] = MISSING
+        pos_z: tuple[float, float] = MISSING
+
+    ranges: Ranges = MISSING
+
+    goal_marker_cfg: VisualizationMarkersCfg = VisualizationMarkersCfg(
+        prim_path="/Visuals/Command/cube_goal",
+        markers={
+            "sphere": _sim_utils.SphereCfg(
+                radius=0.02,
+                visual_material=_sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.9, 0.3)),
+            )
+        },
+    )

@@ -2953,3 +2953,30 @@ palm_normal_b (0.19,0.28,0.94) -> (1,0,0)   rewards.py + managers.py
 - 사용자 변경 반영된 현재 구성: BASE_Z 0.25, 테이블 0.5×1.5 (y 확장 — 낙하 감소),
   큐브 (0.62, -0.20), arm_floor 주석 (테이블 단독 A/B)
 - 스모크 통과: 종료항 time_out + cube_dropped, action 18 / obs 57
+
+## 2026-07-15 (오후 2) — 운반 task 구현 (다음 런용, 테이블 A/B 런과 무관)
+
+### 결정
+- 발전 방향 3안 중 **B(랜덤 goal 운반) 채택**: 기계(r_T·gate·종료) 검증 + 파지 강건성 시험.
+  C(파지점 개선)의 알맹이는 grip_capacity 스크립트 검증으로 압축, A(젓가락)는 그 다음.
+  IK 전환 결정은 젓가락 진입 시점으로
+- **orientation 제외**: 대칭 큐브엔 목표 방향 정의 불가(자의적 지표 재도입), scoop으로
+  재배향은 별개 기술, 런당 새 축은 하나. 필요 시 TriFinger식 8-keypoint로 업그레이드
+
+### 구현 (obs 57 / action 18 불변)
+- `UniformCubeGoalCommand`: 에피소드당 goal을 env-로컬 박스에서 샘플 (리셋만, 1e9s),
+  GUI 초록 구 마커, Metrics/cube_goal/error_pos
+- **관측 버그 수정**: 기존 cube_to_goal은 월드 고정점 + env_origins 미보정 → 다중 env에서
+  env마다 다른 상수(잡음 채널). 커맨드 기반 로컬 프레임으로 교체 (dim 3 유지)
+- `ObjectToGoalProgressReward` (500, 논문 orient 자리): 잡은 채(gate, 양수만) goal 접근
+  차분 지불. 기준선은 리셋 후 첫 호출 seeding (reward reset 375 < command resample 381)
+- `ObjectAtGoalHeld` r_T: goal ±5cm + gate>0.3 유지 0.5s → transport_success +500 + 종료.
+  goal이 공중(상판+10~30cm)이라 들었음 자동 함의
+- 사다리 완성형: reach(8) < hold(15) < lift(100) < 운반(500) < r_T(15000=+500·종료)
+
+### 사고와 수정
+- commands.py의 cfg 전방 참조 주석이 import 시 NameError → mdp 패키지 전체 import 실패
+  → play.py 즉사. 문자열 주석으로 수정. py_compile은 못 잡는 종류 — 학습 중이라 스모크를
+  건너뛴 구멍. **학습 종료 후 1 env 스모크 필수** (운반 env 런타임 생성은 아직 미검증)
+- play 호환 원칙 정리: 차원 일치=하드 제약 / 의미 일치=소프트 제약(옛 체크포인트는
+  cube_to_goal 3칸을 무시하도록 학습돼 goal을 안 쫓는 게 정상) / 보상·종료·장면=자유

@@ -340,6 +340,109 @@ def object_lift_in_cage(
 
 
 # TensorBoard:
+# - Episode_Reward/cube_transport 로 기록됨.
+# env_cfg_common.py: CubeGraspRewardsCfg.cube_transport 에서 연결됨.
+class ObjectToGoalProgressReward(ManagerTermBase):
+    """운반 차분층 (논문 orient(500) 자리의 우리 번역): 잡은 채 goal에 접근한 양을 지불.
+
+    - 차분형(일시불): goal 근처에 "머무는 것"에는 연금이 없음 -> 도착 서성임 farming 불가.
+      마지막 돈은 r_T(ObjectAtGoalHeld)에만 있음.
+    - gate(잡음, 연속값)를 '양수에만' 곱함: 잡지 않고 밀거나 던져서 접근시킨 건 지불 안 함,
+      멀어지는 건 잡았든 아니든 전액 감점 (telescoping 보존 — 부호 안 나누면 왕복 farming).
+    - 기준선은 리셋 후 '첫 호출'에서 seeding: reward reset(managers 순서 375)이 command
+      resample(381)보다 먼저라 reset()에서 잡으면 이전 에피소드 goal로 오염됨. 첫 스텝
+      보상 0은 무해 — 리셋 직후 손은 큐브에서 떨어져 있어 첫 액션으로 큐브를 못 움직임.
+    """
+
+    def __init__(self, cfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        self._prev = torch.zeros(env.num_envs, device=env.device)
+        self._pending = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
+
+    def reset(self, env_ids: Sequence[int] | None = None) -> None:
+        if env_ids is None:
+            env_ids = slice(None)
+        self._pending[env_ids] = True
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        command_name: str,
+        asset_cfg: SceneEntityCfg,
+        object_cfg: SceneEntityCfg,
+        object_half_extent: tuple[float, float, float] = (0.03, 0.03, 0.03),
+        num_points: int = 3,
+        sphere_radius: float = 0.005,
+        depth_max: float = 0.005,
+        point_fractions: tuple[float, ...] | None = None,
+        distance_max: float = 0.5,
+    ) -> torch.Tensor:
+        obj: RigidObject = env.scene[object_cfg.name]
+        goal_w = env.scene.env_origins + env.command_manager.get_command(command_name)
+        dist = torch.norm(goal_w - obj.data.root_pos_w, dim=1)
+
+        self._prev = torch.where(self._pending, dist, self._prev)
+        self._pending[:] = False
+        progress = self._prev - dist
+        self._prev = dist
+
+        reward = torch.clamp(progress / distance_max, -1.0, 1.0)
+        gate = object_in_finger_cage(
+            env, asset_cfg, object_cfg, object_half_extent, num_points, sphere_radius,
+            depth_max, point_fractions,
+        )
+        return torch.where(reward > 0.0, reward * gate, reward)
+
+
+# TensorBoard:
+# - Episode_Termination/success 로 기록됨 (DoneTerm 필드명 기준)
+# - CubeGraspRewardsCfg.transport_success(is_terminated_term)가 이 판정을 한 방 보상으로 변환함.
+# env_cfg_common.py: CubeGraspTerminationsCfg.success 에서 연결됨.
+class ObjectAtGoalHeld(ManagerTermBase):
+    """r_T (운반판): 큐브가 goal 반경 안 + gate 물림을 hold_steps 연속 유지 -> 성공 종료.
+
+    goal이 공중(상판 +10cm 이상, cube_grasp_env_cfg의 커맨드 범위)이라 "들었음"은 자동 함의됨.
+    순간 통과(던지기)는 유지 조건에서, 잡지 않은 받치기 등은 gate에서 걸러짐.
+    성공 시 즉시 종료가 hold/lift 연금의 마개 (ObjectLiftedHeld와 같은 설계).
+    """
+
+    def __init__(self, cfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        self._count = torch.zeros(env.num_envs, dtype=torch.long, device=env.device)
+
+    def reset(self, env_ids: Sequence[int] | None = None) -> None:
+        if env_ids is None:
+            env_ids = slice(None)
+        self._count[env_ids] = 0
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        command_name: str,
+        asset_cfg: SceneEntityCfg,
+        object_cfg: SceneEntityCfg,
+        object_half_extent: tuple[float, float, float] = (0.03, 0.03, 0.03),
+        num_points: int = 3,
+        sphere_radius: float = 0.005,
+        depth_max: float = 0.005,
+        point_fractions: tuple[float, ...] | None = None,
+        goal_radius: float = 0.05,
+        gate_threshold: float = 0.3,
+        hold_steps: int = 15,
+    ) -> torch.Tensor:
+        obj: RigidObject = env.scene[object_cfg.name]
+        goal_w = env.scene.env_origins + env.command_manager.get_command(command_name)
+        dist = torch.norm(goal_w - obj.data.root_pos_w, dim=1)
+        gate = object_in_finger_cage(
+            env, asset_cfg, object_cfg, object_half_extent, num_points, sphere_radius,
+            depth_max, point_fractions,
+        )
+        ok = (dist < goal_radius) & (gate > gate_threshold)
+        self._count = torch.where(ok, self._count + 1, torch.zeros_like(self._count))
+        return self._count >= hold_steps
+
+
+# TensorBoard:
 # - Episode_Termination/success 로 기록됨 (DoneTerm 필드명 기준)
 # - CubeGraspRewardsCfg.lift_success(is_terminated_term)가 이 판정을 한 방 보상으로 변환함.
 # env_cfg_common.py: CubeGraspTerminationsCfg.success 에서 연결됨.

@@ -140,6 +140,21 @@ def object_position_relative_to_bodies(
     return object_in_bodies_w.reshape(env.num_envs, -1)
 
 
+def object_position_error_to_command(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("cube"),
+) -> torch.Tensor:
+    """goal(커맨드, env-로컬) - 큐브 위치. env_origins 보정 포함.
+
+    object_position_error_to_target의 교체품: 그쪽은 target이 월드 고정점이라 다중 env에서
+    env마다 다른 상수가 관측에 들어갔음 (2026-07-15 발견). 커맨드 기반 + 로컬 프레임으로 수정.
+    """
+    obj = env.scene[object_cfg.name]
+    goal_w = env.scene.env_origins + env.command_manager.get_command(command_name)
+    return goal_w - obj.data.root_pos_w
+
+
 def object_position_error_to_target(
     env: ManagerBasedRLEnv,
     object_cfg: SceneEntityCfg = SceneEntityCfg("cube"),

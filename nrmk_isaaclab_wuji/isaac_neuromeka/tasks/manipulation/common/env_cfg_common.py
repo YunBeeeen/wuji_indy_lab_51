@@ -226,7 +226,20 @@ class TerminationsCfg:
 @configclass
 class CubeGraspCommandsCfg:
     """Command terms for the MDP."""
-    pass
+
+    # 2026-07-15 운반 goal: 에피소드마다 테이블 위 공중에서 균일 샘플 (리셋에서만 리샘플).
+    # z 범위는 cube_grasp_env_cfg.__post_init__가 BASE_Z 파생으로 오버라이드함 (★ 배선 블록).
+    # goal이 공중이라 r_T의 "들었음" 조건이 자동 함의됨.
+    cube_goal = mdp.UniformCubeGoalCommandCfg(
+        asset_name="cube",
+        resampling_time_range=(1.0e9, 1.0e9),  # 에피소드 내 고정 (차분층 telescoping 보호)
+        debug_vis=True,
+        ranges=mdp.UniformCubeGoalCommandCfg.Ranges(
+            pos_x=(0.50, 0.72),
+            pos_y=(-0.45, 0.05),
+            pos_z=(0.35, 0.55),  # placeholder — __post_init__에서 BASE_Z + (0.10, 0.30)
+        ),
+    )
 
 
 @configclass
@@ -261,11 +274,13 @@ class CubeGraspObservationsCfg:
                 "object_cfg": SceneEntityCfg("cube"),
             },
         )
+        # 2026-07-15 고정점 -> 커맨드 goal. 이전 버전은 target이 월드 고정점이라 다중 env에서
+        # env마다 다른 상수가 들어갔음 (env_origins 미보정). dim 3 그대로 -> obs 57 유지.
         cube_to_goal = ObsTerm(
-            func=mdp.object_position_error_to_target,
+            func=mdp.object_position_error_to_command,
             params={
+                "command_name": "cube_goal",
                 "object_cfg": SceneEntityCfg("cube"),
-                "target_pos": (0.55, -0.05, 0.12),
             },
         )
 
@@ -467,6 +482,32 @@ class CubeGraspRewardsCfg:
     #     params={"term_keys": "success"},
     # )
 
+    # 2026-07-15 운반 차분층 — 논문 사다리의 orient(500) 자리 번역: hold(15) < 운반 < r_T.
+    # 잡은 채(gate 곱, 양수만) goal에 접근한 양을 지불. 차분형이라 도착 서성임 연금 없음.
+    cube_transport = RewTerm(
+        func=mdp.ObjectToGoalProgressReward,
+        weight=500.0,
+        params={
+            "command_name": "cube_goal",
+            "asset_cfg": CAGE_BODIES,
+            "object_cfg": SceneEntityCfg("cube"),
+            "object_half_extent": (0.03, 0.03, 0.03),
+            "num_points": 3,
+            "point_fractions": (0.1, 0.5, 0.9),
+            "sphere_radius": 0.005,
+            "depth_max": 0.005,
+            "distance_max": 0.5,
+        },
+    )
+
+    # 논문 r_T (운반판): goal 반경 안 + 잡은 채 0.5s 유지 -> 한 방 +500 (15000 x dt) + 즉시 종료.
+    # 종료가 hold/lift 연금의 마개 (앉아서 버는 상한 << 성공 한 방).
+    transport_success = RewTerm(
+        func=mdp.is_terminated_term,
+        weight=15000.0,
+        params={"term_keys": "success"},
+    )
+
     # 자의적 제약이 아니라 물리적 필요조건: 손가락은 손바닥 쪽으로 굽으므로 손바닥 뒤의 물체는 못 감쌈.
     # cage 항은 이걸 못 봄 (선분이 손 방향과 무관하게 큐브를 관통) -> 손바닥이 하늘인데도 cage 만점이 나옴.
     # 법선 축만 제약하고 roll은 자유 -> 대칭 물체의 파지 방식을 고르지 않음.
@@ -551,6 +592,26 @@ class CubeGraspTerminationsCfg:
     cube_dropped = DoneTerm(
         func=mdp.root_height_below_minimum,
         params={"minimum_height": -0.05, "asset_cfg": SceneEntityCfg("cube")},
+    )
+
+    # 2026-07-15 논문 r_T의 성공 종료 (운반판): 큐브가 goal 반경 안 + gate 물림을 0.5s 유지.
+    # "들었음"은 goal이 공중이라 자동 함의. 즉시 종료가 hold/lift 연금과 도착 서성임의 마개.
+    # gate/가상점 파라미터는 CubeGraspRewardsCfg의 cage 항들과 반드시 동일하게 유지할 것.
+    success = DoneTerm(
+        func=mdp.ObjectAtGoalHeld,
+        params={
+            "command_name": "cube_goal",
+            "asset_cfg": CAGE_BODIES,
+            "object_cfg": SceneEntityCfg("cube"),
+            "object_half_extent": (0.03, 0.03, 0.03),
+            "num_points": 3,
+            "point_fractions": (0.1, 0.5, 0.9),
+            "sphere_radius": 0.005,
+            "depth_max": 0.005,
+            "goal_radius": 0.05,
+            "gate_threshold": 0.3,
+            "hold_steps": 15,  # 0.5s @ 30Hz — 던져 넣기는 유지가 안 됨
+        },
     )
 
     # 논문 r_T의 성공 종료 (2026-07-15). "들어서 유지"가 성공의 정의 — 자세는 지정 안 함.
