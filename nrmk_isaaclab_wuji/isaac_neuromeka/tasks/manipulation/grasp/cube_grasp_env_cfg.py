@@ -19,9 +19,14 @@ from isaac_neuromeka.tasks.manipulation.reach.reach_env_cfg import (
 #   약지/새끼 접음 (finger[4-5]_joint{1,3,4} = 1.2)
 #   큐브: (0.62, -0.18, 0.03) 바닥. 6cm, 0.30 kg. 받침면/테이블 없음
 #   action scale = 1.0 (스칼라)
-BASE_Z = 0.0                      # 바닥 (받침면 없음)
+# 2026-07-15 테이블 도입. 바닥(0.0) 큐브는 어떤 시작 자세든 손이 바닥까지 내려가야 해서
+# 팔 전체가 웅크려졌고, 든 뒤에도 팔을 세울 유인이 없어 그 자세에 머묾 (palm-up scoop +
+# 팔꿈치 바닥). 큐브를 손 시작 높이(~0.6m) 근처로 올려 하강량을 60cm -> ~17cm로 줄임.
+# lift/floor/success/metrics는 전부 테이블 상판(surface_z=BASE_Z) 기준으로 배선됨
+# (__post_init__ 참고. metrics는 managers.py:244가 cube_lift.params에서 자동으로 읽음).
+BASE_Z = 0.40                     # 테이블 상판 높이
 CUBE_HALF = 0.03
-CUBE_POS = (0.62, -0.18)          # 2026-07-13_21-57-31 큐브 위치
+CUBE_POS = (0.62, -0.18)          # 2026-07-13_21-57-31 큐브 x/y (유지)
 
 
 import isaac_neuromeka.mdp as mdp  # noqa: F401
@@ -44,11 +49,29 @@ from isaac_neuromeka.utils.etc import EmptyCfg
 class CubeGraspSceneCfg(ReachSceneCfg):
     """Scene config for cube grasp smoke tests."""
 
+    # 테이블 (kinematic -> 밀리지 않음). 로봇 베이스(원점)와 겹치지 않게 큐브 중심 기준 0.5m 정사각.
+    support = RigidObjectCfg(
+        prim_path="{ENV_REGEX_NS}/Support",
+        init_state=RigidObjectCfg.InitialStateCfg(
+            pos=(CUBE_POS[0], CUBE_POS[1], BASE_Z / 2),
+        ),
+        spawn=sim_utils.CuboidCfg(
+            size=(0.5, 0.5, BASE_Z),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+            collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
+            visual_material=sim_utils.PreviewSurfaceCfg(
+                diffuse_color=(0.5, 0.45, 0.4),
+                metallic=0.0,
+                roughness=0.8,
+            ),
+        ),
+    )
+
     cube = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/Cube",
         init_state=RigidObjectCfg.InitialStateCfg(
-            # 2026-07-13_21-57-31 run 위치. 바닥에 직접 놓임 (받침면/테이블 없음).
-            # 리셋마다 x ±6cm, y ±8cm 랜덤 (events.reset_cube_position).
+            # 2026-07-13_21-57-31 run의 x/y + 테이블 상판 위 (2026-07-15).
+            # 리셋마다 x ±6cm, y ±8cm 랜덤 (events.reset_cube_position) -> 0.5m 상판 안에 안전.
             pos=(CUBE_POS[0], CUBE_POS[1], BASE_Z + CUBE_HALF),
             rot=(1.0, 0.0, 0.0, 0.0),
         ),
@@ -115,5 +138,10 @@ class CubeGraspEnvCfg(NrmkRLEnvCfg):
         # 오므리게 해서 접촉이 더 늘어남. overflow는 크래시가 아니라 "접촉을 조용히 버림" -> 손이
         # 큐브를 통과하고 cage reward가 안 오름 -> "reward 설계가 잘못됨"과 구별이 불가능해짐.
         self.sim.physx.gpu_max_rigid_patch_count = 2**20
+        # 받침면 기준 배선: BASE_Z > 0이면 "든 높이"와 "바닥 뚫기"의 기준이 전부
+        # 테이블 상판이어야 함. metrics(managers.py:244)는 cube_lift 것을 자동으로 읽음.
+        self.rewards.cube_lift.params["surface_z"] = BASE_Z
+        self.rewards.hand_floor.params["surface_z"] = BASE_Z
+        self.terminations.success.params["surface_z"] = BASE_Z
         # viewer settings
         self.viewer.eye = (2.5, 2.5, 2.5)

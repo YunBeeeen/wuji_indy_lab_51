@@ -2906,3 +2906,28 @@ palm_normal_b (0.19,0.28,0.94) -> (1,0,0)   rewards.py + managers.py
    다음 에피소드"로 처리량을 올리고 캠핑 회귀를 막는 용도
 2. scoop 자세 수용 여부 — 지금 r_T 정의로는 scoop도 성공. 스타일(위에서 pinch)을 원하면
    성공 조건이나 방향 항에 추가 조건이 필요 (박스 yaw 정렬 카드가 후보)
+
+## 2026-07-15 (오전) — 테이블 도입 (자세 가설 검증 실험)
+
+### 가설과 설계
+- 진단: 팔꿈치 바닥 웅크림은 시작 자세 탓이 아니라 **바닥 큐브라는 task 기하** 탓
+  (어떤 시작 자세든 손이 바닥까지 내려가야 하고, 든 뒤 팔을 세울 유인이 없음)
+- 검증 실험: 큐브를 테이블(BASE_Z=0.40) 위로 → 하강량 60cm → ~17cm. 자세가 개선되면 가설 채택
+- manipulability 실측 0.35~0.5 (raw): r_MP(j_max=0.02)는 scoop에서 **완전 데드존** (페널티 0).
+  scoop은 특이점 자세가 아님 → r_MP 강화는 이 문제의 손잡이가 아님으로 판정.
+  코드 주석의 옛 캘리브레이션("최대 0.113")과 모순 → j_max 만지려면 재측정 선행
+- IK 논의: elbow 브랜치는 관절 부호 필터/시작 브랜치 연속성으로 고르는 게 맞지만,
+  **우리 scoop은 같은 브랜치 안의 자세**(joint2 부호 동일)라 브랜치 제어로는 안 걸러짐.
+  IK 전환의 근거는 자세 교정이 아니라 들기/운반 역학 (별도 결정으로 분리)
+
+### 구현 (cube_grasp_env_cfg.py)
+- Support kinematic cuboid 0.5×0.5×0.40 @ (0.62, -0.18), 큐브는 상판 위 (z=0.43)
+- surface_z 배선: cube_lift / hand_floor / success(r_T) 전부 BASE_Z 기준으로 __post_init__ 오버라이드.
+  metrics는 managers.py:244가 cube_lift.params에서 자동으로 읽음
+- 스모크 테스트 통과: action 18 / obs 57 유지, Episode_Termination/success + lift_success 등록 확인
+
+### 이번 런에 들어가는 변경 요약 (fresh 학습)
+- 테이블 (신규) + r_T 성공 종료/보너스 (신규) + 커플링 + 가상점(0.1,0.5,0.9)
+- 가중치: reach 8 / hold 15 / lift 100 / lift_success 15000 / palm 4 / floor 1.0, 질량 0.20, episode 8s
+- 관찰 포인트: ① Episode_Termination/success 비율 ② 팔꿈치가 서는가 (스크린샷)
+  ③ palm-up scoop이 유지되는가 ④ 8cm 직전 서성임(성공 회피) 지문
