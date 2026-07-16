@@ -240,9 +240,10 @@ class BoxTransportRewardsCfg:
     # 2026-07-16 lift 단계 관찰: transport 층 임시 잠금 (사용자 결정 — "일단 잡고 들기부터").
     # 재활성 세트: cube_transport + transport_success + TerminationsCfg.success 3개를 같이 살릴 것.
     # 관측(cube_to_goal)과 goal 커맨드는 유지 -> obs 64 불변이라 재활성 시 체크포인트 이어쓰기 가능.
+    # (2026-07-16 φ 전환 반영: 재활성 시 이 파라미터 그대로 쓸 것 — 큐브 태스크와 동일)
     # cube_transport = RewTerm(
     #     func=mdp.ObjectToGoalProgressReward,
-    #     weight=500.0,
+    #     weight=4000.0,
     #     params={
     #         "command_name": "cube_goal",
     #         "asset_cfg": BOX_CAGE_BODIES,
@@ -252,7 +253,8 @@ class BoxTransportRewardsCfg:
     #         "point_fractions": _POINT_FRACTIONS,
     #         "sphere_radius": 0.005,
     #         "depth_max": 0.005,
-    #         "distance_max": 0.5,
+    #         "potential_eps": 0.05,
+    #         "window": 0.10,
     #     },
     # )
 

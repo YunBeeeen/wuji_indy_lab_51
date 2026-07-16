@@ -453,7 +453,9 @@ class CubeGraspRewardsCfg:
     # hold보다 무겁게 (논문 순서 r_T >> r_hold >> r_reach).
     cube_lift = RewTerm(
         func=mdp.object_lift_in_cage,
-        weight=100.0,
+        # 2026-07-16: 100 -> 50. 오버슈트 실측에서 수입의 84%가 이 항(8cm 포화 후
+        # 높이 무관 균일 연금)이었음 — "높이 = 무조건 돈" 축소. 사다리 역할은 유지
+        weight=50.0,
         params={
             "asset_cfg": CAGE_BODIES,
             "object_cfg": SceneEntityCfg("cube"),
@@ -485,9 +487,12 @@ class CubeGraspRewardsCfg:
     # 2026-07-15 운반 층 — 논문 사다리의 orient(500) 자리 번역: hold(15) < 운반 < r_T.
     # best-so-far 차분 (+ 전용): 잡은 채(gate 곱) goal 거리 신기록을 깬 양만 지불.
     # 후퇴/왕복 0원, 도착 서성임 연금 없음. 낙하 비용은 아래 drop_penalty가 별도 담당.
+    # 2026-07-16 v2 (역수 포텐셜 + 창): 창(±10cm) 밖 지급 0 — 창까지는 lift 사다리가 데려옴
+    # (goal이 스폰 위 +17cm라 8cm 들면 d≈0.09 = 창 안). φ=0.05/(0.05+d)로 마지막 5cm에
+    # 총액 대부분 집중 ("가까울수록 크게" — 오버슈트 처방). 완주 총액 ≈ +89 (r_T의 ~1/5).
     cube_transport = RewTerm(
         func=mdp.ObjectToGoalProgressReward,
-        weight=500.0,
+        weight=4000.0,
         params={
             "command_name": "cube_goal",
             "asset_cfg": CAGE_BODIES,
@@ -497,7 +502,8 @@ class CubeGraspRewardsCfg:
             "point_fractions": (0.1, 0.5, 0.9),
             "sphere_radius": 0.005,
             "depth_max": 0.005,
-            "distance_max": 0.5,
+            "potential_eps": 0.05,
+            "window": 0.10,
         },
     )
 
