@@ -568,18 +568,22 @@ def palm_facing_object(
 # - Indy-Wuji-Cube-Grasp: Episode_Reward_Raw/palm_facing
 # env_cfg_common.py: CubeGraspRewardsCfg.palm_facing 에서 연결됨.
 class PalmFacingProgressReward(ManagerTermBase):
-    """손바닥을 물체 쪽으로 "돌리는 것"을 보상. 논문 r_hr과 같은 차분형.
+    """손바닥(파지 개구부)을 물체 쪽으로 "돌리는 것"을 보상. best-so-far 차분 (+ 전용).
 
-    r(t) = facing(t) - facing(t-1), reset()에서 기준선 seeding.
-    총합이 facing(final) - facing(reset)로 telescoping됨 -> 가만히 있으면 정확히 0, 정렬이 깨지면 감점.
-    절대형으로 넣었다가 대참사: 겨누기는 접근보다 훨씬 싸서 weight 0.5에서 전체 보상의 98%를 먹고,
-    정책이 팔을 접어 31cm 밖에서 겨누기만 함 (manip 13%까지 추락).
-    논문의 거의 모든 항이 차분형인 이유가 이것 (절대형은 r_hold 하나뿐). 차분형은 farming 불가.
+    r(t) = (facing(t) - 에피소드 최고 facing)⁺, 신기록 갱신 시에만 지급 + best 갱신.
+    총합 = facing(최고) - facing(reset)로 고정 -> farming 불가, 단일 부호
+    (2026-07-16 사수님 원칙 통일, 사용자 결정. 이전 ± 차분에서 전환 — 행동 영향은 미미:
+    시작 자세가 이미 facing 0.987이라 이 항의 에피소드 예산이 ~0.002이고, 겨눔 "유지"의
+    실질 인센티브는 이 항이 아니라 reach의 facing gate가 담당).
+    ⚠ (curr − prev)⁺ 단순 클램프는 금지: 하락 무과금 + 상승 재적립이라 손목 진동이
+    화폐 발행기가 됨 (왕복마다 재지급). 신기록 조건이 재적립을 차단함.
+    절대형은 더 금지: weight 0.5에서 전체 보상의 98%를 먹고 정책이 팔을 접어 31cm 밖에서
+    겨누기만 한 대참사 이력 (manip 13%까지 추락).
     """
 
     def __init__(self, cfg, env: ManagerBasedRLEnv):
         super().__init__(cfg, env)
-        self._previous_facing = torch.zeros(env.num_envs, dtype=torch.float, device=env.device)
+        self._best_facing = torch.zeros(env.num_envs, dtype=torch.float, device=env.device)
 
     def _facing(self) -> torch.Tensor:
         p = self.cfg.params
@@ -594,7 +598,8 @@ class PalmFacingProgressReward(ManagerTermBase):
         if env_ids is None:
             env_ids = slice(None)
         # 기준선은 "리셋 자세"에서. cage progress와 같은 이유 (첫 액션이 기준선을 부풀리는 것 방지).
-        self._previous_facing[env_ids] = self._facing()[env_ids]
+        # (palm_facing은 command 무관이라 transport와 달리 reset()에서 바로 seeding 가능)
+        self._best_facing[env_ids] = self._facing()[env_ids]
 
     def __call__(
         self,
@@ -604,9 +609,9 @@ class PalmFacingProgressReward(ManagerTermBase):
         palm_normal_b: tuple[float, float, float] = (1.0, 0.0, 0.0),
     ) -> torch.Tensor:
         current = self._facing()
-        progress = current - self._previous_facing
-        self._previous_facing[:] = current
-        return torch.clamp(progress, min=-1.0, max=1.0)
+        progress = torch.clamp(current - self._best_facing, min=0.0)  # 신기록 갱신분만
+        self._best_facing = torch.maximum(self._best_facing, current)
+        return progress
 
 
 # TensorBoard:
