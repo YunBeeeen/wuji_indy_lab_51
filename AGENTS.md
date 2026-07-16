@@ -32,7 +32,12 @@
 - Neuromeka public/main branch 스타일을 우선 사용함.
 - 목표는 full training 성능이 아니라 env 구조 이해와 arm end-effector tracking 구성임.
 - 현재 reach baseline task는 `Indy-Wuji-Reach`임.
-- 현재 cube grasp task는 `Indy-Wuji-Cube-Grasp` 하나만 사용함.
+- 현재 cube grasp task는 `Indy-Wuji-Cube-Grasp`임 (obs 57, 2026-07-16부터 동결 — 체크포인트 play 호환 유지).
+- 2026-07-16 신규: `Indy-Wuji-Box-Transport` — env별 랜덤 직육면체(단면 3~6cm x 비율 1.5~3) 파지/운반.
+  obs 64 (= 57 + box_size 3 + box_quat 4), experiment `indy_wuji_box_transport` (로그 분리).
+  cfg는 grasp/box_mdp_cfg.py + box_transport_env_cfg.py + indy_wuji_box/ (큐브 cfg의 사본 — 서로 반영 안 됨).
+  현재 lift 단계: transport 3종(cube_transport/transport_success/success 종료)은 주석 잠금, 재활성 세트 표기됨.
+  replicate_physics=False라 startup이 느림 (정상). env별 치수 검증은 scripts/debug/box_dims_probe.py.
 - `Indy-Wuji-Cube-Grasp-Easy`는 이전 실험 이름이며 현재 active registration에는 없음.
 - 현재 active USD는 `indy7_wuji_right_simplified.usd`임.
 - 초기 후보였던 `indy7_allegro_hand_right_simplified.usd`는 참고/비교용임.

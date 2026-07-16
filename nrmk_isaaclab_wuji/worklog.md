@@ -3125,3 +3125,8 @@ palm_normal_b (0.19,0.28,0.94) -> (1,0,0)   rewards.py + managers.py
 - 활성 구성: reach 8 / hold 15 / lift 100 / drop 0 / palm 4 / manip 1 / floor 1,
   종료 = time_out + cube_dropped
 - 스모크 통과 (obs 64, 종료항 2개)
+
+### Box lift-only 첫 런 시작 (2026-07-16, 코드 스냅샷 e5d6a68)
+- 4096 env fresh. 관전 포인트: ① hold→lift 이륙 (단일 큐브 대비 2~3배 느려도 정상)
+  ② 크기별 파지 편차 (얇은 3cm 단면만 실패하면 pinch 물리 한계 신호) ③ drop_penalty 곡선
+- 다음 관문: lift 안정화 → transport 3종 세트 재활성 + resume (obs 64 유지라 이어짐)

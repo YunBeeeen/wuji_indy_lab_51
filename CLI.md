@@ -420,3 +420,16 @@ cd ~/wuji_play_old/nrmk_isaaclab_wuji && python scripts/rsl_rl/play.py --task ..
 ```
 
 - 전제: 런 시작 전 커밋 = 그 런의 코드 스냅샷. 런-커밋 대응은 worklog에 기록함.
+
+## Box-Transport (랜덤 직육면체) 학습/확인
+
+```bash
+# 학습 (fresh). 태스크 이름 오타 주의: Transport (Trasnport 아님)
+python scripts/rsl_rl/train.py --task Indy-Wuji-Box-Transport --headless --num_envs 4096 --max_iterations 50000
+
+# env별 치수 검증 프로브 (버퍼 = USD scale = 정착 높이 일치 확인)
+python scripts/debug/box_dims_probe.py
+
+# TensorBoard (로그 폴더가 큐브 태스크와 분리됨)
+tensorboard --logdir logs/rsl_rl/indy_wuji_box_transport --port 6006 --reload_interval 5
+```
