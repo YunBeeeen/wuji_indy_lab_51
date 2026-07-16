@@ -3164,3 +3164,12 @@ palm_normal_b (0.19,0.28,0.94) -> (1,0,0)   rewards.py + managers.py
 - ⚠ ObjectToGoalProgressReward 시그니처 변천: distance_max(v1) → potential_eps+window(v2)
   → potential_eps만(v2.1). 옛 파라미터를 cfg에 남기면 env 생성 크래시
 - ⚠ 큐브 태스크 스모크 미실시 (box 학습 중) — 큐브를 돌리기/play 전 1 env 스모크 필수
+
+### 정리 결정 (2026-07-16 오후)
+- ObjectLiftedHeld 삭제 (사용자 직접): rewards.py 클래스 + env_cfg_common 주석 블록 +
+  cube_grasp_env_cfg 참고 주석 3곳 세트로 제거해야 완전
+- 킵 카드 추가 — "차분형 +only 통일": 다음 fresh에서 PalmFacingProgressReward를
+  best-so-far(+전용)로 전환 검토 (사수님 단일부호 원칙). 차분형이라 어느 쪽이든 farming은
+  없고, 겨눔 유지는 reach의 facing gate가 담당하므로 음수 제거 실익은 일관성.
+  ⚠ 예외: reach(ObjectCageProgressReward)의 음수는 유지 — drop_penalty 0인 현재
+  "쳐내기"에 대한 유일한 즉시 과금이라 일을 하고 있음
