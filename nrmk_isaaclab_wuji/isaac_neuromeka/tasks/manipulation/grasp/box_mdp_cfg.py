@@ -237,28 +237,31 @@ class BoxTransportRewardsCfg:
 
     # 운반 층. 현재 선형 best-so-far — 역수형 φ(0.05/(0.05+d)) 전환 설계는 킵 상태
     # (worklog 2026-07-16 "transport-φ 설계 킵" 참고. 오버슈트 재현 시 적용)
-    cube_transport = RewTerm(
-        func=mdp.ObjectToGoalProgressReward,
-        weight=500.0,
-        params={
-            "command_name": "cube_goal",
-            "asset_cfg": BOX_CAGE_BODIES,
-            "object_cfg": SceneEntityCfg("cube"),
-            "object_half_extent": _HALF_FALLBACK,
-            "num_points": 3,
-            "point_fractions": _POINT_FRACTIONS,
-            "sphere_radius": 0.005,
-            "depth_max": 0.005,
-            "distance_max": 0.5,
-        },
-    )
+    # 2026-07-16 lift 단계 관찰: transport 층 임시 잠금 (사용자 결정 — "일단 잡고 들기부터").
+    # 재활성 세트: cube_transport + transport_success + TerminationsCfg.success 3개를 같이 살릴 것.
+    # 관측(cube_to_goal)과 goal 커맨드는 유지 -> obs 64 불변이라 재활성 시 체크포인트 이어쓰기 가능.
+    # cube_transport = RewTerm(
+    #     func=mdp.ObjectToGoalProgressReward,
+    #     weight=500.0,
+    #     params={
+    #         "command_name": "cube_goal",
+    #         "asset_cfg": BOX_CAGE_BODIES,
+    #         "object_cfg": SceneEntityCfg("cube"),
+    #         "object_half_extent": _HALF_FALLBACK,
+    #         "num_points": 3,
+    #         "point_fractions": _POINT_FRACTIONS,
+    #         "sphere_radius": 0.005,
+    #         "depth_max": 0.005,
+    #         "distance_max": 0.5,
+    #     },
+    # )
 
-    # 논문 r_T: goal ±5cm + gate 물림 0.5s 유지 -> 한 방 +500 + 즉시 종료
-    transport_success = RewTerm(
-        func=mdp.is_terminated_term,
-        weight=15000.0,
-        params={"term_keys": "success"},
-    )
+    # 논문 r_T: goal ±5cm + gate 물림 0.5s 유지 -> 한 방 +500 + 즉시 종료 (lift 단계 잠금)
+    # transport_success = RewTerm(
+    #     func=mdp.is_terminated_term,
+    #     weight=15000.0,
+    #     params={"term_keys": "success"},
+    # )
 
     # 낙하 정액 벌금. fresh 단계에서는 0 (탐색 회피 함정 실측, 2026-07-15) —
     # 잡기가 자리 잡은 뒤 resume에서 -3000으로 켜는 2단계 커리큘럼
@@ -312,19 +315,20 @@ class BoxTransportTerminationsCfg:
     )
 
     # 논문 r_T의 성공 종료 (운반판): goal 반경 안 + gate 물림 0.5s 유지
-    success = DoneTerm(
-        func=mdp.ObjectAtGoalHeld,
-        params={
-            "command_name": "cube_goal",
-            "asset_cfg": BOX_CAGE_BODIES,
-            "object_cfg": SceneEntityCfg("cube"),
-            "object_half_extent": _HALF_FALLBACK,
-            "num_points": 3,
-            "point_fractions": _POINT_FRACTIONS,
-            "sphere_radius": 0.005,
-            "depth_max": 0.005,
-            "goal_radius": 0.05,
-            "gate_threshold": 0.3,
-            "hold_steps": 15,  # 0.5s @ 30Hz
-        },
-    )
+    # 2026-07-16 lift 단계 잠금 (transport 재활성 세트의 일부)
+    # success = DoneTerm(
+    #     func=mdp.ObjectAtGoalHeld,
+    #     params={
+    #         "command_name": "cube_goal",
+    #         "asset_cfg": BOX_CAGE_BODIES,
+    #         "object_cfg": SceneEntityCfg("cube"),
+    #         "object_half_extent": _HALF_FALLBACK,
+    #         "num_points": 3,
+    #         "point_fractions": _POINT_FRACTIONS,
+    #         "sphere_radius": 0.005,
+    #         "depth_max": 0.005,
+    #         "goal_radius": 0.05,
+    #         "gate_threshold": 0.3,
+    #         "hold_steps": 15,  # 0.5s @ 30Hz
+    #     },
+    # )

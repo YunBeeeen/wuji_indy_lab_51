@@ -3117,3 +3117,11 @@ palm_normal_b (0.19,0.28,0.94) -> (1,0,0)   rewards.py + managers.py
 - 스모크(4 env): obs 64, action 18, prestartup/startup 이벤트 실행, 전 항 등록 ✓
 - end-to-end 프로브(scripts/debug/box_dims_probe.py): env별 상이 치수(폭 4.1~5.4 × 길이
   6.5~15.2cm), 버퍼=USD scale 일치, 정착 잔차 ±0.0mm ✓
+
+### lift 단계 구성으로 잠금 (사용자 결정)
+- Box-Transport에서 transport 층 임시 제외: cube_transport / transport_success / success 종료
+  3개 세트 주석처리 — "랜덤 상자를 잡고 드는 것"부터 검증
+- 관측(64)과 goal 커맨드는 유지 → transport 재활성 시 체크포인트 이어쓰기 가능 (obs 불변)
+- 활성 구성: reach 8 / hold 15 / lift 100 / drop 0 / palm 4 / manip 1 / floor 1,
+  종료 = time_out + cube_dropped
+- 스모크 통과 (obs 64, 종료항 2개)
