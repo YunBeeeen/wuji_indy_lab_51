@@ -28,11 +28,16 @@
 - 얇은 상자만 계속 실패하면 pinch 물리 한계 신호 → `scripts/debug/grip_capacity.py` 검증 카드
   (단, 커플링 미반영 상태라 반영 후 사용).
 
+### ★ 재학습 원칙 (2026-07-16 사수님 지시, 전 에이전트 적용)
+- **보상/태스크 구조가 바뀌면 resume 금지, fresh run.** resume 결과는 "옛 정책+적응"이라
+  설계 검증으로 무효 (귀속 불가 + 옛 습관 오염). resume 허용 = 같은 설정의 순수 연장뿐.
+- 보상 단계화가 필요하면 resume이 아니라 **단일 런 내 curriculum manager**
+  (mdp.modify_reward_weight)로 스케줄할 것.
+
 ### 관문과 다음 단계 (순서 고정)
-1. box lift 이륙 + play 확인 → **transport 3종 세트 주석 해제** (box_mdp_cfg.py에 위치 표기됨:
-   cube_transport / transport_success / TerminationsCfg.success) → 그 체크포인트에서 resume (obs 64 불변).
-2. 성공률 자리 잡으면 → drop_penalty 0 → −3000 켜고 resume (2단계 커리큘럼.
-   fresh에서 켜면 탐색 회피 함정 — 2026-07-15 실측: 낙하율 스파이크 후 큐브 회피 동결).
+1. box transport 판(3종 활성, 2026-07-16 해제 완료)을 **fresh로 학습**.
+2. 성공률 자리 잡으면 → drop_penalty 0 → −3000. 방식은 curriculum manager로 재설계 예정
+   (fresh 시작부터 켜면 탐색 회피 함정 — 2026-07-15 실측: 낙하율 스파이크 후 큐브 회피 동결).
 3. 랜덤 goal(2단계): box_transport_env_cfg.__post_init__의 goal 세 줄을 랜덤 박스로 확장
    (큐브 쪽 cube_grasp_env_cfg에 확장값 주석 있음).
 4. 초기 yaw 랜덤화(±30°): 사수님 컨펌 후. box_quat 채널이 이미 obs에 있어 obs 단절 없음.

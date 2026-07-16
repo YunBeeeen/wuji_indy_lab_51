@@ -3206,3 +3206,12 @@ palm_normal_b (0.19,0.28,0.94) -> (1,0,0)   rewards.py + managers.py
 - 함수(object_goal_proximity)는 rewards.py에 미배선 부품으로 준비됨 (⚠ 헤더 표기).
   적용 시점: 사용자 신호 대기. 현행 box resume은 A(lift 50 + transport 일시불 + r_T)로 관찰
   — cube(v2.1)와 box가 각각 일시불/연금 설계의 자연 A/B가 될 수 있음
+
+### 재학습 원칙 확정 (2026-07-16, 사수님 지시): 보상/태스크가 바뀌면 fresh, resume 금지
+- "아예 다른 학습인데 왜 이어서 하냐" — lift 성공본에 transport를 추가했으면 그건 다른
+  task이므로 처음부터 학습. resume 결과는 "새 설계의 산물"이 아니라 "옛 정책+적응"이라
+  설계 검증으로 무효 (귀속 불가) + 옛 습관 오염 (실측: 오버슈트/만세/재개 퇴행 44%)
+- 즉시 적용: box transport 판 fresh / 큐브 v2.1 fresh (기존 resume 권고 철회)
+- drop_penalty 2단계는 resume 방식 폐기 → 단일 런 내 curriculum manager
+  (modify_reward_weight, N스텝 후 0 → −3000)로 재설계 예정
+- resume이 허용되는 경우: 같은 설정의 순수 연장(크래시 복구, iter 추가)뿐
