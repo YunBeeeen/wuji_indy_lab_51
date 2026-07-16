@@ -254,7 +254,12 @@ class CustomRewardManager(RewardManager):
         cube = self._env.scene["cube"]
         rel = points_w - cube.data.root_pos_w.unsqueeze(1)
         quat = cube.data.root_quat_w.unsqueeze(1).expand(-1, rel.shape[1], -1)
-        q = quat_apply_inverse(quat, rel).abs() - self._cube_half_extent
+        # env별 치수 버퍼(Box-Transport) 우선, 없으면 상수 (큐브 태스크 경로 불변)
+        half = getattr(self._env, "box_half_extents", None)
+        if half is None:
+            half = self._cube_half_extent
+        half = half.unsqueeze(1) if half.dim() == 2 else half
+        q = quat_apply_inverse(quat, rel).abs() - half
         return torch.norm(torch.clamp(q, min=0.0), dim=-1) + torch.clamp(q.max(dim=-1).values, max=0.0)
 
     def _compute_cube_distance_metrics(self) -> dict[str, torch.Tensor]:
@@ -299,11 +304,15 @@ class CustomRewardManager(RewardManager):
         manipulability = torch.sqrt(torch.clamp(torch.det(jac @ jac.transpose(1, 2)), min=0.0))
 
         # 큐브 8개 꼭짓점 중 최저점의 지면 대비 높이
-        corners_b = (self._cube_corner_signs * self._cube_half_extent).unsqueeze(0)
+        half = getattr(self._env, "box_half_extents", None)
+        if half is None:
+            half = self._cube_half_extent
+        if half.dim() == 1:
+            corners_b = (self._cube_corner_signs * half).unsqueeze(0).expand(self.num_envs, -1, -1)
+        else:
+            corners_b = self._cube_corner_signs.unsqueeze(0) * half.unsqueeze(1)  # (N, 8, 3)
         quat = cube.data.root_quat_w.unsqueeze(1).expand(-1, 8, -1)
-        corners_w = cube.data.root_pos_w.unsqueeze(1) + math_utils.quat_apply(
-            quat, corners_b.expand(self.num_envs, -1, -1)
-        )
+        corners_w = cube.data.root_pos_w.unsqueeze(1) + math_utils.quat_apply(quat, corners_b)
         clearance = corners_w[..., 2].min(dim=1).values - self._env.scene.env_origins[:, 2] - self._cube_surface_z
 
         cube_offset = cube.data.root_pos_w - self._cube_init_pos

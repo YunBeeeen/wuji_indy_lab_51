@@ -3089,3 +3089,31 @@ palm_normal_b (0.19,0.28,0.94) -> (1,0,0)   rewards.py + managers.py
 - (제안했던 별도 goal_proximity 연금 항은 미채택 — 미사용 함수도 제거)
 
 ### 결정: 환경 수정(랜덤 직육면체)부터 진행, transport-φ는 그 판에서 함께 적용 검토
+
+## 2026-07-16 (오후) — Indy-Wuji-Box-Transport 태스크 구현 (사수님 방향)
+
+### 방침: 큐브 태스크 동결, 별도 태스크로 복제 (사용자 지시)
+- 신규 task: `Indy-Wuji-Box-Transport`, experiment `indy_wuji_box_transport` (로그 폴더 분리)
+- 큐브 태스크(Indy-Wuji-Cube-Grasp)는 obs 57 그대로 — 기존 체크포인트 play 호환 유지
+- 신규 파일: grasp/box_mdp_cfg.py (MDP cfg 사본+확장), grasp/box_transport_env_cfg.py (장면),
+  grasp/indy_wuji_box/{env_cfg, __init__(등록), learning/rsl_rl_cfg}
+- 공유 mdp에는 신규 함수 추가 + SDF 헬퍼 3곳의 하위호환 일반화만
+  (버퍼 없으면 기존 상수 경로 — 큐브 태스크 동작 불변)
+
+### 랜덤 직육면체 (4096 env 각자 하나)
+- `randomize_box_dims` (prestartup): 단면 w~U(3,6cm) 정사각 × 길이 w×U(1.5,3) —
+  env별 USD xformOp:scale 적용 + env.box_half_extents (N,3) 버퍼 저장. 런 내내 고정
+- `set_box_default_height` (startup): env별 스폰 z = 상판 + 자기 반높이
+- scene.replicate_physics = False (env별 지오메트리 파싱). 질량은 0.20 고정 (밀도 변수 통제)
+- 보상/판정/metrics의 half_extent는 버퍼 우선 (상수 인자는 fallback)
+
+### 관측 64 = 57 + box_size(3) + box_quat(4)
+- 크기: 버퍼×2. 방향: quat (직육면체는 좁은 면을 가로질러 잡아야 해서 방향이 기능).
+  초기 회전은 고정 — 채널은 접촉 중 회전에만 신호 ("반쯤 활성", 초기 yaw 랜덤화는 사수님 컨펌 후)
+- 보상 구성은 큐브 태스크 사본: reach 8/hold 15/lift 100/transport 500(선형 best-so-far,
+  φ 전환은 킵)/r_T 15000/drop 0(2단계 커리큘럼)/goal 고정점 상판+20cm
+
+### 검증
+- 스모크(4 env): obs 64, action 18, prestartup/startup 이벤트 실행, 전 항 등록 ✓
+- end-to-end 프로브(scripts/debug/box_dims_probe.py): env별 상이 치수(폭 4.1~5.4 × 길이
+  6.5~15.2cm), 버퍼=USD scale 일치, 정착 잔차 ±0.0mm ✓

@@ -515,7 +515,7 @@ class CubeGraspRewardsCfg:
     # 굴러간 거리 비례가 아닌 정액이라 물리 우연에 과세하지 않음.
     drop_penalty = RewTerm(
         func=mdp.is_terminated_term,
-        weight=-3000.0,
+        weight=0.0,
         params={"term_keys": "cube_dropped"},
     )
 

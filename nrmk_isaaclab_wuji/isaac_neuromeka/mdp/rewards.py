@@ -104,7 +104,10 @@ def _box_signed_distance(
     rel = points_w - box_pos_w.unsqueeze(1)
     quat = box_quat_w.unsqueeze(1).expand(-1, rel.shape[1], -1)
     local = quat_apply_inverse(quat, rel)
-    q = local.abs() - half_extent
+    # half_extent: (3,) 상수 또는 (N,3) env별 치수 (Box-Transport) — 둘 다 브로드캐스트
+    if half_extent.dim() == 1:
+        half_extent = half_extent.unsqueeze(0)
+    q = local.abs() - half_extent.unsqueeze(1)
     outside = torch.norm(torch.clamp(q, min=0.0), dim=-1)
     inside = torch.clamp(q.max(dim=-1).values, max=0.0) # max -> 제일 0에 가까우니까
     return outside + inside
@@ -162,7 +165,10 @@ def _cage_sdf(
     """가상점 -> 물체 표면까지의 signed distance. (N, 대향body수 * num_points)"""
     obj: RigidObject = env.scene[object_cfg.name]
     points = cage_points(env, asset_cfg, num_points, point_fractions)
-    half = torch.tensor(object_half_extent, dtype=points.dtype, device=points.device)
+    # env별 치수 버퍼(randomize_box_dims)가 있으면 우선. 없으면 상수 (큐브 태스크 경로 불변)
+    half = getattr(env, "box_half_extents", None)
+    if half is None:
+        half = torch.tensor(object_half_extent, dtype=points.dtype, device=points.device)
     return _box_signed_distance(points, obj.data.root_pos_w, obj.data.root_quat_w, half)
 
 
@@ -274,7 +280,9 @@ def box_ground_clearance(
     (실측: 중심 +4.28mm인데 최하 모서리는 -0.04mm로 바닥) 최하점을 봐야 진짜 들었을 때만 지급됨.
     """
     obj: RigidObject = env.scene[object_cfg.name]
-    half = torch.tensor(object_half_extent, dtype=torch.float, device=env.device)
+    half = getattr(env, "box_half_extents", None)
+    if half is None:
+        half = torch.tensor(object_half_extent, dtype=torch.float, device=env.device)
     # 박스 자체 좌표계에서의 8개 꼭짓점
     signs = torch.tensor(
         [
@@ -284,7 +292,10 @@ def box_ground_clearance(
         dtype=torch.float,
         device=env.device,
     )
-    corners_b = (signs * half).unsqueeze(0).expand(env.num_envs, -1, -1)  # (N, 8, 3)
+    if half.dim() == 1:
+        corners_b = (signs * half).unsqueeze(0).expand(env.num_envs, -1, -1)  # (N, 8, 3)
+    else:
+        corners_b = signs.unsqueeze(0) * half.unsqueeze(1)  # env별 치수 -> (N, 8, 3)
     quat = obj.data.root_quat_w.unsqueeze(1).expand(-1, 8, -1)
     corners_w = obj.data.root_pos_w.unsqueeze(1) + quat_apply(quat, corners_b)
     lowest_z = corners_w[..., 2].min(dim=1).values

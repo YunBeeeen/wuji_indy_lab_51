@@ -298,3 +298,20 @@ def image_unnormalized(
             images[images == float("inf")] = 0
 
     return images.clone()
+
+
+def object_dims(
+    env: ManagerBasedRLEnv,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("cube"),
+    fallback_size: tuple[float, float, float] = (0.06, 0.06, 0.06),
+) -> torch.Tensor:
+    """물체 전체 치수 (N, 3). Box-Transport 관측용.
+
+    randomize_box_dims가 저장한 env.box_half_extents × 2를 반환. 버퍼가 없으면(고정 크기
+    태스크) fallback_size 상수 — 이 경우 상수 채널이므로 관측에 넣는 의미는 없음.
+    """
+    he = getattr(env, "box_half_extents", None)
+    if he is not None:
+        return he * 2.0
+    obj = env.scene[object_cfg.name]
+    return obj.data.root_pos_w.new_tensor(fallback_size).unsqueeze(0).expand(env.num_envs, -1)
