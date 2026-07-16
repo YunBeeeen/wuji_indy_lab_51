@@ -157,7 +157,5 @@ class CubeGraspEnvCfg(NrmkRLEnvCfg):
         self.commands.cube_goal.ranges.pos_x = (CUBE_POS[0], CUBE_POS[0])
         self.commands.cube_goal.ranges.pos_y = (CUBE_POS[1], CUBE_POS[1])
         self.commands.cube_goal.ranges.pos_z = (BASE_Z + 0.20, BASE_Z + 0.20)
-        # (참고) 옛 lift 기반 r_T(ObjectLiftedHeld, 주석 상태)를 되살릴 때만 surface_z 오버라이드
-        # 필요. 현재 success는 goal 기반(ObjectAtGoalHeld)이라 surface_z 파라미터가 없음.
         # viewer settings
         self.viewer.eye = (2.5, 2.5, 2.5)

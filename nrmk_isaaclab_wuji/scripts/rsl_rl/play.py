@@ -77,6 +77,18 @@ parser.add_argument(
     default=2,
     help="렌더 프레임 사이의 physics step 수. 낮을수록 부드러움. task의 decimation을 주면 학습 때 값 그대로.",
 )
+parser.add_argument(
+    "--show_palm_vectors",
+    action="store_true",
+    default=False,
+    help="env 0의 palm_link에서 손바닥 평면 법선, 파지 개구부 축, cube 방향을 화살표로 표시.",
+)
+parser.add_argument(
+    "--palm_vector_length",
+    type=float,
+    default=0.12,
+    help="--show_palm_vectors 화살표 길이(m).",
+)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -112,6 +124,7 @@ from packaging import version
 
 installed_version = metadata.version("rsl-rl-lib")
 import torch
+import isaaclab.utils.math as math_utils
 from isaaclab.envs import (
     DirectMARLEnv,
     DirectMARLEnvCfg,
@@ -290,6 +303,82 @@ def _print_contacts(env, sensor_names: list[str]) -> None:
     print("      contact " + " ".join(values), flush=True)
 
 
+def _draw_palm_vectors(
+    env,
+    draw_interface,
+    palm_body_id: int,
+    grasp_opening_b_value: tuple[float, float, float],
+    length: float,
+) -> None:
+    """Draw palm-local directions in world coordinates for env 0."""
+    unwrapped = env.unwrapped
+    robot = unwrapped.scene["robot"]
+    cube = unwrapped.scene["cube"]
+
+    palm_pos_w = robot.data.body_pos_w[0, palm_body_id]
+    palm_quat_w = robot.data.body_quat_w[0, palm_body_id]
+    dtype = palm_pos_w.dtype
+    device = palm_pos_w.device
+
+    # 손가락 뿌리 5점의 평면에서 측정한 palm_link 로컬 법선.
+    # 부호는 손가락이 오므라드는 쪽을 향하도록 선택됨. local +x는 이 값의 근사일 뿐임.
+    palm_normal_b = torch.tensor((0.965, -0.008, 0.262), dtype=dtype, device=device)
+    palm_normal_b /= torch.linalg.norm(palm_normal_b)
+    grasp_opening_b = torch.tensor(grasp_opening_b_value, dtype=dtype, device=device)
+    grasp_opening_b /= torch.linalg.norm(grasp_opening_b)
+
+    palm_normal_w = math_utils.quat_apply(palm_quat_w, palm_normal_b)
+    grasp_opening_w = math_utils.quat_apply(palm_quat_w, grasp_opening_b)
+    to_cube_w = cube.data.root_pos_w[0] - palm_pos_w
+    to_cube_w /= torch.clamp(torch.linalg.norm(to_cube_w), min=1.0e-6)
+
+    directions = (palm_normal_w, grasp_opening_w, to_cube_w)
+    colors = (
+        (1.0, 0.1, 0.1, 1.0),  # red: measured physical palm-plane normal
+        (0.1, 0.5, 1.0, 1.0),  # blue: grasp-opening axis used by palm_facing
+        (0.1, 1.0, 0.1, 1.0),  # green: palm-to-cube direction
+    )
+
+    starts = []
+    ends = []
+    line_colors = []
+    thicknesses = []
+    head_length = min(0.025, length * 0.25)
+    head_width = min(0.012, length * 0.12)
+    for direction, color in zip(directions, colors):
+        tip = palm_pos_w + direction * length
+        reference = torch.tensor((0.0, 0.0, 1.0), dtype=dtype, device=device)
+        if torch.abs(torch.dot(direction, reference)) > 0.9:
+            reference = torch.tensor((0.0, 1.0, 0.0), dtype=dtype, device=device)
+        side = torch.linalg.cross(direction, reference)
+        side /= torch.clamp(torch.linalg.norm(side), min=1.0e-6)
+        head_base = tip - direction * head_length
+        head_a = head_base + side * head_width
+        head_b = head_base - side * head_width
+
+        starts.extend((palm_pos_w.tolist(), tip.tolist(), tip.tolist()))
+        ends.extend((tip.tolist(), head_a.tolist(), head_b.tolist()))
+        line_colors.extend((color, color, color))
+        thicknesses.extend((5.0, 5.0, 5.0))
+
+    draw_interface.clear_lines()
+    draw_interface.draw_lines(starts, ends, line_colors, thicknesses)
+
+
+def _acquire_debug_draw_interface():
+    """Load debug draw lazily so normal/headless play does not depend on its extension."""
+    import omni.kit.app
+
+    extension_manager = omni.kit.app.get_app().get_extension_manager()
+    extension_name = "isaacsim.util.debug_draw"
+    if not extension_manager.is_extension_enabled(extension_name):
+        extension_manager.set_extension_enabled_immediate(extension_name, True)
+
+    import isaacsim.util.debug_draw._debug_draw as omni_debug_draw
+
+    return omni_debug_draw.acquire_debug_draw_interface()
+
+
 @hydra_task_config(args_cli.task, args_cli.agent)
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlBaseRunnerCfg):
     """Play with RSL-RL agent."""
@@ -397,6 +486,29 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     obs = env.get_observations()
     timestep = 0
 
+    palm_draw_interface = None
+    palm_body_id = None
+    grasp_opening_b = (0.19, 0.28, 0.94)
+    if args_cli.show_palm_vectors:
+        if "cube" not in env.unwrapped.scene.rigid_objects:
+            raise ValueError("--show_palm_vectors requires a scene rigid object named 'cube'.")
+        palm_ids, _ = env.unwrapped.scene["robot"].find_bodies(["palm_link"])
+        if len(palm_ids) != 1:
+            raise ValueError(f"Expected one palm_link body, found {len(palm_ids)}.")
+        palm_body_id = palm_ids[0]
+        rewards_cfg = getattr(env.unwrapped.cfg, "rewards", None)
+        for term_name in ("palm_facing", "finger_cage_reach"):
+            term_cfg = getattr(rewards_cfg, term_name, None)
+            term_params = getattr(term_cfg, "params", {}) or {}
+            if "palm_normal_b" in term_params:
+                grasp_opening_b = tuple(term_params["palm_normal_b"])
+                break
+        palm_draw_interface = _acquire_debug_draw_interface()
+        print(
+            "[INFO] Palm vector legend: RED=palm-plane normal local=(0.965, -0.008, 0.262), "
+            f"BLUE=grasp opening axis {grasp_opening_b}, GREEN=palm-to-cube"
+        )
+
     # action은 절대 관절 목표임 (target = default_joint_pos + scale * action).
     # 팔이 튈 때 그게 "정책이 시킨 것"인지 "물리가 명령을 이긴 것"인지 가르려면 목표와 실제를 비교해야 함.
     #   추종오차 작음(<0.1) + |Δa| 큼(>0.3) -> 팔이 명령대로 발광. 학습/보상 문제
@@ -424,6 +536,15 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             actions = policy(obs)
             # env stepping
             obs, _, _, _ = env.step(actions)
+
+            if palm_draw_interface is not None:
+                _draw_palm_vectors(
+                    env,
+                    palm_draw_interface,
+                    palm_body_id,
+                    grasp_opening_b,
+                    max(float(args_cli.palm_vector_length), 0.01),
+                )
 
             if args_cli.print_action:
                 applied = env.unwrapped.action_manager.action
@@ -484,6 +605,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             time.sleep(sleep_time)
 
     # close the simulator
+    if palm_draw_interface is not None:
+        palm_draw_interface.clear_lines()
     env.close()
 
 

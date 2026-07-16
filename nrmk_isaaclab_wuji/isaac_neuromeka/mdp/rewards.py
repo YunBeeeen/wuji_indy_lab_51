@@ -421,7 +421,7 @@ class ObjectAtGoalHeld(ManagerTermBase):
 
     goal이 공중(상판 +10cm 이상, cube_grasp_env_cfg의 커맨드 범위)이라 "들었음"은 자동 함의됨.
     순간 통과(던지기)는 유지 조건에서, 잡지 않은 받치기 등은 gate에서 걸러짐.
-    성공 시 즉시 종료가 hold/lift 연금의 마개 (ObjectLiftedHeld와 같은 설계).
+    성공 시 즉시 종료가 hold/lift 연금의 마개 (앉아서 버는 상한 << 성공 한 방).
     """
 
     def __init__(self, cfg, env: ManagerBasedRLEnv):
@@ -459,53 +459,6 @@ class ObjectAtGoalHeld(ManagerTermBase):
         self._count = torch.where(ok, self._count + 1, torch.zeros_like(self._count))
         return self._count >= hold_steps
 
-
-# TensorBoard:
-# - Episode_Termination/success 로 기록됨 (DoneTerm 필드명 기준)
-# - CubeGraspRewardsCfg.lift_success(is_terminated_term)가 이 판정을 한 방 보상으로 변환함.
-# env_cfg_common.py: CubeGraspTerminationsCfg.success 에서 연결됨.
-class ObjectLiftedHeld(ManagerTermBase):
-    """성공 종료 판정: 큐브를 gate에 문 채 min_height 이상에서 hold_steps 연속 유지 (논문 r_T).
-
-    논문(arXiv:2307.16752) Eq.20 constraint-based 성공의 번역: 대칭 큐브는 목표 파지 g가
-    없으므로 "들어서 유지할 수 있는가"가 성공의 정의 (암묵적 파지 안정성 제약).
-    순간 z만 보면 쳐올리기(fling)가 통과하므로 gate와 "연속 유지"를 함께 요구함.
-    성공 시 에피소드가 즉시 끝나는 것 자체가 설계임 — "성공 후 hold 연금 계속 받기"와
-    "hold만 캠핑하기"(2026-07-14 실측: 팔로 눌러 0.47x25/스텝 정지 수확)를 둘 다 막는 마개.
-    """
-
-    def __init__(self, cfg, env: ManagerBasedRLEnv):
-        super().__init__(cfg, env)
-        self._count = torch.zeros(env.num_envs, dtype=torch.long, device=env.device)
-
-    def reset(self, env_ids: Sequence[int] | None = None) -> None:
-        if env_ids is None:
-            env_ids = slice(None)
-        self._count[env_ids] = 0
-
-    def __call__(
-        self,
-        env: ManagerBasedRLEnv,
-        asset_cfg: SceneEntityCfg,
-        object_cfg: SceneEntityCfg,
-        object_half_extent: tuple[float, float, float] = (0.03, 0.03, 0.03),
-        num_points: int = 3,
-        sphere_radius: float = 0.005,
-        depth_max: float = 0.005,
-        point_fractions: tuple[float, ...] | None = None,
-        min_height: float = 0.08,
-        surface_z: float = 0.0,
-        gate_threshold: float = 0.3,
-        hold_steps: int = 15,
-    ) -> torch.Tensor:
-        gate = object_in_finger_cage(
-            env, asset_cfg, object_cfg, object_half_extent, num_points, sphere_radius,
-            depth_max, point_fractions,
-        )
-        clearance = box_ground_clearance(env, object_cfg, object_half_extent, surface_z)
-        ok = (clearance > min_height) & (gate > gate_threshold)
-        self._count = torch.where(ok, self._count + 1, torch.zeros_like(self._count))
-        return self._count >= hold_steps
 
 
 # TensorBoard:
