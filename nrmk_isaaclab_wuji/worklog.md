@@ -3193,3 +3193,16 @@ palm_normal_b (0.19,0.28,0.94) -> (1,0,0)   rewards.py + managers.py
   palm_facing best-so-far 전환도 이번 재시작에 함께 반영됨
 - 실행 순서: 런 정지 → 1 env 스모크 → 현 체크포인트에서 resume (obs 64 불변).
   drop_penalty는 success 자리 잡은 뒤 −3000 (커리큘럼 순서 유지)
+
+### "B 설계" 카드 확정 — lift 은퇴 + 근접 연금 통합 (2026-07-16, 미적용)
+- 사용자 설계: lift 제거 후 "hold gate × error 역수" 연금 하나로 — 공중 유지(lift 역할)와
+  error 축소(transport 역할)를 한 항이 동시 지불. r = gate × 0.05/(0.05+d), w~75
+- 장점: 일시불이 없어 "스침 후 캠핑" 원천 불가 (머물러야 벌고, 공 안 체류는 success가 회수).
+  "transport 유지 조건" 요구도 자동 충족 (연금 = 유지가 지급 조건)
+- 안전 산수 (γ=0.99): goal 중심 ~2.5/스텝(공 안은 0.5s 종료), 공 바깥 PV ~110 ≪ r_T 500,
+  탁자 캠핑 ~0.3 ≪ 공중 유지 1.5+
+- ⚠ 적용 시 cube_lift는 삭제 금지, weight 0 은퇴 — managers.py:244가 surface_z를
+  cube_lift.params에서 읽음 (metrics 어긋남 방지)
+- 함수(object_goal_proximity)는 rewards.py에 미배선 부품으로 준비됨 (⚠ 헤더 표기).
+  적용 시점: 사용자 신호 대기. 현행 box resume은 A(lift 50 + transport 일시불 + r_T)로 관찰
+  — cube(v2.1)와 box가 각각 일시불/연금 설계의 자연 A/B가 될 수 있음

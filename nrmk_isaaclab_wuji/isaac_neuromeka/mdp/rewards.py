@@ -412,6 +412,43 @@ class ObjectToGoalProgressReward(ManagerTermBase):
         return progress * gate
 
 
+# ⚠ 미배선 (2026-07-16): "B 설계" 카드용 부품 — 어느 태스크에도 아직 연결 안 됨.
+# B 설계 = lift 은퇴(weight 0, 항은 metrics surface_z 배선 때문에 유지) + transport 일시불 제거
+#          + 이 연금 하나로 통합 (gate × φ(d), w~75). 적용은 사용자 신호 대기.
+# 연결 시 TensorBoard: Episode_Reward/goal_proximity.
+def object_goal_proximity(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    asset_cfg: SceneEntityCfg,
+    object_cfg: SceneEntityCfg,
+    object_half_extent: tuple[float, float, float] = (0.03, 0.03, 0.03),
+    num_points: int = 3,
+    sphere_radius: float = 0.005,
+    depth_max: float = 0.005,
+    point_fractions: tuple[float, ...] | None = None,
+    potential_eps: float = 0.05,
+) -> torch.Tensor:
+    """잡은 채(gate) goal에 가까울수록 매 스텝 더 주는 근접 연금 (2026-07-16 통합 설계, 사용자).
+
+    r = gate × φ(d), φ = eps/(eps+d) ∈ (0,1]. lift(높이 연금)와 transport(일시불)를 한 항으로
+    통합: goal이 공중이라 "공중 유지"와 "error 축소"가 같은 지급으로 표현됨.
+    - 일시불이 없어서 "스침 후 캠핑" 해킹이 불가 — 머물러야만 벌고, 공 안 체류는 0.5s 뒤
+      success 종료가 회수 (연금의 캠핑 상한)
+    - 크기 안전 근거 (w75, γ=0.99): goal 중심 ~2.5/스텝, 공 바깥 현재가치 ~110 ≪ r_T +500,
+      탁자 캠핑 ~0.3/스텝 ≪ 공중 유지 1.5+ (lift의 "공중 유지 연금" 역할 대체)
+    - 절대형 양수인데 허용되는 이유: "유지가 어려운 것"(공중 파지 유지) 원칙 충족 + gate 곱
+      ("안 잡고 근처 서성"은 0원) + success 종료 마개
+    """
+    obj: RigidObject = env.scene[object_cfg.name]
+    goal_w = env.scene.env_origins + env.command_manager.get_command(command_name)
+    dist = torch.norm(goal_w - obj.data.root_pos_w, dim=1)
+    gate = object_in_finger_cage(
+        env, asset_cfg, object_cfg, object_half_extent, num_points, sphere_radius,
+        depth_max, point_fractions,
+    )
+    return gate * potential_eps / (potential_eps + dist)
+
+
 # TensorBoard:
 # - Episode_Termination/success 로 기록됨 (DoneTerm 필드명 기준)
 # - CubeGraspRewardsCfg.transport_success(is_terminated_term)가 이 판정을 한 방 보상으로 변환함.
