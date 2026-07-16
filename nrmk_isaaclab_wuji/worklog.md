@@ -3149,3 +3149,18 @@ palm_normal_b (0.19,0.28,0.94) -> (1,0,0)   rewards.py + managers.py
 - box_mdp_cfg의 주석 블록도 새 파라미터로 동기화 (재활성 시 그대로 사용)
 - ⚠ 스모크 미실시 (box 학습 중) — 큐브 태스크를 다음에 돌리기/play 하기 전에 1 env 스모크
   필수 (시그니처 변경: distance_max 제거, potential_eps/window 추가)
+
+### transport 창 제거 → 전 구간 역수 φ (사용자 직접 수정, 2026-07-16)
+- 근거 (사용자 추론): 스폰 랜덤 ±6/8cm로 "높이는 맞는데 횡으로 창 밖"(d≈13cm)인 에피소드가
+  transport 무신호 — 창은 그 구멍을 만들고, 역수 φ는 원래 "멀리서 완만 + 가까이 가파름"의
+  2층 구조를 연속으로 내장하므로 창 없는 쪽이 상위호환
+- 변경: rewards.py에서 window 파라미터/clamp 제거 (φ = 0.05/(0.05+d) 전 구간),
+  env_cfg_common cube_transport에서 "window" 삭제, box_mdp_cfg 주석 블록 동기화,
+  arm_floor 사체 블록 정리(사용자). weight 4000 유지 — 완주 총액 ≈ +103 (r_T의 1/5)
+- 큐브 보상 v2.1 확정 상태: reach 8 / hold 15 / lift 50(0~8cm 사다리) /
+  transport 4000(전구간 역수 φ, best-so-far, gate) / r_T 15000(+500, goal ±5cm 유지 0.5s,
+  즉시 종료) / drop 0(2단계 커리큘럼 대기) / palm 4 / manip 1 / floor 1
+- 릴레이 구조: lift(0~8cm) → φ(8cm부터 창 없이 연속, 근거리 집중) → r_T(도착·종료)
+- ⚠ ObjectToGoalProgressReward 시그니처 변천: distance_max(v1) → potential_eps+window(v2)
+  → potential_eps만(v2.1). 옛 파라미터를 cfg에 남기면 env 생성 크래시
+- ⚠ 큐브 태스크 스모크 미실시 (box 학습 중) — 큐브를 돌리기/play 전 1 env 스모크 필수

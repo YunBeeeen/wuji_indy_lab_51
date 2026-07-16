@@ -487,9 +487,7 @@ class CubeGraspRewardsCfg:
     # 2026-07-15 운반 층 — 논문 사다리의 orient(500) 자리 번역: hold(15) < 운반 < r_T.
     # best-so-far 차분 (+ 전용): 잡은 채(gate 곱) goal 거리 신기록을 깬 양만 지불.
     # 후퇴/왕복 0원, 도착 서성임 연금 없음. 낙하 비용은 아래 drop_penalty가 별도 담당.
-    # 2026-07-16 v2 (역수 포텐셜 + 창): 창(±10cm) 밖 지급 0 — 창까지는 lift 사다리가 데려옴
-    # (goal이 스폰 위 +17cm라 8cm 들면 d≈0.09 = 창 안). φ=0.05/(0.05+d)로 마지막 5cm에
-    # 총액 대부분 집중 ("가까울수록 크게" — 오버슈트 처방). 완주 총액 ≈ +89 (r_T의 ~1/5).
+
     cube_transport = RewTerm(
         func=mdp.ObjectToGoalProgressReward,
         weight=4000.0,
@@ -503,7 +501,6 @@ class CubeGraspRewardsCfg:
             "sphere_radius": 0.005,
             "depth_max": 0.005,
             "potential_eps": 0.05,
-            "window": 0.10,
         },
     )
 
@@ -576,21 +573,6 @@ class CubeGraspRewardsCfg:
         },
     )
 
-    # 2026-07-15 팔 링크가 바닥에 눕는 것(scoop 웅크림)을 직접 감점. 자세는 브랜치/manip 문제가
-    # 아니라 "팔꿈치 링크의 월드 높이" 문제로 판정됨 (manip 0.35~0.5로 r_MP는 데드존).
-    # 기준면은 테이블이 아니라 바닥(surface_z 기본 0.0) — 팔꿈치는 테이블 옆 공간에 정상적으로
-    # 있을 수 있음 (hand_floor의 BASE_Z 오버라이드와 다른 이유).
-    # 링크 선정 실측(시작 자세 z): link1=0.08(항상 낮음, 제외) link2=0.30 link3=0.71
-    # link4=0.53 link5=0.56 link6=0.62 -> link[2-6]. 절대 페널티(<=0)라 자세가 좋으면 0.
-    #arm_floor = RewTerm(
-    #    func=mdp.hand_floor_penalty,
-    #    weight=2.0,
-    #    params={
-    #        "asset_cfg": SceneEntityCfg("robot", body_names=["link[2-6]"]),
-    #        "clearance": 0.12,
-    #    },
-    #)
-    
     action_rate = RewTerm(func=mdp.action_rate_l2, weight=-0.005)
 
 

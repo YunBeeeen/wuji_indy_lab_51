@@ -29,6 +29,8 @@
   반드시 pop 후 넣을 것 (`grasp/indy_wuji/env_cfg.py` 참고).
 - **`object_below_surface_penalty`로 "누르기" 감지 불가** — 바닥이 강체라 관통이
   -0.04mm 수준(실측). 압착 억제는 penetration 페널티가 아니라 r_T 구조(성공 종료)로 해결함.
+- **`ObjectToGoalProgressReward` 시그니처 변천** — distance_max(v1) → +window(v2) → potential_eps만
+  (v2.1). 옛 파라미터를 cfg에 남기면 env 생성 TypeError. 주석 블록 재활성 시 시그니처 대조 필수.
 
 ### 동시 작업/도구
 - **파일이 세션 밖에서 바뀐다** (사용자·codex 동시 작업). Edit 전에 해당 구간을 다시 Read하고

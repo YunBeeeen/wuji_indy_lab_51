@@ -254,7 +254,6 @@ class BoxTransportRewardsCfg:
     #         "sphere_radius": 0.005,
     #         "depth_max": 0.005,
     #         "potential_eps": 0.05,
-    #         "window": 0.10,
     #     },
     # )
 

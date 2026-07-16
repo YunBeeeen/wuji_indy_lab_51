@@ -356,11 +356,11 @@ def object_lift_in_cage(
 class ObjectToGoalProgressReward(ManagerTermBase):
     """운반 층 (논문 orient(500) 자리): 잡은 채 goal 거리 "신기록"을 깬 만큼 포텐셜 차분 지불.
 
-    - 역수 포텐셜 (2026-07-16, 오버슈트 실측 후 사용자 설계): φ(d) = eps/(eps + min(d, window)).
-      reward = (φ(현재) − φ(베스트))⁺ × gate. 총액 = φ(최소거리) − φ(창 진입) 고정 → farming 불가.
-      "가까울수록 크게": eps=0.05, window=0.10이면 창 진입→중심 총액의 대부분이 마지막 5cm.
-    - window: 창 밖(d ≥ window)은 φ가 상수라 지급 0 — 창까지는 reach/hold/lift 사다리가
-      데려옴 (고정 goal이 스폰 위 +17cm라 8cm 들면 이미 d≈0.09 = 창 안).
+    - 역수 포텐셜, 전 구간 (2026-07-16, 사용자 설계): φ(d) = eps/(eps + d).
+      reward = (φ(현재) − φ(베스트))⁺ × gate. 총액 = φ(최소거리) − φ(시작거리) 고정 → farming 불가.
+      "가까울수록 크게"가 연속으로 구현됨: 원거리(30→10cm) ≈ +14, 근거리(10cm→중심) ≈ +89 (w4000).
+    - 창(window)은 뒀다가 제거함 (2026-07-16): 스폰 랜덤 ±6/8cm 때문에 "높이는 맞는데
+      횡으로 창 밖"인 에피소드가 transport 무신호가 되는 구멍 — 전 구간 역수가 상위호환.
     - best-so-far + 단일 부호 (2026-07-15): 후퇴/왕복/재접근 0원. 낙하 비용은 별도 순수
       페널티(drop_penalty)가 담당 — "페널티면 페널티, 리워드면 리워드" 분리.
     - 도입 이력: 선형 best-so-far는 goal 근처 1cm와 먼 1cm가 같은 값이라 과녁 통과(오버슈트,
@@ -393,15 +393,12 @@ class ObjectToGoalProgressReward(ManagerTermBase):
         depth_max: float = 0.005,
         point_fractions: tuple[float, ...] | None = None,
         potential_eps: float = 0.05,
-        window: float = 0.10,
     ) -> torch.Tensor:
         obj: RigidObject = env.scene[object_cfg.name]
         goal_w = env.scene.env_origins + env.command_manager.get_command(command_name)
         dist = torch.norm(goal_w - obj.data.root_pos_w, dim=1)
 
-        # 창 밖은 상수 포텐셜 (지급 0). φ ∈ (0, 1]: d=window에서 최소, d=0에서 1
-        d_eff = torch.clamp(dist, max=window)
-        phi = potential_eps / (potential_eps + d_eff)
+        phi = potential_eps / (potential_eps + dist)
 
         self._best_phi = torch.where(self._pending, phi, self._best_phi)
         self._pending[:] = False

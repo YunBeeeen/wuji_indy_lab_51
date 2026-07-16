@@ -18,6 +18,40 @@
 - `play.py --print_contact`나 joint detail을 interval 1로 켜면 GUI가 매우 느려짐. 기본 진단은 `--print_diagnostics --print_action_interval 10` 정도로 시작함.
 - 긴 학습 전에 scripted probe로 `GOOD_CONTACT`, `max_clearance`, cage/contact 유지 여부를 먼저 확인함.
 
+## 현재 상태와 다음 단계 (2026-07-16 갱신 — 이어서 작업할 때 여기부터)
+
+### 진행 중인 런
+- `Indy-Wuji-Box-Transport` lift-only 단계 (fresh, 4096 env, 코드 스냅샷 커밋 e5d6a68 근방).
+  env마다 다른 비율보존 직육면체(단면 3~6cm × 비율 1.5~3)를 잡고 드는 것을 검증 중.
+- 볼 지표: `finger_cage_hold` → `cube_lift` 이륙 (단일 큐브 대비 2~3배 느려도 정상),
+  play에서 얇은/뚱뚱 상자 모두 잡는지, 폭-가로 파지가 창발하는지 (yaw 정렬 항은 의도적으로 없음).
+- 얇은 상자만 계속 실패하면 pinch 물리 한계 신호 → `scripts/debug/grip_capacity.py` 검증 카드
+  (단, 커플링 미반영 상태라 반영 후 사용).
+
+### 관문과 다음 단계 (순서 고정)
+1. box lift 이륙 + play 확인 → **transport 3종 세트 주석 해제** (box_mdp_cfg.py에 위치 표기됨:
+   cube_transport / transport_success / TerminationsCfg.success) → 그 체크포인트에서 resume (obs 64 불변).
+2. 성공률 자리 잡으면 → drop_penalty 0 → −3000 켜고 resume (2단계 커리큘럼.
+   fresh에서 켜면 탐색 회피 함정 — 2026-07-15 실측: 낙하율 스파이크 후 큐브 회피 동결).
+3. 랜덤 goal(2단계): box_transport_env_cfg.__post_init__의 goal 세 줄을 랜덤 박스로 확장
+   (큐브 쪽 cube_grasp_env_cfg에 확장값 주석 있음).
+4. 초기 yaw 랜덤화(±30°): 사수님 컨펌 후. box_quat 채널이 이미 obs에 있어 obs 단절 없음.
+5. 젓가락 진입 = IK 액션 전환 결정 지점 + 목표 파지 g 정의 (로드맵: worklog 2026-07-15 참고).
+
+### 큐브 태스크 (Indy-Wuji-Cube-Grasp) 상태
+- obs 57 동결 (기존 체크포인트 play 호환). 보상은 v2.1로 갱신됨 (보상 실험 테스트베드 역할):
+  reach 8 / hold 15 / lift 50(0~8cm 사다리) / transport 4000(전 구간 역수 φ=0.05/(0.05+d),
+  best-so-far, gate 곱, 단일 부호) / r_T 15000(goal ±5cm + gate 0.5s 유지 → +500·즉시 종료) /
+  drop 0 / palm 4 / manip 1 / floor 1. goal = 고정점 (0.62, −0.20, BASE_Z+0.20).
+- 릴레이 구조: lift(0~8cm) → φ(연속, 근거리 집중) → r_T(도착·종료). lift_height=0.08은
+  상한이 아니라 포화(그 위에서 만점 유지, 증가만 정지).
+- ⚠ 시그니처 변경 후 스모크 미실시 — 큐브 태스크를 돌리기/play 전에 1 env 스모크 필수.
+
+### 킵해둔 카드 (조건부)
+- transport-φ 실패 신호: φ 적립은 큰데 success 0 지속 = "통과만 하고 정착 안 함" → 근접 연금 검토.
+- 팔꿈치 자세: arm_floor(팔 링크 높이 페널티) 설계 있음 (git 이력 fe2c6fa 근방) — 필요 시 부활.
+- 8-keypoint 물체 표현(위치+회전+크기 통합)은 젓가락 단계 카드.
+
 ## Project Context
 
 - 목표는 Isaac Lab 기반 Indy7 + Wuji hand end-effector tracking RL 환경 구성임.
@@ -431,6 +465,9 @@
 - **물체 고정은 매 스텝 teleport 금지** (관통 누적 → PhysX 폭발). gravity off + 매 스텝 속도 0.
 - **`finger*_tip_link` 원점은 마지막 관절임** (패드는 2~3cm 앞). **`joint1`은 감소가 하강임.**
 - **git 멀티라인 커밋은 heredoc으로.** 사용자 터미널 복붙은 실패 이력 있음.
+- **`ObjectToGoalProgressReward` 시그니처 변천 주의**: distance_max(v1) → potential_eps+window(v2)
+  → potential_eps만(v2.1, 2026-07-16). 옛 파라미터를 cfg params에 남기면 env 생성이 TypeError로 죽음.
+  box_mdp_cfg의 주석 블록을 살릴 때 현행 시그니처와 대조할 것.
 
 ## Working Rules
 
