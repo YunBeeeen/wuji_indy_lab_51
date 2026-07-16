@@ -3183,3 +3183,13 @@ palm_normal_b (0.19,0.28,0.94) -> (1,0,0)   rewards.py + managers.py
 - palm_facing을 best-so-far(+전용)로 바꾸기로 결정 (사용자 — (curr−best)⁺ 형태 재도출).
   단순 (curr−prev)⁺ 클램프는 진동 farming(하락 무과금+상승 재적립)이라 기각.
   적용 시점: 다음 재시작 (돌고 있는 런 무관)
+
+### box transport 3종 재활성 (2026-07-16, 관문 통과)
+- 관문 판정: lift 이륙 + "잘 잡긴 하는데 잡고 고정이 안 됨" (사용자 play 관찰) —
+  잡은 뒤 인센티브 공백의 지문. r_T의 hold_steps(0.5s 유지)가 "고정"을 직접 보상하므로
+  별도 orientation 보정 항 없이 3종 해제로 처방 (orientation 항은 2차 카드:
+  해제 후에도 success 0이면 물리 진단 먼저 → cube_speed/마찰/orientation 순)
+- cube_transport(φ 4000, 전 구간 역수) + transport_success(15000) + success 종료 해제.
+  palm_facing best-so-far 전환도 이번 재시작에 함께 반영됨
+- 실행 순서: 런 정지 → 1 env 스모크 → 현 체크포인트에서 resume (obs 64 불변).
+  drop_penalty는 success 자리 잡은 뒤 −3000 (커리큘럼 순서 유지)
