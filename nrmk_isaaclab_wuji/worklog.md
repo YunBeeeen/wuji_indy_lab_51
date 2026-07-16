@@ -3173,3 +3173,13 @@ palm_normal_b (0.19,0.28,0.94) -> (1,0,0)   rewards.py + managers.py
   없고, 겨눔 유지는 reach의 facing gate가 담당하므로 음수 제거 실익은 일관성.
   ⚠ 예외: reach(ObjectCageProgressReward)의 음수는 유지 — drop_penalty 0인 현재
   "쳐내기"에 대한 유일한 즉시 과금이라 일을 하고 있음
+
+### palm_normal_b 문서화 보강 + palm_facing best-so-far 결정 (2026-07-16)
+- (0.19, 0.28, 0.94)의 정체를 rewards.py palm_facing_object docstring에 권위 문서화:
+  손바닥 법선이 아니라 "파지 개구부 축"(오므린 손끝 수렴 방향, palm_link 로컬).
+  도출 실측 3개(법선 ≈ +x, 손가락 +z, 수렴점 (0.065, 0.006, 0.097))와 65° 어긋남 명시.
+  측정 스크립트 유실 사실 + 재검증 수단(--show_palm_vectors, FK 재도출) 기록.
+  cfg 3곳 주석은 포인터로 교체
+- palm_facing을 best-so-far(+전용)로 바꾸기로 결정 (사용자 — (curr−best)⁺ 형태 재도출).
+  단순 (curr−prev)⁺ 클램프는 진동 farming(하락 무과금+상승 재적립)이라 기각.
+  적용 시점: 다음 재시작 (돌고 있는 런 무관)

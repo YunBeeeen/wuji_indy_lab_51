@@ -272,6 +272,8 @@ class BoxTransportRewardsCfg:
         params={"term_keys": "cube_dropped"},
     )
 
+    # palm_normal_b = "파지 개구부 축" (misnomer: 손바닥 법선 아님).
+    # 도출 근거·재검증은 rewards.py palm_facing_object docstring(★) 참고
     palm_facing = RewTerm(
         func=mdp.PalmFacingProgressReward,
         weight=4.0,

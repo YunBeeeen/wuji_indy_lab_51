@@ -525,7 +525,8 @@ class CubeGraspRewardsCfg:
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=["palm_link"]),
             "object_cfg": SceneEntityCfg("cube"),
-            # 손가락을 오므릴 때 손끝이 이동하는 방향으로 실측한 palm_link의 안쪽 법선
+            # "파지 개구부 축" (misnomer 주의: 손바닥 법선 아님, 65° 어긋남).
+            # 도출 근거·재검증 방법은 rewards.py palm_facing_object docstring(★) 참고
             "palm_normal_b": (0.19, 0.28, 0.94),
         },
     )
@@ -842,7 +843,8 @@ class ChopsticksGraspRewardsCfg:
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=["palm_link"]),
             "object_cfg": SceneEntityCfg("cube"),
-            # 손가락을 오므릴 때 손끝이 이동하는 방향으로 실측한 palm_link의 안쪽 법선
+            # "파지 개구부 축" (misnomer 주의: 손바닥 법선 아님, 65° 어긋남).
+            # 도출 근거·재검증 방법은 rewards.py palm_facing_object docstring(★) 참고
             "palm_normal_b": (0.19, 0.28, 0.94),
         },
     )
