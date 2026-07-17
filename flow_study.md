@@ -1175,3 +1175,44 @@ scale = 1.0          # |a|=1 이 1.0 rad(57°) -> 큐브 도달 가능
 **큐브에 영영 못 감.** `scale`만 키우면 여전히 상한이 없어 또 발산.
 
 **결과: `|Δa|` 평균 0.04, 최대 0.90 (clip 상한 2.0 이내). 발산 원천 차단됨.**
+
+---
+
+# 26. 성공 유지 판정, terminal reward, reset 순서 (2026-07-17)
+
+Cube/Box transport의 `hold_steps=15`는 hold reward의 길이가 아니라 성공 판정을 위한 연속
+step 수다. 30Hz에서 15 step은 0.5초다.
+
+```text
+goal distance < 0.05m
+AND cage gate > 0.3
+15 step 연속 유지
+        ↓
+termination_manager: success=True
+        ↓
+reward_manager: is_terminated_term("success") -> raw=1
+        ↓
+transport_success = 1 * 30000 * (1/30) = +1000
+        ↓
+같은 step이 끝난 뒤 해당 env reset
+```
+
+`ManagerBasedRLEnv.step()`은 physics 뒤에 termination을 먼저 계산하고 reward를 계산한다.
+따라서 `transport_success`는 success 종료 step의 신호를 같은 step에서 읽을 수 있다.
+
+즉 성공 조건은 두 역할을 동시에 한다.
+
+1. `transport_success` terminal reward를 한 번 지급한다.
+2. 즉시 종료하여 성공 상태 재진입에 의한 반복 적립과 남은 episode의 연금을 막는다.
+
+play에서 0.5초보다 오래 유지되는지 볼 때는 `success` term을 삭제하면 안 된다.
+`transport_success`가 그 이름을 참조하기 때문이다. 대신 다음 Hydra override로 성공 판정만
+사실상 timeout 뒤로 미룬다.
+
+```bash
+env.terminations.success.params.hold_steps=1000000
+```
+
+기존 `episode_length_s=8.0`은 건드리지 않으므로 8초 timeout은 유지되고, `cube_dropped`도
+계속 동작한다. 이 설정은 학습 설정이 아니라 학습된 정책의 장기 유지 상태를 보는 play 전용
+진단 설정이다.

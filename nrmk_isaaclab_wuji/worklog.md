@@ -3215,3 +3215,56 @@ palm_normal_b (0.19,0.28,0.94) -> (1,0,0)   rewards.py + managers.py
 - drop_penalty 2단계는 resume 방식 폐기 → 단일 런 내 curriculum manager
   (modify_reward_weight, N스텝 후 0 → −3000)로 재설계 예정
 - resume이 허용되는 경우: 같은 설정의 순수 연장(크래시 복구, iter 추가)뿐
+
+## 2026-07-17 — transport success 보상/종료 연결 및 유지 관찰 정리
+
+- `ObjectAtGoalHeld`의 `hold_steps=15`는 hold reward 누적 시간이 아니라 성공 판정에 필요한
+  연속 유지 시간임. 30Hz에서 15 step은 0.5초임.
+- 성공 조건은 goal 거리 `< 0.05m`, cage gate `> 0.3`을 15 step 연속 만족하는 것임.
+- 성공 step에서 `transport_success(is_terminated_term("success"))`가 raw 1을 읽고,
+  현재 weight 30000과 dt 1/30이 적용되어 PPO reward `+1000`을 한 번 지급함.
+- 같은 step에 success termination으로 episode를 끝냄. goal 이탈 후 재진입으로 terminal
+  reward를 반복 적립하는 것과 성공 뒤 hold/lift 연금을 계속 받는 것을 막는 구조임.
+- play에서 0.5초 이후 유지 안정성을 보려면
+  `env.terminations.success.params.hold_steps=1000000`을 사용함. 정책과 reward 구조는 그대로고,
+  성공 보상/종료만 8초 timeout 뒤로 미뤄짐. `cube_dropped` 종료도 유지됨.
+- `env.terminations.success=null`만 쓰면 `transport_success`의 `term_keys="success"` 참조가
+  사라져 reward manager 초기화가 실패하므로 사용하지 않음.
+- 실행 명령과 주의점은 root `CLI.md`의 `성공 후 유지 상태 확인 Play`에 정리함.
+
+## 2026-07-17 — 큐브 v2.1 수렴 판정 + lift-off(A′) 실험 계획
+
+- 큐브 v2.1 (run 2026-07-16_16-05-23) 수렴: success 89.4% @iter 7,440, 낙하 3.0%,
+  error_pos 0.046, 오버슈트 없음 → φ 설계 검증 + 로드맵 ①관문(고정 위치 운반) 통과.
+- play 관찰: 파지 진동 + 장기 유지 약함 (성공=0.5초 종료 이후는 미학습 OOD 구간 + gate 0.3
+  관대 합격). 유지력 카드: hold_steps 15→30~60 + gate_threshold 0.3→0.4 (다음 큐브 fresh).
+  depth_max 증량은 수박씨 배출 이력으로 배제.
+- 박스: success 43.5% @iter 8,229 상승 중, 낙하 15.9%로 자연 하락 → drop 커리큘럼 긴급도↓
+  (다음 fresh 카드로 유지).
+- lift-off 실험(A′) 시작: cube_lift weight 0 (term은 유지 — surface_z metric 배선),
+  transport 일시불 유지, fresh. 예상 문제 3개와 대응은 AGENTS.md 로드맵 1-a 절 참조.
+  판정 트리: 재도전 무보상·중간 처짐 발생 → B안(gate×φ 연금) fresh / 초반 시드 저하만 →
+  lift 훈련바퀴 커리큘럼(modify_reward_weight 50→0) / 무증상 → lift 영구 은퇴 확정.
+
+## 2026-07-17 — run 파라미터 검증·대장 + 추후 계획 확정
+
+- 진행 중 비교 2건, env.yaml 스냅샷으로 파라미터 검증 (사용자 구술과 전부 일치):
+  - 큐브: `2026-07-16_16-05-23` (0.2kg, lift 50 — 89.4% 수렴 킵) vs `2026-07-17_23-06-15`
+    (0.1kg, lift 50 — 질량만 다른 비교 fresh, 진행 중)
+  - 박스: `2026-07-16_16-33-21` (0.1kg, lift 50 — 43.5%+ 확인) vs `2026-07-17_23-15-16`
+    (0.1kg, lift 0 — lift-off A′, 진행 중)
+  - 공통: transport 4000, r_T 30000(+1000), reach 8/hold 15/drop 0, hold_steps 15.
+    두 비교 모두 단일 변수 차이 — run별 상세 대장은 ACTIVITY_2026-07-17.md.
+- 추후 계획 순서 확정 (사용자): 비교 승자 고정 → ① goal 위치 랜덤화(command ranges)
+  → ② goal orientation obs 포함 학습 → ③ orientation까지 success 판정 포함.
+  AGENTS.md 로드맵 '일반화 순서'에 반영함. 각 단계 fresh run.
+
+## 2026-07-17 — 일반화 순서 보완 (사용자 결정)
+
+- 채택: ① 랜덤화 축 확장에 물체 spawn 범위 + **박스 크기 범위**(현행 단면 3~6cm·비율
+  1.5~3에서 확장, 목표치는 크기-버킷 실측 후) 추가 ② orientation은 obs+shaping+success를
+  한 fresh에 결합 (obs만 단독 학습 금지 — 죽은 채널) ③ 유지력 조이기(hold_steps 15→30)를
+  승자 고정 직후 fresh에 편입 (gate_threshold는 별도 차수).
+- 보류: 단계별 통과 게이트 수치화 — 버킷별 분해 지표만 유지, 숫자는 단계 진입 시 결정.
+- 미확정 제안으로 킵: drop 커리큘럼의 상비 장치 재분류, 젓가락 직전 얇은 물체 브리지.
+- AGENTS.md '일반화 순서'에 전체 반영.

@@ -2,6 +2,18 @@
 
 - 이 문서는 현재 프로젝트 상태, 변경 이력, 실행 결과, 다음 할 일을 남기는 작업 로그 문서임.
 
+## 2026-07-17 Transport Success 판정 정리
+
+- goal 반경 `0.05m` 안에서 cage gate `> 0.3`을 `hold_steps=15` 동안 연속 만족하면
+  `success=True`가 됨. 30Hz 기준 0.5초임.
+- success는 `transport_success` terminal reward와 즉시 episode 종료에 함께 사용됨.
+- 현재 weight 30000, dt 1/30이므로 성공 순간 PPO reward는 `+1000` 한 번임.
+- 즉시 종료는 goal 이탈/재진입으로 terminal reward를 반복 적립하는 것을 막음.
+- 성공 뒤 유지 성능을 play에서 볼 때는 success term을 삭제하지 않고
+  `env.terminations.success.params.hold_steps=1000000`으로 덮어씀. 기존 8초 timeout과
+  `cube_dropped` 종료는 유지됨.
+- 실행 명령은 root `CLI.md`에 기록함.
+
 ## Current Status
 
 - 현재 목표는 Indy7 + Wuji hand asset으로 arm end-effector tracking RL env 구성임.

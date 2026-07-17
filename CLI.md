@@ -156,6 +156,34 @@ python scripts/rsl_rl/play.py \
   --load_run "$(basename "$(ls -td logs/rsl_rl/indy_wuji_cube_grasp/20* | head -n 1)")"
 ```
 
+## 성공 후 유지 상태 확인 Play
+
+- 성공 상태를 기본 `0.5초`보다 오래 관찰할 때 사용함.
+- `success` termination은 등록된 채로 두고 `hold_steps`만 매우 크게 설정함.
+- 기존 `time_out` 8초와 `cube_dropped` 종료는 그대로 동작함.
+- `env.terminations.success=null`만 사용하면 `transport_success` reward가 참조할
+  termination이 사라져 환경 생성 중 오류가 발생함.
+
+```bash
+cd ~/wuji_indy_lab_51/nrmk_isaaclab_wuji
+conda activate env_isaaclab
+python scripts/rsl_rl/play.py \
+  --task Indy-Wuji-Cube-Grasp \
+  --num_envs 1 \
+  --load_run "$(basename "$(ls -td logs/rsl_rl/indy_wuji_cube_grasp/20* | head -n 1)")" \
+  env.terminations.success.params.hold_steps=1000000
+```
+
+- 중요한 평가는 자동 최신 run 대신 확인한 run 폴더명을 직접 넣음.
+
+```bash
+python scripts/rsl_rl/play.py \
+  --task Indy-Wuji-Cube-Grasp \
+  --num_envs 1 \
+  --load_run 2026-07-15_12-21-00 \
+  env.terminations.success.params.hold_steps=1000000
+```
+
 ## Checkpoint 직접 지정 Play
 
 - checkpoint 파일을 직접 지정함.

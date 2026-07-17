@@ -13,20 +13,23 @@
 - TensorBoard 평균 `Metrics/cube/*`만으로 판단하지 않음. `Metrics/cube_final/*`, `cube_clearance`, `cage_inside_frac`, contact, `cube_speed`를 같이 봄.
 - `palm_facing`은 초기 방향이 맞는지 검증하기 전에는 끄지 않음. 절대형 양수 facing reward는 farming 위험이 크므로 차분형 또는 gate로만 사용함.
 - `cube_lift` weight를 키우기 전에 raw lift가 실제로 발생하는지 확인함. raw lift가 0이면 weight를 키워도 신호는 0임.
-- 2026-07-15 현재 성공 종료는 `clearance > 0.08`, `gate > 0.3`, `hold_steps=15` 기준임. play에서 episode가 빨리 끝나면 time-out이 아니라 `success` termination일 수 있음.
+- 2026-07-17 현재 운반 성공은 goal 반경 `0.05m`, `gate > 0.3`, `hold_steps=15` 기준임. play에서 episode가 빨리 끝나면 time-out이 아니라 `success` termination일 수 있음.
+- `success`는 종료 조건인 동시에 `transport_success` reward의 입력임. 현재 weight `30000`, `dt=1/30`이라 성공 순간 `+1000`을 한 번 받고 즉시 종료함. 0.5초 유지 후 이탈/재진입으로 terminal reward를 반복 적립하는 것을 막는 구조임.
+- 성공 후 장기 유지 play는 `success=null`로 지우지 말고 `env.terminations.success.params.hold_steps=1000000`으로 덮어씀. 그러면 기존 8초 `time_out`과 `cube_dropped`는 유지됨. `success=null`만 쓰면 `transport_success(term_keys="success")` 참조가 끊겨 env 생성이 실패함.
 - 자세가 아쉬운 lift는 height를 더 키우기보다 stable lift 조건을 봄: `cube_speed`, contact group, stricter cage gate, 유지 시간.
 - `play.py --print_contact`나 joint detail을 interval 1로 켜면 GUI가 매우 느려짐. 기본 진단은 `--print_diagnostics --print_action_interval 10` 정도로 시작함.
 - 긴 학습 전에 scripted probe로 `GOOD_CONTACT`, `max_clearance`, cage/contact 유지 여부를 먼저 확인함.
 
-## 현재 상태와 다음 단계 (2026-07-16 갱신 — 이어서 작업할 때 여기부터)
+## 현재 상태와 다음 단계 (2026-07-17 갱신 — 이어서 작업할 때 여기부터)
 
-### 진행 중인 런
-- `Indy-Wuji-Box-Transport` lift-only 단계 (fresh, 4096 env, 코드 스냅샷 커밋 e5d6a68 근방).
-  env마다 다른 비율보존 직육면체(단면 3~6cm × 비율 1.5~3)를 잡고 드는 것을 검증 중.
-- 볼 지표: `finger_cage_hold` → `cube_lift` 이륙 (단일 큐브 대비 2~3배 느려도 정상),
-  play에서 얇은/뚱뚱 상자 모두 잡는지, 폭-가로 파지가 창발하는지 (yaw 정렬 항은 의도적으로 없음).
-- 얇은 상자만 계속 실패하면 pinch 물리 한계 신호 → `scripts/debug/grip_capacity.py` 검증 카드
-  (단, 커플링 미반영 상태라 반영 후 사용).
+### 현재 달성 상태
+- `Indy-Wuji-Box-Transport`에서 랜덤 직육면체를 cage로 잡고, 자세를 크게 무너뜨리지 않은 채
+  공중으로 들어 유지하는 단계까지 확인함. 이제 `lift 가능성` 자체보다 goal 운반과 정착 품질을
+  비교할 단계임.
+- 현재 goal 성공은 box 중심 위치만 봄: `|p_box - p_goal| < 0.05m`, cage gate `> 0.3`,
+  15 step(0.5초) 연속 유지. box orientation은 reward와 success에 아직 들어가지 않음.
+- 다음 실험의 기준선은 현재 분리형 보상임: lift(공중 파지 유지) + transport(goal 거리 신기록)
+  + terminal success. 이 기준선을 보존하고 통합형 후보와 fresh A/B 비교함.
 
 ### ★ 재학습 원칙 (2026-07-16 사수님 지시, 전 에이전트 적용)
 - **보상/태스크 구조가 바뀌면 resume 금지, fresh run.** resume 결과는 "옛 정책+적응"이라
@@ -34,28 +37,143 @@
 - 보상 단계화가 필요하면 resume이 아니라 **단일 런 내 curriculum manager**
   (mdp.modify_reward_weight)로 스케줄할 것.
 
-### 관문과 다음 단계 (순서 고정)
-1. box transport 판(3종 활성, 2026-07-16 해제 완료)을 **fresh로 학습**.
-2. 성공률 자리 잡으면 → drop_penalty 0 → −3000. 방식은 curriculum manager로 재설계 예정
-   (fresh 시작부터 켜면 탐색 회피 함정 — 2026-07-15 실측: 낙하율 스파이크 후 큐브 회피 동결).
-3. 랜덤 goal(2단계): box_transport_env_cfg.__post_init__의 goal 세 줄을 랜덤 박스로 확장
-   (큐브 쪽 cube_grasp_env_cfg에 확장값 주석 있음).
-4. 초기 yaw 랜덤화(±30°): 사수님 컨펌 후. box_quat 채널이 이미 obs에 있어 obs 단절 없음.
-5. 젓가락 진입 = IK 액션 전환 결정 지점 + 목표 파지 g 정의 (로드맵: worklog 2026-07-15 참고).
+### 다음 개발 로드맵 (순서 고정)
+
+#### 1. Lift/transport 분리형과 통합형 A/B 테스트
+
+- **A안(현재 기준선, split)**
+  - `r_lift = cage_gate * clamp(clearance / 0.08, 0, 1)`의 절대형 공중 유지 보상.
+  - `r_transport = cage_gate * (phi(d_t) - best_phi)^+`,
+    `phi(d)=0.05/(0.05+d)`의 goal 거리 신기록 보상.
+  - 장점: goal에서 멀어도 lift를 먼저 배울 수 있어 탐색 신호가 강함.
+  - 위험: lift가 8cm 위에서 포화 연금이 되어 goal 접근보다 호버링/오버슈트를 선호할 수 있음.
+- **B안(통합 후보, merged)**
+  - 기존 킵 카드인 `r_goal_proximity = cage_gate * phi(d)` 한 항으로 공중 유지와 goal 접근을
+    동시에 지불함. goal 자체가 공중에 있으므로 가까이 머무는 것이 lift와 transport를 함께 뜻함.
+  - 적용 실험에서는 `cube_lift`와 `cube_transport` weight를 0으로 두고 통합항만 켬.
+  - `cube_lift` cfg 자체는 삭제하지 않음. `CustomRewardManager`의 `surface_z` metric 배선이
+    해당 params를 읽으므로 weight 0으로 은퇴시키는 방식으로 비교함.
+  - 장점: 8cm 이상에서 높이만으로 받는 연금을 없애고, 잡은 채 goal에 가까이 유지할 이유를 줌.
+  - 위험: goal 반경 바로 밖에서 proximity 연금을 받는 boundary camping, 먼 거리/table 위에서의
+    작은 연금, 초기 lift 신호 약화 가능성이 있음. terminal success가 goal 안 체류 연금의 상한임.
+- A/B에서는 reward 구성 외의 조건을 바꾸지 않음: 같은 box 분포, goal, seed 묶음, env 수,
+  총 environment step, PPO cfg, drop penalty weight를 사용함. reward가 바뀌므로 둘 다 fresh run이며
+  기존 lift checkpoint에서 resume하지 않음.
+- run/task alias를 추가 등록하지 않음. `Indy-Wuji-Box-Transport` 하나를 유지하고, 확인한 코드
+  commit과 명시적인 run 폴더명으로 A/B를 구분함.
+- **판정 지표**: success rate, time-to-success, `cube_final/cube_clearance`, goal position error,
+  cage gate/hold, `cube_speed`, drop rate, action rate, 최대 clearance(오버슈트), box 크기 구간별 성공률.
+  play에서는 성공 종료를 늦춰 8초 동안 자세 유지/goal 정착을 확인함.
+- **B안 채택 조건**: A안과 같거나 높은 success, 더 낮은 drop/오버슈트, 더 작은 goal error,
+  8초 play에서 안정 유지, table/boundary camping 없음. 하나라도 뚜렷이 악화되면 A안을 유지함.
+
+##### 1-a. 선행 실험 A′(lift-off) — 2026-07-17 사용자 시작
+
+- 구성: A안에서 `cube_lift` weight만 0 (term 삭제 금지 — surface_z metric 배선 유지),
+  transport 일시불(best-so-far φ)과 나머지는 동일. fresh run.
+- **실행 확인 (env.yaml 검증)**: 박스 run `2026-07-17_23-15-16` (질량 0.1, lift 0, transport 4000,
+  r_T 30000). 대조군 = 박스 run `2026-07-16_16-33-21` (질량 0.1, lift 50, 그 외 동일 — success
+  43.5% 상승 확인본). lift 유무 단일 변수 A/B임.
+- 병행: 큐브 질량 비교 run `2026-07-17_23-06-15` (0.1kg, lift 50 — 대조군은 89.4% 수렴본
+  `2026-07-16_16-05-23`의 0.2kg). run 파라미터 대장은 `ACTIVITY_2026-07-17.md` 참조.
+- 목적: lift 연금 없이 φ의 높이 구배만으로 사다리가 유지되는지 확인. 결과가 B안 필요성까지
+  한 번에 판독함 (아래 문제 1·2가 정확히 B안이 고치도록 설계된 문제들이므로).
+- 예상 문제와 TB 시그니처 / 대응:
+  1. **재도전 무보상** — best-so-far라 낙하 후 재상승 여정이 기록 미달인 동안 0원.
+     시그니처: 낙하율이 안 떨어지고 success 정체.
+     대응: ① B안 연금 승격 (연금은 재접근도 매 스텝 지급) ② `ObjectToGoalProgressReward`에
+     gate 상실 시 φ_best 재시드 옵션 — 단, 고의 놓기-재운반 파밍 루프가 열림 (사이클당 ~+107,
+     r_T +1000이 지배해 계산상 비수익이지만 r_T를 모르는 초반 정책에겐 유혹 여지) → 보조 옵션
+     ③ lift 감액 부활 (0 대신 10~15).
+  2. **중간 처짐 무비용** — 기록 후 처져도 벌 없음 + 재상승 보상 없음. φ는 마지막 5cm에
+     65% 집중이라 d≈0.10~0.15가 인센티브 공백.
+     시그니처: error_pos 0.10~0.15 고원 + episode length 긺.
+     대응: ① B안 연금 (처짐 = 즉시 소득 감소) ② `potential_eps` 0.05→0.10으로 φ 완만화
+     (중간 구간 배분↑, 종말 집중 65→50%; fresh 필요). 음수 시간 페널티는 단일 부호 원칙과
+     탐색 회피 함정 이력으로 배제.
+  3. **초반 시드 저하** — 매 스텝 연금 → 신기록 일시불로 바뀌어 우연 들기의 강화 확률 하락.
+     시그니처: 첫 success가 v2.1 기준(~iter 3,000)의 2배(iter 6,000)를 넘도록 없음.
+     대응: ① lift 훈련바퀴 커리큘럼 — 단일 런 내 curriculum manager(`mdp.modify_reward_weight`)로
+     lift 50 시작 → N iter 후 0 (drop 커리큘럼과 같은 메커니즘, ★재학습 원칙 부합)
+     ② iter 6,000까지 무 success면 중단 판정.
+- **판정 트리**: 시그니처 1·2 발생 → B안 fresh / 3만 발생 → lift 커리큘럼 fresh /
+  무증상 + v2.1급 수렴(65% @ ~4,500) → lift 영구 은퇴 확정 (박스에도 적용, 구성 단순화).
+- 비교 기준선 (큐브 v2.1, run 2026-07-16_16-05-23): 첫 success ~iter 3,000 → 65% @4,463 →
+  89.4% @7,440, 낙하 3.0%, error_pos 0.046, 오버슈트 없음.
+
+#### 2. Goal orientation을 포함한 6D pose 성공 조건
+
+- **적용 시점은 아래 '일반화 순서'(2026-07-17 사용자 확정)를 따름 — random goal position 다음.**
+- A/B 승자를 먼저 고정한 다음 orientation을 추가함. reward 통합과 orientation 도입을 같은 run에서
+  동시에 바꾸지 않음. 두 효과가 섞이면 실패 원인을 분리할 수 없음.
+- current success의 box 중심 거리 조건은 유지하고 goal quaternion/orientation error를 추가함.
+  후보 성공식은 `position_error < 0.05m AND orientation_error < 15deg AND cage_gate > 0.3`을
+  15 step 유지하는 것임. 15도에서 시작하고 안정화 후 10도로 조이는 것은 별도 실험으로 함.
+- orientation error는 quaternion 성분별 차가 아니라 geodesic angle을 사용함:
+  `theta = 2*acos(clamp(|dot(q_box, q_goal)|, 0, 1))`.
+- 현재 random box는 단면 두 축이 같은 square prism 계열이므로 geometry-only 목표에서는 동일한
+  대칭 자세를 오답 처리하지 않도록 symmetry-aware 최소 orientation error를 써야 함. 기능 방향이
+  있는 젓가락/tool 단계에서는 대칭 허용 대신 semantic keypoint/정확한 목표 회전을 사용함.
+- policy가 목표 회전을 알 수 있도록 goal orientation 또는 box→goal 상대 orientation을 observation에
+  추가함. 고정 goal orientation만으로 먼저 검증한 뒤 random goal orientation으로 확장함.
+  observation dim이 바뀌므로 이 단계는 반드시 fresh run임.
+- orientation shaping은 절대 양수 연금으로 단독 지급하지 않음. cage gate와 position 근접 gate를
+  붙인 best-so-far orientation progress, 또는 current/goal 8-keypoint distance를 후보로 비교함.
+  성공 terminal reward는 position + orientation + cage를 모두 만족할 때만 지급함.
+- goal marker도 구가 아니라 orientation을 볼 수 있는 frame/ghost box로 표시하고,
+  `position_error`, symmetry-aware `orientation_error`, pose success rate를 TensorBoard metric으로 추가함.
+
+#### 3. 일반화 순서 (2026-07-17 사용자 확정, 같은 날 보완 반영)
+
+0. (진행 중) 비교 두 개의 승자 구성 고정: 큐브 질량 0.2 vs 0.1, 박스 lift 50 vs 0 (A′).
+0-a. **유지력 조이기 편입** — 승자 고정 직후 fresh에 success `hold_steps` 15→30 동반.
+   성공 "정의 상향"은 비교 변수가 아니라 요구 조건이라 혼입 허용. 단 `gate_threshold`
+   0.3→0.4는 같은 fresh에 넣지 않고 다음 차수로 (실패 시 원인 분리를 위해 한 번에 하나).
+1. **랜덤화 축 확장** — 한 묶음으로 계획하되 실제 투입은 축별 순차 여부를 그때 결정
+   (한 fresh에 축 3개면 실패 귀속이 어려움):
+   - goal position: cube_goal command ranges 고정점 → 범위
+     (후보: `cube_grasp_env_cfg.py` 주석의 stage-2 값)
+   - 물체 spawn 위치: 현행 ±6~8cm → 확장 (목표 범위 미정)
+   - **박스 크기: 현행 단면 3~6cm·비율 1.5~3 → 확장** (2026-07-17 사용자 추가.
+     확장 목표치 미정 — 크기-버킷 성공률 분해로 현행 하한 취약점 실측 후 결정)
+   - command/이벤트 분포 변경 = fresh.
+2. **orientation 결합 fresh** — goal orientation(또는 box→goal 상대 orientation) obs 추가
+   + orientation shaping(gate 걸린 best-so-far) + success 판정(position + geodesic/
+   symmetry-aware error + cage gate)을 **한 fresh에 동시 투입** (세부는 위 로드맵 2 참조).
+   ⚠ obs만 먼저 넣고 보상/판정이 참조하지 않는 학습 run은 금지 — 정책이 그 채널을
+   무시하도록 학습됨 (죽은 채널). obs 배관 확인은 학습 전 1 env 스모크로만 함.
+   obs dim 변경 = 반드시 fresh.
+3. 초기 box yaw 랜덤화(우선 ±30도)를 켜고 다양한 크기/초기 자세에서 성공률을 확인함.
+4. 이후 젓가락 진입에서 IK action 전환 여부와 functional target grasp `g`를 정의함.
+
+- (상비 장치 제안, 미확정) drop penalty curriculum — 독립 단계가 아니라 매 fresh에 싣는
+  단일 런 스케줄(탐색기 0 → success 등장 후 음수)로 재분류. fresh 시작부터 강한 낙하
+  페널티를 켜서 탐색 회피를 만들지 않음.
+- (제안, 미확정) 젓가락 직전 얇은 물체 브리지 — 폭 하한 3→2→1cm 단계 확장 또는
+  grip_capacity로 커플링 pinch 한계 실측. 크기-버킷에서 얇은 쪽 성공률이 낮으면 필수로 승격.
+- (보류, 2026-07-17 사용자) 단계별 통과 게이트 수치화는 미정 — 당장은 버킷별 분해 지표
+  (goal 구역/크기/yaw별 success)만 유지하고 숫자 기준은 각 단계 진입 시 결정.
 
 ### 큐브 태스크 (Indy-Wuji-Cube-Grasp) 상태
 - obs 57 동결 (기존 체크포인트 play 호환). 보상은 v2.1로 갱신됨 (보상 실험 테스트베드 역할):
   reach 8 / hold 15 / lift 50(0~8cm 사다리) / transport 4000(전 구간 역수 φ=0.05/(0.05+d),
-  best-so-far, gate 곱, 단일 부호) / r_T 15000(goal ±5cm + gate 0.5s 유지 → +500·즉시 종료) /
+  best-so-far, gate 곱, 단일 부호) / r_T 30000(goal ±5cm + gate 0.5s 유지 → +1000·즉시 종료) /
   drop 0 / palm 4 / manip 1 / floor 1. goal = 고정점 (0.62, −0.20, BASE_Z+0.20).
 - 릴레이 구조: lift(0~8cm) → φ(연속, 근거리 집중) → r_T(도착·종료). lift_height=0.08은
   상한이 아니라 포화(그 위에서 만점 유지, 증가만 정지).
-- ⚠ 시그니처 변경 후 스모크 미실시 — 큐브 태스크를 돌리기/play 전에 1 env 스모크 필수.
+- **2026-07-17 수렴 판정**: run 2026-07-16_16-05-23 — success 89.4% @iter 7,440, 낙하 3.0%,
+  error_pos 0.046, 오버슈트 재발 없음. φ 전 구간 설계 검증 + 로드맵 ①관문(고정 위치 운반) 통과.
+- play 관찰: 성공은 하나 파지에 진동이 있고 장기 유지는 약함 — 성공=0.5초 즉시 종료라 그
+  이후 구간은 학습 분포 밖(OOD) + gate 0.3의 관대한 합격 기준 + bang-bang 액션(action_rate raw ~2.3).
+  유지력 카드(다음 큐브 fresh): hold_steps 15→30~60, gate_threshold 0.3→0.4.
+  depth_max 증량은 수박씨 배출 이력(40%+ 오므림 시 간격 2.8cm)으로 배제.
 
 ### 킵해둔 카드 (조건부)
-- transport-φ 실패 신호: φ 적립은 큰데 success 0 지속 = "통과만 하고 정착 안 함" → 근접 연금 검토.
+- 기존 근접 연금 카드는 위 로드맵의 lift/transport 통합 B안으로 승격됨. A/B 결과 전에는 기본안으로
+  확정하지 않음.
 - 팔꿈치 자세: arm_floor(팔 링크 높이 페널티) 설계 있음 (git 이력 fe2c6fa 근방) — 필요 시 부활.
-- 8-keypoint 물체 표현(위치+회전+크기 통합)은 젓가락 단계 카드.
+- 8-keypoint 물체 표현(위치+회전+크기 통합)은 box orientation shaping 후보로 앞당김.
+  box 단계에서 geodesic angle 방식과 비교하고, 젓가락에서는 semantic keypoint로 확장함.
 
 ## Project Context
 
@@ -75,7 +193,8 @@
 - 2026-07-16 신규: `Indy-Wuji-Box-Transport` — env별 랜덤 직육면체(단면 3~6cm x 비율 1.5~3) 파지/운반.
   obs 64 (= 57 + box_size 3 + box_quat 4), experiment `indy_wuji_box_transport` (로그 분리).
   cfg는 grasp/box_mdp_cfg.py + box_transport_env_cfg.py + indy_wuji_box/ (큐브 cfg의 사본 — 서로 반영 안 됨).
-  현재 lift 단계: transport 3종(cube_transport/transport_success/success 종료)은 주석 잠금, 재활성 세트 표기됨.
+  현재 transport 3종(cube_transport/transport_success/success 종료)은 활성 상태이며, 랜덤 box의
+  안정 lift까지 확인함. 다음 관문은 분리형/통합형 reward A/B와 orientation-aware goal임.
   replicate_physics=False라 startup이 느림 (정상). env별 치수 검증은 scripts/debug/box_dims_probe.py.
 - `Indy-Wuji-Cube-Grasp-Easy`는 이전 실험 이름이며 현재 active registration에는 없음.
 - 현재 active USD는 `indy7_wuji_right_simplified.usd`임.
@@ -456,7 +575,7 @@
 
 - 사용자 실험 기록(worklog/ACTIVITY/agent.md)에는 에이전트 도구 함정을 섞지 않음. 이 섹션과 root `CLAUDE.md`에만 기록함.
 - **`ChopsticksGraspRewardsCfg`는 미사용 클래스임.** `Indy-Wuji-Cube-Grasp`는 `CubeGraspRewardsCfg`(`cube_grasp_env_cfg.py:90`)를 씀. Chopsticks 쪽을 고치면 조용히 무시됨 (2026-07-14 가중치 실험 미적용 사고).
-- **보상 가중치에는 dt(1/30)가 곱해짐** (`env/managers.py:427`). 일회성 보상의 로그 스케일 한 방 = weight/30. `lift_success` weight 15000 = +500.
+- **보상 가중치에는 dt(1/30)가 곱해짐** (`env/managers.py:427`). 일회성 보상의 실제 PPO 기여 = weight/30. 현재 `transport_success` weight 30000 = +1000.
 - **`is_terminated_term`은 isaaclab 클래스형 reward term임.** 종료 계산이 보상 계산보다 먼저라 성공 종료 스텝에 같은 스텝 지급됨.
 - **리셋은 관절 상태만 복원하고 위치 목표 버퍼는 안 채움.** 액션 밖 관절은 목표 0으로 저절로 이동함. `hold_joints_at_default` 리셋 이벤트로 해결함.
 - **`init_state.joint_pos` 정규식 키 중복 매칭 주의.** `finger[1-5]` 키는 pop 후 세분화 키를 넣을 것.
