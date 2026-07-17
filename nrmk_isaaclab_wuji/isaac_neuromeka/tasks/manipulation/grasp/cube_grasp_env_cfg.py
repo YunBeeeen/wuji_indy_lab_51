@@ -83,7 +83,7 @@ class CubeGraspSceneCfg(ReachSceneCfg):
                 solver_velocity_iteration_count=1,
                 max_depenetration_velocity=5.0,
             ),
-            mass_props=sim_utils.MassPropertiesCfg(mass=0.20),
+            mass_props=sim_utils.MassPropertiesCfg(mass=0.10),
             collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
             physics_material=sim_utils.RigidBodyMaterialCfg(
                 static_friction=1.0,

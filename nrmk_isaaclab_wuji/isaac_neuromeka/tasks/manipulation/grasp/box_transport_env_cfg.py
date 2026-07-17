@@ -73,7 +73,7 @@ class BoxTransportSceneCfg(ReachSceneCfg):
                 max_depenetration_velocity=5.0,
             ),
             # 질량은 크기와 무관하게 고정 (밀도가 env마다 다름 — 변수 통제 의도)
-            mass_props=sim_utils.MassPropertiesCfg(mass=0.20),
+            mass_props=sim_utils.MassPropertiesCfg(mass=0.10),
             collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
             physics_material=sim_utils.RigidBodyMaterialCfg(
                 static_friction=1.0,

@@ -222,7 +222,7 @@ class BoxTransportRewardsCfg:
 
     cube_lift = RewTerm(
         func=mdp.object_lift_in_cage,
-        weight=100.0,
+        weight=0.0,
         params={
             "asset_cfg": BOX_CAGE_BODIES,
             "object_cfg": SceneEntityCfg("cube"),
@@ -258,7 +258,7 @@ class BoxTransportRewardsCfg:
     # 논문 r_T: goal ±5cm + gate 물림 0.5s 유지 -> 한 방 +500 + 즉시 종료
     transport_success = RewTerm(
         func=mdp.is_terminated_term,
-        weight=15000.0,
+        weight=30000.0,
         params={"term_keys": "success"},
     )
 

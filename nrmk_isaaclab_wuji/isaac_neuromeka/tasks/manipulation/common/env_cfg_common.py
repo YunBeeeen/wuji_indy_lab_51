@@ -495,7 +495,7 @@ class CubeGraspRewardsCfg:
     # 종료가 hold/lift 연금의 마개 (앉아서 버는 상한 << 성공 한 방).
     transport_success = RewTerm(
         func=mdp.is_terminated_term,
-        weight=15000.0,
+        weight=30000.0,
         params={"term_keys": "success"},
     )
 
@@ -815,7 +815,7 @@ class ChopsticksGraspRewardsCfg:
     # hold보다 무겁게 (논문 순서 r_T >> r_hold >> r_reach).
     cube_lift = RewTerm(
         func=mdp.object_lift_in_cage,
-        weight=100.0,
+        weight=50.0,
         params={
             "asset_cfg": CAGE_BODIES,
             "object_cfg": SceneEntityCfg("cube"),
