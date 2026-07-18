@@ -3268,3 +3268,34 @@ palm_normal_b (0.19,0.28,0.94) -> (1,0,0)   rewards.py + managers.py
 - 보류: 단계별 통과 게이트 수치화 — 버킷별 분해 지표만 유지, 숫자는 단계 진입 시 결정.
 - 미확정 제안으로 킵: drop 커리큘럼의 상비 장치 재분류, 젓가락 직전 얇은 물체 브리지.
 - AGENTS.md '일반화 순서'에 전체 반영.
+
+## 2026-07-18 — 비교 판정 + B안 배선 구현
+
+- 판정: 큐브 질량 0.1kg 승 (98.2% @6,866 vs 0.2kg 88.0%, 이륙 4배 빠름 — 커리큘럼 초반값로 킵).
+  박스 A′(lift 0) 기각 — 들기·운반은 되나(max clearance 0.20, transport 수입 동급) 정착 실패
+  (φ 현금화 후 내려놓고 hold 파밍, success 0%). 예상 문제 1+2 혼합 → B안 처방.
+  파지 자세 가설은 max 지표로 기각. 지표 함정(final만 보면 오판, per-step 평균 구성 편향)은
+  AGENTS.md 1-a 판정 절에 기록.
+- 구현: object_goal_proximity를 box_mdp_cfg에 goal_proximity 항으로 배선 (기본 weight 0,
+  파일 기본 = A안 승자 구성). 4 env 스모크 통과. hydra 오버라이드 정수 타입 함정 발견
+  (0.0 소수점 필수 — CLAUDE.md 추가).
+- 다음 라운드 2슬롯: A = B안 fresh (lift 0 / transport 0 / proximity 75 오버라이드),
+  B = lift 50 + hold_steps 30 (유지력 조이기). 런치 명령은 ACTIVITY_2026-07-18.md.
+
+## 2026-07-18 — B안 보류, orientation v1 구현
+
+- 사용자 결정: B안 통합 보류 (큐브 배선 철회, 박스 부품 잔류). orientation 성공 + 크기 확대 우선.
+- 논문 확인: pre-grasp의 r_orient는 명목 자세 차분형 / TriFinger는 quat error 대신 8-keypoint
+  거리 (pos+quat 분리 보상은 ori 학습 느림 — 실측). shaping 필요해지면 keypoint로.
+- orientation v1 구현 완료: success에 대칭 최소각 15° 조건 (ObjectAtGoalHeld.ori_limit,
+  box 기본 탑재), box_ori_error 지표 4종, obs 불변, 수학 단독 검증 + 4env 스모크 통과.
+  다음 박스 fresh = v1 (오버라이드 불필요). v2=opposition 조건, v3=target grasp g 단계 계획은
+  AGENTS.md 일반화 순서 참조.
+
+## 2026-07-18 (저녁) — 크기 확장 구현, 2슬롯 라운드 개시
+
+- 슬롯 A 런치됨 (사용자): orientation v1 (ori 15°, 구 크기 3~6cm — 크기 확장 코드 전 스냅샷).
+- 크기 확장 구현: randomize_box_dims에 length_range (길이 독립 샘플 U(1.5×폭, 20cm)),
+  단면 하한 1.5cm. 젓가락 프록시(1.5×1.5×20) 포함, 샘플 검증 + 스모크 통과.
+- 슬롯 B 런치 명령·주의(파일 기본 = ori+새크기 결합)는 ACTIVITY_2026-07-18.md 참조.
+- 단면 2.8cm 미만 = 손끝 간격 미실측 구간 경고 유지 — 버킷 분해로 판독.

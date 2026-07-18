@@ -31,6 +31,12 @@
   -0.04mm 수준(실측). 압착 억제는 penetration 페널티가 아니라 r_T 구조(성공 종료)로 해결함.
 - **`ObjectToGoalProgressReward` 시그니처 변천** — distance_max(v1) → +window(v2) → potential_eps만
   (v2.1). 옛 파라미터를 cfg에 남기면 env 생성 TypeError. 주석 블록 재활성 시 시그니처 대조 필수.
+- **hydra CLI 오버라이드는 타입 엄격** — `env.rewards.X.weight=0`은 int로 파싱돼
+  "Expected float, Received int" 에러. 반드시 `0.0`, `75.0`처럼 소수점 포함해 쓸 것.
+- **`logs/` 정리는 글롭 금지, 정확한 폴더명 rm만.** 2026-07-18 사고: 스모크 정리용
+  `rm -rf .../2026-07-18_1[4-9]*`가 사용자가 방금 시작한 라이브 런 폴더까지 매칭 →
+  TB writer FileNotFoundError로 학습 크래시. 스모크는 시작 전 폴더명을 정확히 기록해두고
+  그 이름만 지울 것. 지우기 전 `ps aux | grep train.py`로 라이브 런 유무도 확인.
 
 ### 동시 작업/도구
 - **파일이 세션 밖에서 바뀐다** (사용자·codex 동시 작업). Edit 전에 해당 구간을 다시 Read하고
