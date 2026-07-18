@@ -123,6 +123,21 @@ class BoxTransportObservationsCfg:
             params={"asset_cfg": SceneEntityCfg("cube"), "make_quat_unique": True},
         )
 
+        # ── ③ 랜덤 ori v2 배관 (계획 2026-07-18, AGENTS '확정 진행 순서' — ② 통과 후) ──
+        # goal 자세가 상수인 동안 이 obs를 켜면 죽은 채널 (절대 단독 활성 금지).
+        # 활성 세트 4개를 "한 fresh"에 함께 투입 (obs dim 64→68 = fresh 필수):
+        #  1) commands.py UniformCubeGoalCommand: quat 샘플 추가 (pose command화, 초기엔
+        #     yaw만: 대칭 때문에 yaw ∈ (-45°, 45°)면 전 자세 커버). command 출력 3→7.
+        #  2) 아래 obs 주석 해제 (goal 자세 — 또는 상자→goal 상대 quat이 더 학습 친화적).
+        #  3) rewards.py square_prism_ori_error를 상대 quat(q_goal⁻¹ ⊗ q_box) 시그니처로
+        #     확장하고 success(ObjectAtGoalHeld)가 command quat을 읽게 연결.
+        #  4) goal 마커를 구슬 → 자세 보이는 ghost box로 (commands.py 마커 cfg).
+        # ⚠ 재활성 시 시그니처 대조 필수 (ObjectToGoalProgressReward 파라미터 사고 전례).
+        # goal_ori = ObsTerm(
+        #     func=mdp.generated_commands,  # command가 quat을 포함하게 된 후 (접점 1 선행)
+        #     params={"command_name": "cube_goal"},
+        # )
+
         action_history = ObsTerm(func=mdp.action_history)
 
         def __post_init__(self):
@@ -242,12 +257,14 @@ class BoxTransportRewardsCfg:
         },
     )
 
-    # 운반 층. 현재 선형 best-so-far — 역수형 φ(0.05/(0.05+d)) 전환 설계는 킵 상태
-    # (worklog 2026-07-16 "transport-φ 설계 킵" 참고. 오버슈트 재현 시 적용)
-    # 2026-07-16 재활성 (사용자 결정): lift 이륙 확인 + "잡고 고정이 안 됨" 관찰 → 관문 통과.
-    # r_T의 hold_steps(0.5s 유지)가 "고정"을 직접 보상함. resume로 이어받음 (obs 64 불변).
+    # 운반 층 v1.1 (2026-07-18): keypoint φ — 위치+자세를 꼭짓점 8개 거리 하나로 통합.
+    # 근거: ori v1(판정만, run 15-37-42)이 iter 4,230 동안 success 0 — 나르는 자세 72~93°로
+    # 씨앗 전무 + ori 참조 보상이 없어 내려갈 힘도 없음 → shaping 필요 실측.
+    # 자세 오차는 스폰 만점이라 단독 차분항 불가(평생 0원) → 거리에 흡수 (TriFinger 방식,
+    # 지급은 기존 best-so-far 일시불 유지). 상세는 KeypointGoalProgressReward docstring.
+    # (구 중심거리 버전 ObjectToGoalProgressReward는 큐브 태스크가 계속 사용)
     cube_transport = RewTerm(
-        func=mdp.ObjectToGoalProgressReward,
+        func=mdp.KeypointGoalProgressReward,
         weight=4000.0,
         params={
             "command_name": "cube_goal",

@@ -131,6 +131,13 @@ class BoxTransportEnvCfg(NrmkRLEnvCfg):
         self.commands.cube_goal.ranges.pos_x = (CUBE_POS[0], CUBE_POS[0])
         self.commands.cube_goal.ranges.pos_y = (CUBE_POS[1], CUBE_POS[1])
         self.commands.cube_goal.ranges.pos_z = (BASE_Z + 0.20, BASE_Z + 0.20)
+        # ── ② 랜덤 position (다음 fresh 후보, 2026-07-18 계획 — AGENTS '확정 진행 순서') ──
+        # 활성화 = 위 고정 3줄을 지우고 아래 주석 해제. goal 위치 obs가 command 기반이라
+        # 추가 배관 불필요 (obs dim 불변). command 분포 변경이므로 fresh 필수.
+        # 범위는 큐브 태스크 stage-2 주석과 동일 (테이블 0.5×1.0 안쪽 + 높이 10~30cm):
+        # self.commands.cube_goal.ranges.pos_x = (CUBE_POS[0] - 0.12, CUBE_POS[0] + 0.10)
+        # self.commands.cube_goal.ranges.pos_y = (CUBE_POS[1] - 0.25, CUBE_POS[1] + 0.25)
+        # self.commands.cube_goal.ranges.pos_z = (BASE_Z + 0.10, BASE_Z + 0.30)
 
         # viewer settings
         self.viewer.eye = (2.5, 2.5, 2.5)

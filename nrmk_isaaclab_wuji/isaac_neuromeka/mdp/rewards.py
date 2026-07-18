@@ -412,6 +412,107 @@ class ObjectToGoalProgressReward(ManagerTermBase):
         return progress * gate
 
 
+# 꼭짓점 부호 (8코너): (±hx, ±hy, ±hz)
+_CORNER_SIGNS = (
+    (-1.0, -1.0, -1.0), (-1.0, -1.0, 1.0), (-1.0, 1.0, -1.0), (-1.0, 1.0, 1.0),
+    (1.0, -1.0, -1.0), (1.0, -1.0, 1.0), (1.0, 1.0, -1.0), (1.0, 1.0, 1.0),
+)
+_corner_sign_cache: dict = {}
+
+
+class KeypointGoalProgressReward(ManagerTermBase):
+    """운반 층 v1.1 (2026-07-18): 위치+자세를 keypoint 거리 하나로 통합한 φ 차분 지불.
+
+    측정은 TriFinger transfer 논문(r_o = Σ K(‖kᵢ−kᵢ*‖), 8 꼭짓점) — pos+quat 분리 보상은
+    orientation 학습이 느리다는 논문 ablation을 따름 (thesis.md). 지급은 우리 검증 구조 유지:
+    φ = eps/(eps + d̄), reward = (φ(현재) − φ(베스트))⁺ × gate (best-so-far 일시불 — 논문의
+    매 스텝 kernel 연금은 A′ 실측의 "쥐고 눌러앉기" 균형에 소득을 보태므로 채택 안 함).
+
+    - d̄ = 대칭 최소 평균 꼭짓점 거리: min_j mean_i ‖pᵢ − (goal + R(S_j)cᵢ)‖.
+      대칭 j 8개(_SQUARE_PRISM_Y_SYMS)로 90° 돌린 동일 배치를 오답 처리하지 않음.
+    - 자세가 φ에 흡수됨: 중심이 goal에 있어도 기울어 있으면 꼭짓점이 어긋나 φ를 다 못 받음
+      → "기울인 채 나르기"(v1 실측 72~93°)가 직접 손해. 자세 오차는 만점에서 시작하므로
+      단독 차분항은 불가능(평생 0원)했고, 거리에 흡수하는 이 형태가 유일하게 telescoping 성립.
+    - goal 자세는 v1에선 상수(월드 정렬). goal 자세 랜덤화(v2) 시 command quat을 읽어
+      S_j 앞에 곱하는 확장 (R(q_goal·S_j)cᵢ).
+    - 젓가락 일반화: 꼭짓점 대신 물체 좌표계 semantic point(젓가락 끝점 등) + 대칭 없음으로
+      점 집합만 교체하면 동일 구조 재사용 (로드맵 킵 카드 "8-keypoint 표현"의 구현체).
+    - 기준선 seeding은 ObjectToGoalProgressReward와 동일한 pending 패턴 (reset 순서 근거 동일).
+    """
+
+    def __init__(self, cfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        self._best_phi = torch.zeros(env.num_envs, device=env.device)
+        self._pending = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
+
+    def reset(self, env_ids: Sequence[int] | None = None) -> None:
+        if env_ids is None:
+            env_ids = slice(None)
+        self._pending[env_ids] = True
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        command_name: str,
+        asset_cfg: SceneEntityCfg,
+        object_cfg: SceneEntityCfg,
+        object_half_extent: tuple[float, float, float] = (0.03, 0.03, 0.03),
+        num_points: int = 3,
+        sphere_radius: float = 0.005,
+        depth_max: float = 0.005,
+        point_fractions: tuple[float, ...] | None = None,
+        potential_eps: float = 0.05,
+        symmetry: str = "square_prism_y",
+    ) -> torch.Tensor:
+        obj: RigidObject = env.scene[object_cfg.name]
+        device = obj.data.root_pos_w.device
+        n = env.num_envs
+
+        key = (device, torch.float32)
+        signs = _corner_sign_cache.get(key)
+        if signs is None:
+            signs = torch.tensor(_CORNER_SIGNS, device=device, dtype=torch.float32)
+            _corner_sign_cache[key] = signs
+
+        half = getattr(env, "box_half_extents", None)
+        if half is None:
+            half = torch.tensor(object_half_extent, device=device).expand(n, 3)
+        corners = signs.unsqueeze(0) * half.unsqueeze(1)  # (N, 8, 3) 물체 좌표계
+
+        goal_w = env.scene.env_origins + env.command_manager.get_command(command_name)
+        quat = obj.data.root_quat_w
+        cur_pts = obj.data.root_pos_w.unsqueeze(1) + quat_apply(
+            quat.unsqueeze(1).expand(n, 8, 4), corners
+        )  # (N, 8, 3) 월드
+
+        if symmetry == "square_prism_y":
+            syms = _sym_quat_cache.get(key)
+            if syms is None:
+                syms = torch.tensor(_SQUARE_PRISM_Y_SYMS, device=device, dtype=torch.float32)
+                _sym_quat_cache[key] = syms
+        else:  # "none": 항등만 (semantic keypoint 물체용)
+            syms = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=device)
+
+        offset = cur_pts - goal_w.unsqueeze(1)  # (N, 8, 3): pᵢ − goal
+        dists = []
+        for j in range(syms.shape[0]):
+            sym_c = quat_apply(syms[j].expand(n, 8, 4), corners)  # R(S_j)cᵢ
+            dists.append(torch.norm(offset - sym_c, dim=-1).mean(dim=1))  # (N,)
+        d = torch.stack(dists, dim=0).min(dim=0).values
+
+        phi = potential_eps / (potential_eps + d)
+        self._best_phi = torch.where(self._pending, phi, self._best_phi)
+        self._pending[:] = False
+        progress = torch.clamp(phi - self._best_phi, min=0.0)
+        self._best_phi = torch.maximum(self._best_phi, phi)
+
+        gate = object_in_finger_cage(
+            env, asset_cfg, object_cfg, object_half_extent, num_points, sphere_radius,
+            depth_max, point_fractions,
+        )
+        return progress * gate
+
+
 # B안 통합 연금 부품 (2026-07-16 설계, 2026-07-18 box 태스크 배선 — box_mdp_cfg.goal_proximity,
 # 기본 weight 0). B안 = lift 은퇴(weight 0, 항은 metrics surface_z 배선 때문에 유지)
 # + transport 일시불 제거 + 이 연금 하나로 통합 (gate × φ(d), w~75).
