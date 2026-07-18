@@ -137,8 +137,14 @@ class BoxTransportEventCfg:
     """Configuration for events."""
 
     # ★ env별 상자 치수 (prestartup = sim 시작 전 USD 조작, 런 내내 고정).
-    # 단면 3~6cm 정사각 × 길이비 1.5~3 (젓가락만큼 얇지 않은 범위, 사수님 방향).
-    # 물리는 창(엄지-중지 2.8~5.8cm) 안에 단면이 들어가도록 폭 상한 6cm.
+    # 기본값 = 기존 크기 (단면 3~6cm × 길이비 1.5~3, 07-16 사수님 방향) — 슬롯 A(ori v1)가
+    # 오버라이드 없이 재현되도록 (2026-07-18 사용자 결정).
+    # 크기 확장 (슬롯 B, 2026-07-18 사용자 값: 단면 하한 1.5cm + 길이 최대 20cm =
+    # 1.5×1.5×20 젓가락 프록시 포함)은 CLI 오버라이드로:
+    #   "env.events.randomize_box.params.width_range=[0.015,0.06]" \
+    #   "env.events.randomize_box.params.length_range=[0.0,0.20]"
+    # (length_range를 주면 길이가 폭과 독립인 U(1.5×폭, max)로 샘플됨 — events.py 참고)
+    # ⚠ 단면 2.8cm 미만은 커플링 손끝 간격 실측 밖 미검증 구간 — 크기-버킷으로 판독.
     randomize_box = EventTerm(
         func=mdp.randomize_box_dims,
         mode="prestartup",
@@ -146,6 +152,7 @@ class BoxTransportEventCfg:
             "asset_cfg": SceneEntityCfg("cube"),
             "width_range": (0.03, 0.06),
             "ratio_range": (1.5, 3.0),
+            "length_range": None,  # None = ratio 방식 (기존 경로). 오버라이드용 자리
             "base_size": 0.06,   # spawn CuboidCfg size와 일치해야 함
             "length_axis": 1,    # 길이는 y (테이블 긴 축)
         },
@@ -222,7 +229,7 @@ class BoxTransportRewardsCfg:
 
     cube_lift = RewTerm(
         func=mdp.object_lift_in_cage,
-        weight=0.0,
+        weight=50.0,
         params={
             "asset_cfg": BOX_CAGE_BODIES,
             "object_cfg": SceneEntityCfg("cube"),
@@ -242,6 +249,29 @@ class BoxTransportRewardsCfg:
     cube_transport = RewTerm(
         func=mdp.ObjectToGoalProgressReward,
         weight=4000.0,
+        params={
+            "command_name": "cube_goal",
+            "asset_cfg": BOX_CAGE_BODIES,
+            "object_cfg": SceneEntityCfg("cube"),
+            "object_half_extent": _HALF_FALLBACK,
+            "num_points": 3,
+            "point_fractions": _POINT_FRACTIONS,
+            "sphere_radius": 0.005,
+            "depth_max": 0.005,
+            "potential_eps": 0.05,
+        },
+    )
+
+    # B안 통합 연금: gate × φ(d) — "잡은 채 goal 근처에 있는 것"에 매 스텝 지급.
+    # A′(lift0, run 2026-07-17_23-15-16) 실측 처방: 일시불 φ는 현금화 후 goal 체류가
+    # 무보상이라 내려놓고 hold 파밍 → 정착 실패. 연금은 그 계곡을 메움.
+    # 기본 weight 0 (파일 기본 = 검증된 A안 승자 구성). B안 fresh는 CLI 오버라이드로:
+    #   env.rewards.cube_lift.weight=0 env.rewards.cube_transport.weight=0 \
+    #   env.rewards.goal_proximity.weight=75
+    # w75 근거: goal 중심 ~2.5/스텝, 경계 캠핑 현재가치 ≪ r_T +1000 (rewards.py docstring).
+    goal_proximity = RewTerm(
+        func=mdp.object_goal_proximity,
+        weight=0.0,
         params={
             "command_name": "cube_goal",
             "asset_cfg": BOX_CAGE_BODIES,
@@ -331,5 +361,10 @@ class BoxTransportTerminationsCfg:
             "goal_radius": 0.05,
             "gate_threshold": 0.3,
             "hold_steps": 15,  # 0.5s @ 30Hz
+            # orientation v1 (2026-07-18): 스폰 자세(월드 정렬) 대비 대칭 최소각 15° 이내
+            # 조건 추가 = "기울이거나 굴리지 않고 나르기". goal 자세는 아직 상수라 obs 불변
+            # (box_quat이 이미 obs에 있음 — goal 자세 랜덤화 때 obs 확장, AGENTS 로드맵 2).
+            # 끄려면 CLI: env.terminations.success.params.ori_limit=null
+            "ori_limit": 0.2618,  # 15 deg [rad]
         },
     )

@@ -19,6 +19,7 @@ from isaaclab.managers import (  # noqa: F401
 )
 from prettytable import PrettyTable
 
+from isaac_neuromeka.mdp.rewards import square_prism_ori_error as _square_prism_ori_error
 from isaac_neuromeka.utils.running_stats import TorchRunningStats
 
 
@@ -181,6 +182,10 @@ class CustomRewardManager(RewardManager):
             # palm_link 기준 arm 6축의 sqrt(det(J Jt)). 0에 가까우면 팔이 특이점으로 접힌 것.
             # 기준: 초기 자세 약 0.064, 무작위 최대 약 0.113. 0.02 아래면 특이점 근처.
             "arm_manipulability",
+            # 물체 자세 오차 [rad]: 월드 정렬 대비, 정사각 단면 프리즘 대칭 8개 중 최소각.
+            # orientation v1 success(ori_limit)의 판독용. 정육면체(큐브 태스크)에서는 값이
+            # 과대평가될 수 있음 (대칭 24개 중 8개만 고려) — box 태스크 기준 지표.
+            "box_ori_error",
             # 손이 큐브를 실제로 건드렸나, 그리고 바닥에서 떴나
             "cube_displacement",
             # 중심 높이. lift 신호가 "아님": 바닥의 큐브를 짜면 모서리로 세워져 중심만 몇 mm 올라감.
@@ -354,6 +359,7 @@ class CustomRewardManager(RewardManager):
             "cage_span": torch.norm(middle_tip - thumb, dim=-1),
             "palm_facing": palm_facing,
             "arm_manipulability": manipulability,
+            "box_ori_error": _square_prism_ori_error(cube.data.root_quat_w),
             "cube_displacement": torch.norm(cube_offset, dim=1),
             "cube_lift": cube_offset[:, 2],
             "cube_clearance": clearance,

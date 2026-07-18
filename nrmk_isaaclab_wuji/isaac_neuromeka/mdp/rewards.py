@@ -412,10 +412,12 @@ class ObjectToGoalProgressReward(ManagerTermBase):
         return progress * gate
 
 
-# ⚠ 미배선 (2026-07-16): "B 설계" 카드용 부품 — 어느 태스크에도 아직 연결 안 됨.
-# B 설계 = lift 은퇴(weight 0, 항은 metrics surface_z 배선 때문에 유지) + transport 일시불 제거
-#          + 이 연금 하나로 통합 (gate × φ(d), w~75). 적용은 사용자 신호 대기.
-# 연결 시 TensorBoard: Episode_Reward/goal_proximity.
+# B안 통합 연금 부품 (2026-07-16 설계, 2026-07-18 box 태스크 배선 — box_mdp_cfg.goal_proximity,
+# 기본 weight 0). B안 = lift 은퇴(weight 0, 항은 metrics surface_z 배선 때문에 유지)
+# + transport 일시불 제거 + 이 연금 하나로 통합 (gate × φ(d), w~75).
+# 배선 필요성의 실측 근거: A′(lift0) run 2026-07-17_23-15-16 — 일시불만으론 φ 현금화 후
+# goal 체류가 무보상이라 내려놓고 hold 파밍 (정착 실패, success 0%).
+# TensorBoard: Episode_Reward/goal_proximity.
 def object_goal_proximity(
     env: ManagerBasedRLEnv,
     command_name: str,
@@ -447,6 +449,34 @@ def object_goal_proximity(
         depth_max, point_fractions,
     )
     return gate * potential_eps / (potential_eps + dist)
+
+
+# 정사각 단면 프리즘(길이축 y, x==z 반폭)의 고유 회전 대칭 8개 (w,x,y,z).
+# y축 0/90/180/270° × (x축 180° 뒤집기 유무). box 태스크의 랜덤 상자가 전부 이 대칭
+# (단면 두 축 동일)이라 전 env 공용. ⚠ 정육면체(큐브 태스크)는 대칭 24개라 이 헬퍼 부적합.
+_SQ2 = 0.7071067811865476
+_SQUARE_PRISM_Y_SYMS = (
+    (1.0, 0.0, 0.0, 0.0), (_SQ2, 0.0, _SQ2, 0.0), (0.0, 0.0, 1.0, 0.0), (_SQ2, 0.0, -_SQ2, 0.0),
+    (0.0, 1.0, 0.0, 0.0), (0.0, _SQ2, 0.0, -_SQ2), (0.0, 0.0, 0.0, 1.0), (0.0, _SQ2, 0.0, _SQ2),
+)
+_sym_quat_cache: dict = {}
+
+
+def square_prism_ori_error(quat_w: torch.Tensor) -> torch.Tensor:
+    """월드 정렬(스폰 자세, identity) 대비 대칭 최소 자세 오차각 [rad]. (N,4) → (N,).
+
+    geodesic angle 2·acos(|⟨q, S_i⟩|)를 대칭 8개에 대해 최소화 — 90° 돌린 동일 자세를
+    오답 처리하지 않기 위함 (TriFinger/keypoint 노트의 symmetry-aware 원칙, AGENTS 로드맵 2).
+    v1 한정: goal 자세가 상수(월드 정렬)라 인자가 물체 quat뿐임. goal 자세 랜덤화(v2)에서는
+    상대 quat q_goal⁻¹·q_box를 넘기는 시그니처로 확장할 것.
+    """
+    key = (quat_w.device, quat_w.dtype)
+    syms = _sym_quat_cache.get(key)
+    if syms is None:
+        syms = torch.tensor(_SQUARE_PRISM_Y_SYMS, device=quat_w.device, dtype=quat_w.dtype)
+        _sym_quat_cache[key] = syms
+    dots = torch.abs(quat_w @ syms.T)  # (N, 8)
+    return 2.0 * torch.acos(torch.clamp(dots.max(dim=1).values, max=1.0))
 
 
 # TensorBoard:
@@ -484,7 +514,11 @@ class ObjectAtGoalHeld(ManagerTermBase):
         goal_radius: float = 0.05,
         gate_threshold: float = 0.3,
         hold_steps: int = 15,
+        ori_limit: float | None = None,
     ) -> torch.Tensor:
+        # ori_limit [rad]: orientation v1 (2026-07-18) — 물체 자세가 월드 정렬(스폰 자세)에서
+        # 대칭 최소각으로 ori_limit 이내일 것을 성공 조건에 추가. None이면 기존 위치 판정만
+        # (큐브 태스크 호환 — 정육면체에는 square_prism 대칭 헬퍼가 부적합하니 켜지 말 것).
         obj: RigidObject = env.scene[object_cfg.name]
         goal_w = env.scene.env_origins + env.command_manager.get_command(command_name)
         dist = torch.norm(goal_w - obj.data.root_pos_w, dim=1)
@@ -493,6 +527,8 @@ class ObjectAtGoalHeld(ManagerTermBase):
             depth_max, point_fractions,
         )
         ok = (dist < goal_radius) & (gate > gate_threshold)
+        if ori_limit is not None:
+            ok &= square_prism_ori_error(obj.data.root_quat_w) < ori_limit
         self._count = torch.where(ok, self._count + 1, torch.zeros_like(self._count))
         return self._count >= hold_steps
 

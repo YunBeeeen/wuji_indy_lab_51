@@ -115,6 +115,7 @@ def randomize_box_dims(
     asset_cfg: SceneEntityCfg,
     width_range: tuple[float, float] = (0.03, 0.06),
     ratio_range: tuple[float, float] = (1.5, 3.0),
+    length_range: tuple[float, float] | None = None,
     base_size: float = 0.06,
     length_axis: int = 1,
 ):
@@ -122,6 +123,10 @@ def randomize_box_dims(
 
     - 단면 w×w 정사각 (w ~ U(width_range)), 길이 = w × U(ratio_range) (length_axis 축)
       → 4096 env가 각자 "살짝 뚱뚱이 ~ 길쭉이" 상자를 가짐 (2026-07-16 사수님 방향)
+    - length_range를 주면 ratio 대신 길이를 폭과 독립으로 샘플: U(max(ratio_min×w,
+      length_range[0]), length_range[1]). 얇으면서 긴 젓가락형(예: 1.5×1.5×20cm)이
+      나오게 하기 위함 (2026-07-18 크기 확장 — ratio 방식은 얇은 상자가 항상 짧아짐).
+      ratio_range[0]은 "길이 > 폭" 하한으로 계속 쓰임.
     - sim 시작 전 USD xformOp:scale을 env별로 수정 (isaaclab randomize_rigid_body_scale 패턴).
       정사각 단면의 축 상관관계 때문에 축 독립인 내장 이벤트로는 표현 불가라 자체 구현
     - scene.replicate_physics = False 필수 (env별 지오메트리를 물리 파서가 개별 파싱)
@@ -139,9 +144,13 @@ def randomize_box_dims(
     asset = env.scene[asset_cfg.name]
     n = env.scene.num_envs
     w = torch.empty(n).uniform_(*width_range)
-    ratio = torch.empty(n).uniform_(*ratio_range)
+    if length_range is None:
+        length = w * torch.empty(n).uniform_(*ratio_range)
+    else:
+        lo = torch.clamp(w * ratio_range[0], min=length_range[0])
+        length = lo + (length_range[1] - lo) * torch.rand(n)
     dims = w.unsqueeze(1).repeat(1, 3)
-    dims[:, length_axis] = w * ratio
+    dims[:, length_axis] = length
     scales = (dims / base_size).tolist()
 
     stage = get_current_stage()
