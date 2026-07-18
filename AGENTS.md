@@ -154,6 +154,21 @@
 > - **v3 (젓가락 브리지)**: 풀 constraint-based target grasp g (검지 끝 target + 손 회전
 >   + 들기, 논문 Eq.20). 직육면체 = 젓가락 1개 프록시 관점 (사용자 방향).
 > - **병행 슬롯**: 크기 랜덤화 범위 확대 — 확장 방향(얇게/크게/ratio) 사용자 결정 대기.
+>
+> **확정 진행 순서 (2026-07-18 사용자, 런치 후)** — 현 라운드 다음의 계단:
+> 1. (도는 중) 슬롯 A `2026-07-18_15-37-42`: **고정 ori + 고정 position** 수렴 확인
+>    ∥ 슬롯 B `2026-07-18_15-47-34`: ori 없이 크기 확장(단면 1.5~6cm, 길이≤20cm) —
+>    "얇은 것도 잘 집나". 판독 = 크기-버킷 success 분해 (단면 1.5~2.8cm 구간이 핵심:
+>    물리 한계 vs 학습 한계).
+> 2. **랜덤 position** — 싼 단계: goal 위치 obs가 command 기반이라 command ranges만
+>    넓히면 배관 그대로 (obs 불변, 후보 범위는 cube_grasp_env_cfg.py 주석 stage-2 값).
+>    fresh 필요하나 코드 몇 줄.
+> 3. **랜덤 ori (v2 배관 공사)** — command에 quat 추가(pose command화) + obs에 goal
+>    ori(또는 상대 ori) 추가 + square_prism_ori_error를 상대 quat(q_goal⁻¹·q_box)
+>    시그니처로 확장 + goal 마커 ghost box화. obs dim 변경 = 무조건 fresh.
+> - 2·3은 **순차 투입** (동시 금지 — 실패 원인 분리). 단 2가 싱겁게 통과하면 3에서 합류 가능.
+> - v1 목표 ori는 command가 아니라 판정 함수 상수(월드 정렬=스폰 자세)임 — command에는
+>   orientation이 아직 없음. 스폰 자세도 고정 (reset pose_range에 x/y만 있음).
 
 0. **(판정 완료 2026-07-18)** 큐브 질량: **0.1kg 승** (98.2% @6,866 vs 0.2kg 88.0% 동일 시점,
    첫 이륙 4배 빠름. 단 0.1kg은 커리큘럼 초반값 — 실물 이관 시 질량 복귀 계획 필요).
