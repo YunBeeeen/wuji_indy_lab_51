@@ -179,12 +179,18 @@ class UniformCubeGoalCommandCfg(CommandTermCfg):
 
     ranges: Ranges = MISSING
 
+    # 2026-07-19: 구슬 → 반투명 직육면체 (goal "자세"가 보이게 — ori 판정 15°의 목표가
+    # 월드 정렬임을 시각화. 마커 자세는 identity 기본값 = 목표 자세 그대로).
+    # 길이축 y로 길쭉하게 — 어느 축을 맞춰야 하는지 눈에 보임. goal 자세 랜덤화(v2)에서는
+    # _debug_vis_callback에 orientations=command quat을 넘기도록 확장할 것.
     goal_marker_cfg: VisualizationMarkersCfg = VisualizationMarkersCfg(
         prim_path="/Visuals/Command/cube_goal",
         markers={
-            "sphere": _sim_utils.SphereCfg(
-                radius=0.02,
-                visual_material=_sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.9, 0.3)),
+            "goal_box": _sim_utils.CuboidCfg(
+                size=(0.025, 0.10, 0.025),
+                visual_material=_sim_utils.PreviewSurfaceCfg(
+                    diffuse_color=(0.0, 0.9, 0.3), opacity=0.35
+                ),
             )
         },
     )

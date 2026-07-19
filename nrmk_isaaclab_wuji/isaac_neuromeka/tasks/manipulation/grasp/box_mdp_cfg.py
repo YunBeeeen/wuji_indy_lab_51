@@ -365,12 +365,15 @@ class BoxTransportRewardsCfg:
         },
     )
 
+    # clearance 0.02 → 0.01 (2026-07-19): 얇은 스틱(단면 1.5~3cm)은 파지 지점이 상판 위
+    # 0.75~1.5cm라 2cm 존이 "잡으러 가기"를 벌함 — 실측: 스틱 런(12-48-25)에서 hand_floor
+    # raw 악화(−0.77→−0.82) + 중지 접근 정체(0.14) + cage 관통 0. 1cm면 스틱 파지 높이 합법.
     hand_floor = RewTerm(
         func=mdp.hand_floor_penalty,
         weight=1.0,
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names=["palm_link", "finger.*"]),
-            "clearance": 0.02,
+            "clearance": 0.01,
         },
     )
 

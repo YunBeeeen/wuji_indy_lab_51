@@ -3319,3 +3319,10 @@ palm_normal_b (0.19,0.28,0.94) -> (1,0,0)   rewards.py + managers.py
 - v1.1 구현: transport를 keypoint φ로 교체 (위치+자세 통합, TriFinger 측정 + best-so-far
   일시불 지급). 수학 검증 + 스모크 통과. 재런치는 오버라이드 불필요 (파일 기본값).
 - 슬롯 B (크기 확장, 20-56-53)는 계속 진행 중.
+
+## 2026-07-19 — WRAP 라운드: A 청신호, B 파지 실패 원인 수정
+
+- 슬롯 A (WRAP+ori): box_ori_error 첫 하락 (0.94→0.73) — 감싸쥐기가 매달림을 잡기 시작.
+- 슬롯 B (스틱): 파지 실패 원인 실측 = hand_floor 2cm 존이 스틱 파지 높이를 벌함 →
+  clearance 0.01로 완화 (box_mdp_cfg). goal 마커는 구슬 → 반투명 직육면체 (자세 시각화,
+  commands.py). 상세·재런치 명령은 ACTIVITY_2026-07-19.md.
