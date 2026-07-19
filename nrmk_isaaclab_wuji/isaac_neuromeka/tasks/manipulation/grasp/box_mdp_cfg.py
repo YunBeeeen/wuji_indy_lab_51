@@ -40,6 +40,33 @@ BOX_CAGE_BODIES = SceneEntityCfg(
     preserve_order=True,
 )
 
+# ── 감싸쥐기 cage 부품 (v2 후보, 2026-07-19 준비 — 미배선, 스틱 기준선 결과 대기) ──
+# 근거 사슬: ori v1(무유도)·v1.1(keypoint 유인) 모두 success 0, 슬롯 A/B 공통 매달림
+#   70~93° + play "손가락 2개 불안정 파지" 관찰 → 손끝 pinch는 긴 상자의 중력 토크를
+#   못 버팀 (2점 접촉 = 경첩). 힘(depth_max)이 아니라 기하(접촉 분산)의 문제.
+# 개편 두 축: 폭(약지/새끼 추가 — 길이축 팔길이 확보. 액션은 커플링으로 이미 오므려짐)
+#   + 깊이(근위 마디 link2 — 물체를 손바닥 쪽으로 끌어들여 감싸쥐기 유도).
+# 활성화: 이 정의 아래에 `BOX_CAGE_BODIES = BOX_CAGE_BODIES_WRAP` 한 줄 추가
+#   (모든 reach/hold/lift/transport gate + success gate가 일괄 전환됨). fresh 필수.
+# ⚠ 활성 시: 가상점 평균의 몸이 5→11개라 gate 값이 전반적으로 낮아짐 — success
+#   gate_threshold(0.3) 재보정 필요. fresh 초기 Episode_Reward_Raw/finger_cage_hold와
+#   낙하율로 판단할 것. 짧은 물체에서는 약지/새끼 점이 못 걸치는 부분 감점도 유의.
+BOX_CAGE_BODIES_WRAP = SceneEntityCfg(
+    "robot",
+    body_names=[
+        "finger1_tip_link",  # 엄지끝: 모든 선분의 기준점
+        "finger2_tip_link", "finger2_link3", "finger2_link2",
+        "finger3_tip_link", "finger3_link3", "finger3_link2",
+        "finger4_tip_link", "finger4_link3",
+        "finger5_tip_link", "finger5_link3",
+    ],
+    preserve_order=True,
+)
+
+# ★ 2026-07-19 활성화 (사용자): 감싸쥐기 라운드 — 슬롯 A(기존 크기+ori) ∥ 슬롯 B(얇은 스틱).
+# 되돌리기 = 이 줄 삭제 (손끝 pinch 기준선 복귀).
+BOX_CAGE_BODIES = BOX_CAGE_BODIES_WRAP
+
 # 보상/판정의 half_extent 인자는 fallback임 — 실제로는 randomize_box_dims가 저장한
 # env.box_half_extents (N,3) 버퍼가 우선함 (rewards.py의 _cage_sdf/box_ground_clearance 참고).
 _HALF_FALLBACK = (0.03, 0.03, 0.03)
