@@ -12,6 +12,32 @@
 - Current target direction: Indy7 + Wuji hand for future chopstick manipulation RL.
 - Final manipulation direction is functional chopstick grasp: hold chopsticks in a task-useful configuration so chopstick use becomes possible.
 - The primary research target is the functional grasp / Dexterous Pre-grasp style objective, not reproducing DexPoint.
+
+## 2026-07-20 Canonical Chopstick Handoff
+
+- 최종 구조는 FSM `ACQUIRE -> TOOL_READY -> USE`임. Skill A는 도구 획득/기능적 파지, Skill B는
+  low-level finger opening/stability와 high-level arm/object transport로 나눔.
+- 단계 이름은 고정함: A0=Box world pose, A1=한 막대 canonical functional grasp+lift,
+  A1.5=한 막대 world ready pose, A2=한 막대 위치/orientation 강건성, A3=가까운 두 막대 pair 형성,
+  A4=테이블 위 두 막대 획득. A1 검증 전 Skill B를 구현하지 않음.
+- 현재 A1 task는 `Indy-Wuji-Chopsticks-Grasp`, 고정 `2 x 18 x 2cm` one-stick, action 18D,
+  observation 63D임. policy 출력은 arm+thumb/index/middle이지만 `MimicJointActionCfg`가 middle 목표를
+  ring/little에도 복제하므로 약지·새끼가 passive 고정된 구조는 아님.
+- 현재 index target은 tail 쪽 45%의 local +z 표면 **한 점**임. grip region이나 thumb target은 아직
+  적용하지 않았고 balanced cage 결과 이후 별도 fresh 후보임.
+- 현재 hold/lift/tool-ready는 `min(thumb-index cage, thumb-middle cage)` balanced gate를 사용함.
+  reach는 기존 12-point mean cage를 유지함. 이 변경은 아직 학습 결과 미검증임.
+- 현재 `q_O_H` target은 reset pre-grasp 상대 orientation을 캡처한 값이지 검증된 canonical grasp가 아님.
+  수동/scripted 안정 파지를 먼저 만들고 측정한 target으로 교체한 뒤 orientation reward를 활성화함.
+- 즉시 순서: balanced cage fresh 판정 -> canonical grasp feasibility -> 실제 `q_O_H` 측정 -> metric 확인
+  -> stage-latched best-so-far orientation을 작은 weight로 fresh 검증 -> A1.5/A2 확장.
+- 후속 semantic constraint는 `index axial region -> 접근 가능한 thumb opposing region -> 축 방향으로 떨어진
+  middle/palm support` 순서로 한 항씩 추가함. 같은 axial 위치의 index/thumb pinch만으로 long-stick torque
+  안정성을 보장한다고 해석하지 않음.
+- orientation은 장기적으로 tip-tail long-axis와 roll로 분리하고, slip은 단순 world velocity 차가 아니라
+  hand-stick relative transform `T_H_S`의 step drift로 metric부터 측정함. balanced cage(SDF geometry)와
+  실제 grouped contact force는 같은 지표로 취급하지 않음.
+- 상세 근거와 최신 코드 사실은 root `AGENTS.md`의 `연구 아키텍처와 이어서 작업할 기준`을 우선함.
 - USD variants:
   - `indy7_wuji_right.usd`: full mesh baseline (arm + hand both convexHull). Reference only, not used for training.
   - `indy7_wuji_right_simplified.usd`: Indy arm simplified (primitives), Wuji hand kept as mesh (`physics:approximation = convexHull`, one hull per link). Fidelity tier for real chopstick-manipulation training.
@@ -338,6 +364,36 @@ Metrics/cube_max/action_track_err   |관절목표 - 관절실제| 최대 [rad]
 ```
 **반드시 `cube_max`를 볼 것** — 튀는 건 순간적 사건이라 평균/최종값엔 안 잡힘.
 
+### 학습 로그 읽는 절차 (2026-07-28 정리 — 에이전트가 실제로 쓰는 방식)
+
+TB GUI 안 띄우고 **스크립트로 스칼라를 뽑아** 판단한다. 이번 세션에서 반복해서 데인 지점 포함.
+
+1. **읽기**: `tensorboard.backend.event_processing.event_accumulator.EventAccumulator(dir); .Reload()`
+   → `ea.Tags()['scalars']`로 tag 목록 먼저 훑고, `ea.Scalars(tag)` (각 원소 `.step/.value`).
+   Reload가 비어 나올 때 있음(라이브 파일) → 재시도. tag 없으면 `nan` 처리(가정 금지).
+2. **런 특정**: 최신은 폴더 mtime, 아니면 이름 명시. **판단 전 `params/env.yaml`로 그 런의 config를
+   확인**(코드 ≠ 런 config — 런은 launch 시점 설정으로 굳음. 현재 코드값을 과거/도는 런에 대입 금지).
+3. **tag 네임스페이스**:
+   - `Episode_Reward/<term>` = **가중**(= raw×weight), `Episode_Reward_Raw/<term>` = func 원값, `_Std`.
+   - **예산(점) 비교는 `Episode_Reward`(가중값)로.** weight만 보고 비교 금지 — gate형(연금)과
+     progress형(텔레스코핑)은 예산 구조가 달라 weight 1 ≈ progress 300. `2.4×W` 휴리스틱 남발 금지,
+     실제 가중값으로 확인(2026-07-25 lift 예산을 8배 틀리게 말했다가 raw×weight로 정정).
+   - `Metrics/cube/`=에피 평균, `cube_final/`=에피끝, `cube_max/`·`cube_min/`=env 극값.
+     평가는 `cube_final`, 튐 탐지는 `cube_max`.
+4. **metric ≠ reward-term 값 (혼동 주의)**: reward-term의 raw는 그 term `func` 출력이다 —
+   `finger_cage_hold`를 penta/quad 게이트로 rewire하면 그 raw = 게이트값. 반면 `Metrics/.../cage_*`
+   (`cage_inside_frac` 등)은 `managers.py`의 **고정 5-body cage**(엄지·검지·중지)라 약지·새끼도,
+   penta/quad 게이트도 반영 안 함. 둘을 같은 것으로 읽지 말 것(2026-07-26 실수).
+5. **물리 metric ≠ 게이트 통과**: `clearance`(물체 높이)는 게이트 없이도 생김(튕김·outlier).
+   "게이트 물고 들었나"는 **gated reward raw**로 봐야 함(`cube_lift` raw = 게이트 × clearance ≈ 0이면
+   게이트 안 열린 것). clearance 숫자에 속지 말 것(2026-07-26).
+6. **max vs mean**: `cube_max/clearance` 높은데 `cube/`·`cube_final/` 낮으면 **outlier 1개**지 수렴 아님.
+7. **추세로 판단**: 여러 step을 nearest-match로 뽑아 상승/하락/정체를 보고, 마지막 값 하나로 단정 금지.
+   iter 수백대는 초기화 노이즈라 판단 보류.
+8. **런 간 비교**: iteration 맞추고 **`env.yaml`로 같은 config 확인 후에만** 차이를 의도 변수에 귀속.
+   confound 실사례: chopstick "쿼터니안 34° 벽"은 방법이 아니라 grip 오설정이었음(2026-07-25).
+9. **metric 이름 실제 확인**: 기대와 다름 — 새끼는 `little_surface`(pinky 아님). tag 목록 먼저 볼 것.
+
 ### play.py
 ```bash
 python scripts/rsl_rl/play.py --task Indy-Wuji-Cube-Grasp --num_envs 32 \
@@ -613,3 +669,17 @@ python scripts/debug/check_cube_contact_lift.py \
   - `cage_hold`는 켜졌지만 실제 하중을 지지하는 파지로 충분하지 않음. `cube_clearance`가 최종 판단 기준임.
   - 다음 레버는 arm torque가 아니라 finger action range/scale, finger joint2 처리, negative target 처리, contact/lift/r_T 계층임.
   - reset 직후 줄은 제외하고 볼 것. reset 직후에는 `hold=0`, `cage=0`, raw action이 크게 튀어 정상 정착 상태 판단에 쓰면 안 됨.
+
+## 2026-07-20 — A1 index/thumb grip-region 실험 적용
+
+- balanced cage만으로도 one-stick lift가 발생하지 않아 다음 fresh 실험으로 semantic anchor geometry를 변경함.
+- index exact point를 local `+z`, axial `[-0.60, -0.30]` surface region으로 교체함.
+- thumb는 table에 막히는 index 반대 `-z`가 아니라 접근 가능한 local `+x`, axial `[-0.55, -0.25]`
+  surface region으로 추가함. 기존 middle `-x` cage와 tripod를 이루는 가설임.
+- observation은 thumb region error 3D가 추가되어 63D -> 66D. action은 18D 유지.
+- reward는 index 20 + thumb 20, hold 35, lift 100, orientation 0을 유지함. 두 anchor 모두 signed
+  previous-step progress이며 best-so-far 전환은 이번 변수에 섞지 않음.
+- tool-ready에 index/thumb region error 각각 `<2cm`를 현재 상태 조건으로 추가함.
+- numeric probe의 모든 source diff 0, 66D actor/critic PPO 1-iteration smoke 통과. fresh run 필수.
+- 다음 판정은 index/thumb error 감소, balanced middle 참여, clearance 발생을 함께 봄. 실패 시 바로
+  가중치를 바꾸지 말고 region geometry와 canonical grasp feasibility를 먼저 확인함.

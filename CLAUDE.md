@@ -1,5 +1,20 @@
 # CLAUDE.md
 
+## 기본 행동 강령 (모든 작업에 항상 적용)
+
+아래 두 문서를 이 프로젝트에서의 기본 행동 강령으로 삼는다. 세션 시작 시 함께 로드된다.
+
+@CLAUDE2.md
+@범용_행동강령_B.md
+
+- **우선순위**: 안전 규칙 > 아래 `세션 규칙`·`작업 중 막힌 지점` > 위 두 강령 문서 >
+  일반 관행. 충돌하면 이 파일의 프로젝트 규칙이 강령보다 우선한다.
+- `CLAUDE2.md`의 "프로젝트 정보 — 직접 채우세요" 절은 빈 템플릿이므로 무시한다. 이 프로젝트의
+  실제 정보(명령·구조·컨벤션)는 이 파일과 `AGENTS.md`, `CLI.md`를 기준으로 한다.
+- `범용_행동강령_B.md`는 `범용_시스템프롬프트_개발결과.md`의 **B절(완성본)만** 떼어낸
+  실사용본이다(플레이스홀더는 이 환경 값으로 치환). 원본의 A·C·D절은 참고용이며 로드하지 않는다.
+  강령을 고칠 때는 이 실사용본을 고치고, 원본은 기록으로 남긴다.
+
 ## 세션 규칙
 
 - 항상 한국어로 답한다.
@@ -31,6 +46,11 @@
   -0.04mm 수준(실측). 압착 억제는 penetration 페널티가 아니라 r_T 구조(성공 종료)로 해결함.
 - **`ObjectToGoalProgressReward` 시그니처 변천** — distance_max(v1) → +window(v2) → potential_eps만
   (v2.1). 옛 파라미터를 cfg에 남기면 env 생성 TypeError. 주석 블록 재활성 시 시그니처 대조 필수.
+- **매니저는 params의 "직접" SceneEntityCfg만 resolve한다** (`manager_base.py:398`,
+  `isinstance(value, SceneEntityCfg)`) — **리스트/튜플 안에 넣은 SceneEntityCfg는 resolve 안 됨**
+  (body_ids None → cage 함수에서 터짐). N개 cage를 넘기고 싶어도 reward term params엔 반드시
+  **named 파라미터로 하나씩** 줄 것. 유연화는 공개 함수(named params) → 내부에서 리스트로 묶어
+  헬퍼 호출하는 식으로 (`balanced_quad_cage_gate`가 이 패턴). 2026-07-26 quad 게이트에서 확인.
 - **hydra CLI 오버라이드는 타입 엄격** — `env.rewards.X.weight=0`은 int로 파싱돼
   "Expected float, Received int" 에러. 반드시 `0.0`, `75.0`처럼 소수점 포함해 쓸 것.
 - **`logs/` 정리는 글롭 금지, 정확한 폴더명 rm만.** 2026-07-18 사고: 스모크 정리용
@@ -41,6 +61,46 @@
   2026-07-18 두 번째 사고: 도는 런에 `_noori` 라벨을 붙이는 순간 FileNotFoundError로 죽음.
   라벨링 습관(`(success)` 등)은 **런 종료 후에만**. 사용자가 라벨을 붙이려 하면 먼저
   `ps aux | grep train.py`로 그 런이 끝났는지 확인하도록 안내할 것.
+- **play 환경은 체크포인트가 아니라 "현재 코드 기본값 + CLI"로 빌드됨** — CLI 오버라이드로
+  학습한 런(크기·ori 등)을 play할 때 같은 오버라이드를 안 넘기면 다른 환경(기본값)에서
+  정책이 돌아감. 2026-07-19 실측: 스틱 런 play에 크기 인자 누락 → 뚱뚱한 상자 스폰,
+  진단 결과 오독 위험. play 명령에 학습 시 오버라이드를 그대로 복붙할 것 (run의
+  params/env.yaml과 대조 가능).
+
+### 액션 파이프라인 (2026-07-23 진단)
+- **"clip"이 세 종류다. 섞어 말하지 말 것.** ① `clip_actions=1.0`(rsl_rl cfg) = **actor 출력**을
+  ±1로 자름, 적용 지점은 래퍼(`isaaclab_rl/.../vecenv_wrapper.py:153`) — **켜져 있음**.
+  ② `ActionTermCfg.clip`(dict) = **관절 target(rad)** clamp — 설정 안 됨. ③ `ClampedJointActionCfg`
+  — demo 태스크만 사용. ①이 있어도 target이 관절 limit 안이라는 보장은 없음.
+- **`ActionTerm.raw_actions`는 클리핑 "이후" 값이다** (래퍼가 `env.step` 진입 전에 자름).
+  클리핑 전 원본은 ActionTerm에서 볼 수 없음. 반면 **PPO storage에는 클리핑 전 값이 저장**됨
+  (`rsl_rl/algorithms/ppo.py:144`) — ±1 밖에서도 그래디언트가 흐름.
+- **관절 target을 clamp하는 코드가 전 경로에 없다.** `soft_joint_pos_limit_factor`는
+  `_data.soft_joint_pos_limits`를 **계산·저장만** 하고(`articulation.py:765,1660`) 어떤 clamp에도
+  안 쓰임. 유일한 방어선은 PhysX joint limit이고, target 버퍼엔 limit 밖 값이 그대로 남음.
+- **`resolve_matching_names`의 산문 docstring은 뒤집혀 있다**(`isaaclab/utils/string.py:186-191`).
+  구현(225-241행)과 바로 아래 예시가 맞음: `preserve_order=False`(기본) → **articulation joint
+  순서**, True → 정규식 나열 순서. 액션/관측 순서는 정규식을 어떻게 쓰든 USD DOF 순서를 따름.
+- **뉴로메카 예제 `JointResidualAction`은 실행된 적 없는 코드**(어느 태스크도 미참조)이고
+  관절 부분집합에서 깨진다: `zeros_like(data.joint_pos)`(N,26)에 (N,18)을 더해 RuntimeError,
+  `apply_actions`의 `env_ids.unsqueeze`는 slice에서 AttributeError. 잔차가 필요하면
+  `CustomResidualJointPositionAction`(2026-07-23 신설)을 쓸 것.
+- **obs 차원을 셀 때 `action_history`를 빼먹지 말 것.** `mdp.action_history`는
+  `action_manager.prev_action`(`observations.py:179`)이라 **액션 차원을 그대로 따라간다.**
+  액션이 18→26이 되면 `joint_pos`와 `action_history`가 **둘 다** 커져 obs가 75→**91**(83 아님).
+  2026-07-23 실제로 두 번 틀림.
+- **보상 weight는 항 간에 직접 비교하면 안 된다 — gate형 1 ≈ progress형 300.**
+  gate형(`finger_cage_hold`·`cube_lift`·`goal_proximity`)은 240스텝 지급이라 총액 `2.4W`,
+  progress형(`*_transport`·`*_orientation`·`keypoint_goal`·`*_grip`)은 best-so-far 텔레스코핑이라
+  에피소드당 1회분 예산 `Δ×gate×W/30`. "transport 6000인데 lift 150보다 작다"가 정상.
+  가중치를 논하기 전에 **예산(점) 단위로 환산**할 것.
+- **`cube_lift`는 W와 W/h가 서로 다른 것을 정한다.** `W`=호버 연금 총액, `W/h`=바닥에서 떼는 기울기.
+  h만 올리면 총액은 그대로인데 떼는 힘만 약해져 "테이블에서 비비는" 증상이 난다 (2026-07-23 실측).
+- **keypoint 보상의 `d`는 정규화되지 않은 미터**라 φ(0~1)와 스케일이 100배 이상 다르다.
+  box에서 keypoint 8000이 예산 13점뿐이라 학습 신호가 아예 없었던 이력(2026-07-23).
+- **잔차 전환 시 `processed_actions`의 의미가 바뀐다**(절대 목표 → 증분).
+  `env/managers.py:480`(action_track_err), `scripts/rsl_rl/play.py:687`이 이걸 절대 목표로 읽으므로
+  `joint_pos_target`으로 같이 고칠 것. 각 지점에 경고 주석 있음.
 
 ### 동시 작업/도구
 - **파일이 세션 밖에서 바뀐다** (사용자·codex 동시 작업). Edit 전에 해당 구간을 다시 Read하고

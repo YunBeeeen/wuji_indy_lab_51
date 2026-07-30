@@ -104,7 +104,7 @@ python scripts/rsl_rl/train.py \
 ```bash
 cd ~/wuji_indy_lab_51/nrmk_isaaclab_wuji
 conda activate env_isaaclab
-tensorboard --logdir logs/rsl_rl/indy_wuji_cube_grasp --port 6006 --reload_interval 5
+tensorboard --logdir logs/rsl_rl/indy_wuji_box_transport --port 6006 --reload_interval 5
 ```
 
 - 브라우저에서 봄.
@@ -116,7 +116,7 @@ http://localhost:6006
 - `6006`이 이미 사용 중이면 다른 포트 사용함.
 
 ```bash
-tensorboard --logdir logs/rsl_rl/indy_wuji_reach --port 6007 --reload_interval 5
+tensorboard --logdir logs/rsl_rl/indy_wuji_chopsticks_grasp --port 6007 --reload_interval 5
 ```
 
 - cube grasp 로그를 볼 때는 logdir를 바꿈.
@@ -151,9 +151,9 @@ python scripts/rsl_rl/train.py \
 cd ~/wuji_indy_lab_51/nrmk_isaaclab_wuji
 conda activate env_isaaclab
 python scripts/rsl_rl/play.py \
-  --task Indy-Wuji-Cube-Grasp \
+  --task Indy-Wuji-Box-Transport \
   --num_envs 1 \
-  --load_run "$(basename "$(ls -td logs/rsl_rl/indy_wuji_cube_grasp/20* | head -n 1)")"
+  --load_run "$(basename "$(ls -td logs/rsl_rl/indy_wuji_box_transport/20* | head -n 1)")"
 ```
 
 ## 성공 후 유지 상태 확인 Play
@@ -461,3 +461,211 @@ python scripts/debug/box_dims_probe.py
 # TensorBoard (로그 폴더가 큐브 태스크와 분리됨)
 tensorboard --logdir logs/rsl_rl/indy_wuji_box_transport --port 6006 --reload_interval 5
 ```
+
+## Chopsticks A1 (한 막대 Functional Grasp) 검증
+
+- `Cube-Grasp`, `Box-Transport`와 별도 태스크/로그임.
+- 현재 action 18D, observation 63D이며 기존 checkpoint와 호환되지 않음. fresh run만 사용함.
+- 먼저 probe에서 observation diff가 전부 0인지 확인함.
+
+```bash
+cd ~/wuji_indy_lab_51/nrmk_isaaclab_wuji
+conda activate env_isaaclab
+python scripts/debug/chopstick_functional_probe.py \
+  --num_envs 1 \
+  --steps 1 \
+  --device cuda:0
+```
+
+- 1-env/1-iteration smoke test:
+
+```bash
+cd ~/wuji_indy_lab_51/nrmk_isaaclab_wuji
+conda activate env_isaaclab
+python scripts/rsl_rl/train.py \
+  --task Indy-Wuji-Chopsticks-Grasp \
+  --headless \
+  --num_envs 1 \
+  --max_iterations 1
+```
+
+- 기능 보상 추세를 보는 짧은 fresh 학습:
+
+```bash
+cd ~/wuji_indy_lab_51/nrmk_isaaclab_wuji
+conda activate env_isaaclab
+python scripts/rsl_rl/train.py \
+  --task Indy-Wuji-Chopsticks-Grasp \
+  --headless \
+  --num_envs 128 \
+  --max_iterations 20
+```
+
+- probe와 smoke 통과 후 fresh 학습:
+
+```bash
+cd ~/wuji_indy_lab_51/nrmk_isaaclab_wuji
+conda activate env_isaaclab
+python scripts/rsl_rl/train.py \
+  --task Indy-Wuji-Chopsticks-Grasp \
+  --headless \
+  --num_envs 4096 \
+  --max_iterations 50000
+```
+
+- TensorBoard:
+
+```bash
+tensorboard --logdir logs/rsl_rl/indy_wuji_chopsticks_grasp --port 6008 --reload_interval 5
+```
+
+- 확인한 run을 명시해서 GUI play:
+
+```bash
+python scripts/rsl_rl/play.py \
+  --task Indy-Wuji-Chopsticks-Grasp \
+  --num_envs 1 \
+  --load_run <확인한_RUN_폴더명>
+```
+
+## Wuji hand-only two-stick functional pre-grasp
+
+`hand_grasp`는 수동으로 만든 valley 근처 자세에서 시작해 STATE B 접촉 안정화만 학습함.
+reset은 `logs/debug/hand_grasp_keyboard/2026-07-28_10-43-39/pose_002.json`의
+관절 actual/target과 두 stick palm-local pose를 복원함. reset 뒤 Stick1/2는 둘 다 dynamic임.
+기존 checkpoint는 reward/reset이 다르므로 resume하지 않고 fresh로 실행함.
+
+### 손가락 20관절 키보드 조정
+
+기존 CEM candidate는 GUI에서 Stick2가 엄지–검지 valley에 들어가지 않은 자세로 확인되어
+더 이상 올바른 학습 seed로 간주하지 않음. 아래 도구는 정책을 로드하지 않고 열린 손에서
+시작함. 두 stick은 이전 spawn보다 손가락 방향(world `+x`)으로 2 cm 올리고, 노란 Stick1은
+spawn pose에 고정하며 초록 Stick2만 dynamic으로 두어 손가락으로 valley에 이동시킬 수 있음.
+
+```bash
+python scripts/debug/hand_grasp_keyboard.py --task hand_grasp
+```
+
+- 기본값: `--stick1-mode fixed --stick-forward-offset 0.020`
+- Stick1도 움직이려면 `--stick1-mode dynamic`
+- Stick1을 치우려면 `--stick1-mode park` 또는 기존 호환 옵션 `--park-stick1`
+- 손가락 방향 위치는 `--stick-forward-offset`, palm 위 높이는
+  `--stick-height-offset`으로 미터 단위 조정
+
+현재 학습 reset을 두 stick dynamic 상태로 그대로 육안 확인:
+
+```bash
+python scripts/debug/hand_grasp_keyboard.py \
+  --task hand_grasp \
+  --start-pose pregrasp \
+  --stick1-mode dynamic
+```
+
+저장된 `pose_017`에서 바로 이어서 키보드 미세 조정:
+
+```bash
+python scripts/debug/hand_grasp_keyboard.py \
+  --task hand_grasp \
+  --stick1-mode dynamic \
+  --load-pose logs/debug/hand_grasp_keyboard/2026-07-28_10-57-45/pose_017.json
+```
+
+`--load-pose`는 저장된 관절 actual/target과 두 stick palm-local pose를 모두 복원함.
+`Backspace`도 같은 저장 자세로 돌아가며 새 저장 파일은 새로운 timestamp 폴더에 생성되어
+원본 JSON을 덮어쓰지 않음. load 모드에서는 spawn offset 옵션을 적용하지 않음.
+
+수동 완성 후보 `pose_017`까지 단계적으로 joint-space IK replay:
+
+```bash
+python scripts/debug/hand_grasp_ik_replay.py \
+  --task hand_grasp
+```
+
+현재 엄지-loaded reset에서 시작함. 검지→중지→약지→새끼 각각에 대해
+`joint4 말단 close → joint3 close → joint1/2 배치 → joint3/4를 pose_017까지 release` 순서를
+사용하고 엄지는 마지막에 최종각으로 조금 펴며, 이후 240 physics step 유지함.
+두 stick은 전 구간 dynamic이며 task termination을 거치지 않고 PhysX를 직접 step하므로
+중간에 자동 reset되지 않음. 결과는
+`logs/debug/hand_grasp_ik_replay/<timestamp>/result.json`에 관절 actual/target,
+두 stick palm-local pose, 7개 contact force와 활성 sensor 수로 저장됨.
+
+- `1~5`: finger 선택
+- `Q/W/E/R`: joint 1~4 선택
+- `←/A`, `→/D`: 선택 관절 감소/증가
+- `Z/X`: 관절 증분 절반/두 배
+- `O/P`: 열린 자세/현재 학습 pre-grasp target 비교
+- `Backspace`: scene reset
+- `Space`: physics 일시정지/재생
+- `V`: 전체 관절각 출력
+- `T`: 20개 실제 관절각과 두 stick의 실시간 palm-local 위치 출력 켜기/끄기
+- `S`: 관절 target/actual과 두 stick의 palm-local pose를 JSON으로 저장
+- `Esc`: 저장 후 종료
+
+저장 위치는 `logs/debug/hand_grasp_keyboard/<timestamp>/pose_*.json`임.
+열린 시작 자세와 `O` 자세는 `finger1_joint2`를 soft lower limit
+`-0.1659 rad`에 두어 엄지를 완전히 편 상태로 시작함.
+20개 실제 관절각과 두 stick 위치는 기본 `5 Hz`로 출력함. 관절각은 finger별
+`f1~f5=(j1,j2,j3,j4)` rad 형식이고, stick은 palm-local `xyz`, 두 stick의 `delta`,
+장축 `y`를 제외한 횡단 간격을 mm 단위로 표시함. 출력률은
+`--stick-print-hz 2`처럼 바꾸고 `0`이면 시작 시 비활성화함.
+
+```bash
+cd ~/wuji_indy_lab_51/nrmk_isaaclab_wuji
+conda activate env_isaaclab
+
+python scripts/rsl_rl/train.py \
+  --task hand_grasp \
+  --headless \
+  --num_envs 4096 \
+  --max_iterations 50000
+```
+
+TensorBoard:
+
+```bash
+tensorboard --logdir logs/rsl_rl/hand_grasp --port 6009 --reload_interval 5
+```
+
+우선 볼 항목:
+
+- `Episode_Reward_Raw/success`, `Episode_Termination/success`
+- `Episode_Reward_Raw/joint_reference`
+- `Episode_Reward_Raw/stick1_reference_pose`, `stick2_reference_pose`
+- `Episode_Reward_Raw/functional_contact_min`
+- `Episode_Reward_Raw/full_grasp_stability`
+- `Episode_Reward_Raw/angular_speed_excess`
+- `Metrics/hand_grasp_max/success_stable_steps`
+- `Metrics/hand_grasp/quiet_valid`, `Metrics/hand_grasp/full_contact`,
+  `Metrics/hand_grasp/reference_pose_valid`
+- `Metrics/hand_grasp_final/functional_contact_count`
+
+### 저장된 `hand_grasp` 자세의 실제 contact pair 확인
+
+```bash
+cd /home/lsc/wuji_indy_lab_51/nrmk_isaaclab_wuji
+python scripts/debug/hand_grasp_contact_pairs.py \
+  --task hand_grasp \
+  --pose-file logs/debug/hand_grasp_keyboard/2026-07-28_12-39-52/pose_005.json \
+  --headless
+```
+
+- `pose_005`를 복원해 0.5초 settle 후 2초 동안 PhysX contact를 측정함.
+- 모든 hand-link↔Stick1/Stick2와 hand-link↔hand-link pair의 접촉 유지율·평균력·최대력을 출력함.
+- 결과는 `logs/debug/hand_grasp_contact_pairs/<timestamp>/contact_pairs.json`에 저장됨.
+- `Metrics/hand_grasp_final/ring_support_force`
+- `Metrics/hand_grasp_final/ring_tip_stick2_force`, `ring_distal_stick2_force`
+- `Metrics/hand_grasp_final/max_linear_speed`, `max_angular_speed`
+- `Metrics/hand_grasp_final/stick1_position_error`, `stick2_position_error`
+- `Metrics/hand_grasp_final/stick1_orientation_error`, `stick2_orientation_error`
+
+`Metrics/hand_grasp/*`는 실제 episode 시간 평균이고, `_final/_min/_max`는 episode 마지막/최솟값/최댓값임.
+2026-07-28 `pose_005` reset, action scale `0.1`, STATE B reference reward 이전 checkpoint는
+resume하지 않고 fresh로 실행함.
+
+# keyboard로 close, open
+python scripts/rsl_rl/play.py \
+--task hand_grasp \
+--num_envs 1 \
+--load_run 2026-07-30_12-21-21 \
+--keyboard_hand_mode \
+--real-time

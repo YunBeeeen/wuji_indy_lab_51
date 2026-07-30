@@ -859,6 +859,153 @@ approach/lift
 
 tool-use나 chopstick trajectory로 확장할 때 중요함.
 
+## Learning to Use Chopsticks in Diverse Gripping Styles
+
+- 논문: Yang, Yin, Liu, *Learning to Use Chopsticks in Diverse Gripping Styles*,
+  ACM TOG/SIGGRAPH 2022, arXiv:2205.14313v3.
+- 공식 구현:
+  `https://github.com/chopsticks-research2022/learning2usechopsticks`.
+- 이 논문은 접촉력 자체를 최대화해 처음부터 파지를 발견하는 구조가 아니라,
+  BO+IK로 만든 gripping pose와 고수준 planner의 손·젓가락·물체 궤적을 저수준 residual
+  policy가 물리적으로 추종하는 구조임.
+
+### Action과 기준 자세
+
+정책 action은 독립적인 절대 관절 목표가 아니라 선택한 gripping pose `q*`에 더하는
+corrective offset임.
+
+```text
+q_target = q_grip* + delta_q_policy
+tau = kp * (q_target - q) - kd * qdot
+```
+
+따라서 수동 functional pose의 PD target을 중심으로 residual action을 주는 현재
+`hand_grasp` STATE B 방식과 직접 대응함.
+
+### 논문 본문의 reward
+
+전체 reward는 네 개의 음수 tracking/contact cost 합을 지수화함.
+
+```text
+R = exp(r_hand + r_chop + r_object + r_contact)
+```
+
+손·팔 pose 추종:
+
+```text
+r_hand = -10 * ||q_hand - q_hand_ref||
+```
+
+두 젓가락의 CoM 위치와 quaternion 방향 추종:
+
+```text
+r_chop =
+    -40 * sum_i ||p_i - p_i_ref||
+    -10 * sum_i Theta(R_i, R_i_ref),  i in {1, 2}
+```
+
+조작 물체의 위치·방향 추종:
+
+```text
+r_object =
+    -40 * ||p_object - p_object_ref||
+    -10 * Theta(R_object, R_object_ref)
+```
+
+지정 fingertip과 해당 젓가락의 목표 contact point 사이 최소 거리:
+
+```text
+r_contact = -10 * sum_i d_i
+```
+
+`Theta`는 두 quaternion 사이의 절대 회전각이고, `d_i`는 distal phalanx/fingertip과
+gripping style이 지정한 접촉점 사이 최소 거리임. 전체를 지수화하므로 어느 한 오차가
+커져도 전체 reward가 급격히 작아진다. 즉 항별 가중합에서 한 접촉을 버리고 다른 항을
+크게 받는 것보다 모든 tracking/contact 조건을 동시에 만족하도록 결합한 구조임.
+
+### Gripping style과 접촉 위치
+
+손가락 순서를 `(thumb, index, middle, ring, little)`로 두고 각 원소 `0/1/2`가
+미접촉/Stick1/Stick2를 뜻함. 논문의 standard style은:
+
+```text
+(1, 1, 1, 2, 0)
+```
+
+즉 엄지·검지·중지는 위쪽 Stick1, 약지는 아래쪽 Stick2, 새끼는 미사용임.
+
+BO는 각 손가락의 접촉 위치를 젓가락 장축 위의 스칼라 하나로 탐색하고, IK는 지정
+contact point와 fingertip의 거리 제곱 및 penetration log-barrier를 최소화함. 논문은
+fingertip–stick 접촉만 명시적으로 최적화한다. 엄지–검지 사이 valley 등 다른 손 부위의
+접촉은 DRL과 물리 상호작용에서 자연스럽게 나타나게 둠.
+
+### 파지 후보 평가
+
+gripping pose 후보 평가 단계에는 조작 물체가 없으므로 `r_object`를 제외함. 서로 다른
+방향을 향하면서 젓가락을 여러 번 여닫는 1초 motion 세 개를 추종하도록 후보마다
+500 epoch 학습하고, 테스트 motion의 undiscounted 평균 step reward를 BO quality score로
+사용함. 따라서 정적인 hold만이 아니라 open-close 동안 contact와 기준 pose를 유지하는지가
+좋은 파지 자세의 평가 기준임.
+
+### 공개 코드의 실제 reward
+
+공식 `envs/hand_env.py`는 본문 수식을 task geometry에 맞춘 여러 지수형 sub-reward로
+구현하고 마지막에 곱함.
+
+```text
+R_code =
+    R_hand
+    * R_chopstick1
+    * R_chopstick2
+    * R_object
+    * R_contact
+    + R_object_contact
+```
+
+- `R_hand`: 기준 arm/hand joint pose 추종.
+- `R_chopstick1`: 위 stick의 pivot, 회전축 및 위치 tracking.
+- `R_chopstick2`: 아래 stick의 기준 위치·방향 tracking.
+- `R_object`: 계획된 object 위치 tracking. release phase에서는 비활성.
+- `R_contact`: gripping style로 지정한 finger–stick contact point 오차의 지수형 reward.
+- `R_object_contact`: chopstick tip과 조작 물체의 접촉에 대한 작은 보조 bonus.
+
+하위 chopstick/object/contact reward가 임계보다 낮으면 episode를 종료함. 본문의
+`exp(cost의 합)`과 코드의 `exp(cost)` 항들을 곱하는 방식은 결합 관점에서 동등하며,
+모든 tracking 조건을 동시에 만족해야 높은 reward를 받는 것이 핵심임. 논문과 공개 코드
+모두 별도의 contact-force 최대화나 broad body-pair OR를 핵심 reward로 사용하지 않음.
+
+### 현재 `hand_grasp`에 적용할 해석
+
+현재 STATE B와 같은 부분:
+
+- `pose_005` PD target 중심 residual action.
+- joint reference와 Stick1/2 reference pose 추종.
+- 엄지·검지·중지→Stick1, 약지→Stick2의 semantic topology.
+- 6개 조건을 모두 만족할 때만 켜지는 full-grasp stability/success gate.
+
+프로젝트 고유 adaptation:
+
+- Wuji 수동 pose의 실제 contact probe에서 확인한
+  `finger1_link3↔Stick1`, `finger1_link2↔Stick2`, `palm_link↔Stick2`를 포함함.
+- 논문은 fingertip contact point 거리만 명시하고 valley 접촉을 창발에 맡기지만,
+  현재 환경은 아래 Stick2의 정적 anchor를 격리해 검증하는 STATE B라 실제 확인된
+  valley/palm 접촉을 semantic group으로 명시함.
+- 현재 force threshold는 접촉 성립 판정이고, 논문처럼 힘 자체를 크게 만드는 목적은 아님.
+
+논문을 더 직접적으로 따를 때의 다음 변경 후보는 접촉 body를 넓은 OR로 푸는 것이 아니라:
+
+```text
+R_grasp =
+    R_joint_ref
+    * R_stick1_ref
+    * R_stick2_ref
+    * R_semantic_contact
+```
+
+처럼 기준 자세·두 stick·semantic contact를 곱형 또는 강한 coupled gate로 묶는 것임.
+STATE C에서는 아래 Stick2 reference는 anchor로 유지하고 위 Stick1과 관련 손가락에
+시간에 따른 open-close reference trajectory를 주어 추종시키는 것이 논문 구조와 가장 가까움.
+
 ## Cross-Paper Reward Lessons
 
 ### 1. Grasp Acquisition

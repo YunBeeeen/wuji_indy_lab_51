@@ -2,6 +2,48 @@
 
 - 이 문서는 현재 프로젝트 상태, 변경 이력, 실행 결과, 다음 할 일을 남기는 작업 로그 문서임.
 
+## 2026-07-27 파지 안정성 실험 리셋과 `hand_grasp` 환경 시작
+
+- Box Transport와 Chopstick에 tip-only cage, 좁은 fingertip grip region, maintained proximity gate를
+  순차 적용했지만 손끝이 실제 물체 표면에 밀착하지 않아 실패 실험으로 판정함.
+- 파지 shaping을 계속 누적하지 않고 활성 cfg를 마지막 성공 run 기준으로 복원함.
+  - Chopstick: `2026-07-25_08-47-53(랜덤성공)`
+  - Box Transport: `2026-07-26_00-04-17(성공)`
+- 다음 단계는 arm reach/transport와 손가락 파지 문제를 분리한 신규 Gym task `hand_grasp`임.
+- `hand_grasp`는 Indy 팔 없이 고정 Wuji right hand만 사용하며, 하늘을 보는 손바닥 위에
+  `7 x 180 x 7 mm` 스틱 두 개를 평행하게 배치함.
+- 스틱 장축은 손가락 진행 방향에 직교하는 world `+y`로 수정했고, 두 스틱은 world `+x` 방향으로
+  중심 간격 `2 cm`를 둠. 최초 finger-parallel 배치는 폐기함.
+- 위쪽/world `x=0.055`를 노란색 `stick1`, 아래쪽/world `x=0.035`를 초록색 `stick2`로 정함.
+- 파지 개구부 추정 법선, 기존 `palm_facing`, cage 방향은 사용하지 않음.
+  손 배치는 `palm_link` 실제 메시 로컬 `+x` 면을 world `+z`로 맞춤.
+- action은 손가락 20관절 residual 제어
+  (`target=current_joint_pos + action*0.3`, joint-limit clamp)이고 observation은 101D임:
+  `20 joint_pos + 20 joint_vel + 15 fingertip_pos + 14 stick_pose
+  + 12 stick_velocity + 20 previous_action`.
+- 공식 ShadowHandOver의 direct 환경은 사용하지 않고 배치/관측만 참고함.
+  구현은 `CustomManagerBasedRLEnv`와 MDP manager 구성을 유지함.
+- 현재 reward는 scene 검증용 action-rate penalty만 있음. STATE A/B/C 파지 reward와 FSM은 다음 작업임.
+- `logs/rsl_rl/hand_grasp/2026-07-27_15-09-50`에서 1 env / 0 iteration smoke를 통과함.
+  action 20D, policy obs 101D, rigid stick 2개, termination 3개 resolve를 확인함.
+- 첫 play의 action 적용 TypeError를 수정함. `CustomActionManager`가 표준 action term에
+  `env_ids`를 강제 전달하던 코드를 upstream 방식인 인자 없는 `apply_actions()` 호출로 변경함.
+- PPO `obs_groups`에 actor key를 명시해 RSL-RL fallback 경고도 제거함.
+- `15-09-50`은 변경 전 0-iteration smoke라 resume하지 않으며, 다음 학습은 fresh run으로 시작함.
+- 수정 후 fresh smoke `2026-07-27_15-18-38`에서 1 env / 1 iteration과 실제 24 step을 통과함.
+  residual action 20D, obs 101D를 확인했고 두 stick drop과 기존 TypeError는 발생하지 않음.
+- `hand_grasp`의 기준 파지는 실물 자료 없이 simulation only로 찾기로 확정함.
+  필수 topology는 `stick1`–엄지/검지/중지 tip, `stick2`–약지 tip과 엄지–검지 valley anchor이며,
+  엄지 중간마디–`stick2`와 검지 중간마디–`stick1`은 형상 의존 보조 metric으로 시작함.
+- 다음 순서는 **stick-stick/valley collision feasibility probe → 필수 접촉 IK 후보 →
+  PhysX static hold(contact/slip/drop/torque) → `q_ref_closed` → open-close**임.
+  collision이 불가능하면 IK 결과도 무효이므로 collision 검증을 최우선으로 둠.
+- `scripts/debug/hand_grasp_collision_probe.py`를 추가함. probe 실행마다
+  `logs/debug/hand_grasp_collision_probe/<timestamp>/`에 텍스트·JSON·CSV 결과를 자동 저장함.
+  contact sensor는 실제 접촉/관통/부유를 구분하기 위한 probe 임시 측정 전용이며 active 학습 cfg에는
+  추가하지 않음. 사용자가 실행 완료를 알리면 최신 저장 결과를 판독할 예정임.
+- 실패 원인, backup, 복원 내역과 신규 환경 상세는 `ACTIVITY_2026-07-27.md`에 기록함.
+
 ## 2026-07-17 Transport Success 판정 정리
 
 - goal 반경 `0.05m` 안에서 cage gate `> 0.3`을 `hold_steps=15` 동안 연속 만족하면
@@ -825,3 +867,307 @@ python scripts/rsl_rl/train.py \
   - `cage_inside_frac ~= 0.58`, `cage_span ~= 0.11m`, `thumb_middle_opposition ~= 0.52`, `thumb_index_opposition ~= 0~0.08`.
 - 결론: 현재 정책은 "잡는 듯한 cage/hold 점수"는 먹지만 실제 하중 지지/lift는 못 하는 local optimum임.
 - 다음 레버는 arm torque가 아니라 finger action range/scale, finger joint2 처리, negative target 처리, contact/lift/r_T 계층임.
+
+## 2026-07-20 one-stick Skill A1 분리 검증 태스크
+
+- `Indy-Wuji-Chopsticks-Grasp`를 Cube-Grasp/Box-Transport와 독립 등록함.
+- 한 막대 프록시에 index grip-region target과 hand-stick relative orientation constraint를 추가함.
+- action 18D, observation 63D이며 별도 experiment는 `indy_wuji_chopstick_acquire`임.
+- GPU observation probe에서 모든 source diff 0, 1-env/1-iteration PPO smoke 통과함.
+- 상세 reward/termination/실행법은 `AGENTS.md`와 `CLI.md`에 기록함.
+
+## 2026-07-27 hand_grasp collision probe 1차 판정
+
+- 첫 probe `2026-07-27_16-04-04`의 valley YES 106/120은 유효 성공률이 아님.
+  98개가 palm-only였고 thumb/index 양쪽 접촉은 후보 26 하나뿐이었으며, 이 후보도
+  release 후 3.91 cm 밀려나 안정 후보가 아니었음.
+- valley 성공을 thumb-side+index-side 동시 접촉, 변위 2 mm 이하, 최종 속도 0.05 m/s 이하로
+  강화함.
+- 7 mm/10 g stick의 접촉 반발을 줄이기 위해 hand_grasp 한정 contact offset 1 mm,
+  rest offset 0, max depenetration velocity 0.2 m/s, velocity solver iteration 4를 적용함.
+- 수정본 probe 재실행 전에는 IK로 넘어가지 않음.
+
+## 2026-07-27 자동 2-stick IK/contact 탐색
+
+- valley probe 재실행에서 `palm+thumb_mid` 안정 후보 36/37/51을 확인했고 36번을 Stick2 기준 pose로 선택함.
+- valley 성공은 palm+한쪽 side 접촉과 낮은 변위/속도로 정정하고 index 동시 접촉은 metric으로 둠.
+- `scripts/debug/hand_grasp_ik_search.py`가 기본 512-env CEM으로 finger1~4 16관절을 자동 탐색함.
+- 상위 16개만 gradual close 후 2초 release하며 필수 접촉, stick-stick tip/handle 접촉 위치,
+  pair peak force, stick 속도·변위·drop·joint tracking을 저장함.
+- 수동 키보드 조정은 자동 탐색 상위 후보의 GUI 확인과 미세조정에만 사용함.
+- 자동 탐색기의 두 stick 중심 간격은 world z 적층이 아니라 finger progression인 world x 방향임.
+  구현상 palm `+z` offset과 palm `x`축 5도 닫힘 회전을 사용함.
+## 2026-07-27 hand_grasp STATE B 학습 배선
+
+- ring joint2 512-env sweep에서 contact 0/512, axial excess 0, cross-section excess 16.6 mm를 확인해
+  젓가락 길이 연장과 joint2 단독 해법을 배제함.
+- candidate 6을 canonical reset으로 쓰고 ring support를 `finger4_tip_link OR finger4_link4`로 정의함.
+- anchor 5개 개별 contact reward, ring support, full-grasp 저속 reward,
+  30-step terminal success를 추가함. anchor 총합은 기존 5×평균과 동일함.
+- TensorBoard `Metrics/hand_grasp{,_final,_min,_max}/*`에 개별 contact force,
+  6-contact/quiet gate, stick 속도, success stable step을 추가함.
+- obs/action 101D/20D 유지. 실행은 사용자 담당이며 py_compile/diff check만 통과함.
+- 최초 4096-env reset에서 발생한 env/joint advanced-index shape mismatch를
+  `FiniteArticulation.write_joint_state_to_sim()`의 outer indexing으로 수정함.
+
+## 2026-07-28 hand_grasp 5/6 local optimum 수정
+
+- run `2026-07-27_23-43-11`은 5166 iter까지 success 0, middle→Stick1 contact 약 0,
+  ring→Stick2 약 1.09 N인 middle-missing 5/6 local optimum으로 수렴함.
+- 독립 ring reward 30을 다른 5 anchor contact로 gate한 `ring_support_coupled`로 교체함.
+- middle→Stick1 oriented surface proximity weight 5, 6-contact hard-gated stability 50,
+  3 rad/s 초과 angular-speed L2 penalty -0.1을 추가함. 다음 run은 fresh.
+
+## 2026-07-28 hand_grasp 수동 완성 파지 유지 정책
+
+- `2026-07-28_12-39-52/pose_005.json`의 joint actual/PD target과 두 dynamic stick pose를
+  STATE B reset으로 적용함.
+- action을 `pose_005 PD target + action×0.1 rad` reference residual로 바꾸고, 보상을 joint reference(약한 prior),
+  두 stick palm-pose reference, 6-contact minimum, full-contact quiet stability로 교체함.
+- success에 reference pose `2 cm/20°` gate를 추가하고 TensorBoard pose-error metric을 추가함.
+- obs/action shape는 101D/20D 유지하며 다음 학습은 fresh run임.
+
+## 2026-07-28 hand_grasp OPEN/CLOSE 모드 1단계
+
+- 에피소드별 OPEN/CLOSE one-hot command를 50:50으로 고정 샘플하고 policy obs를 103D로 확장함.
+- Stick1 full pose 대신 in-hand pivot을 유지하고, Stick2 pose를 기준 rail로 보존함.
+- local `+y` distal tip의 surface gap target을 OPEN `20 mm`, CLOSE `3 mm`로 정의하고,
+  mode gap 성공 허용오차를 `3 mm`로 설정함.
+- mode별 tip-gap reward와 6-contact·저속·mode-gap 결합 stability를 추가하고 success도 같은
+  mode geometry를 30 step 요구하도록 교체함.
+- 1-env resolve smoke와 24-step 학습 smoke를 통과함. observation 변경으로 fresh run만 사용함.
+
+## 2026-07-29 hand_grasp 연속 mode와 corrected tip gap
+
+- 자정을 넘어 본 old-gap `21-54-22(2cm오픈성공)`은 iter 1744에서 OPEN/CLOSE와 final gap이
+  좋았으나 iter 6513에는 quiet-valid와 reward가 퇴화해 old-gap 2 cm 기준선으로 보존함.
+- fresh `00-04-22(3cm실패)`은 full contact 99.9%를 유지했지만 CLOSE raw 0.056,
+  gap error 8.90 mm, quiet-valid 6.9%로 실패해 OPEN 30 mm를 기각하고 20 mm로 복원함.
+- tip gap을 3D endpoint 거리에서 7 mm를 빼는 식에서, 공통 장축 성분을 제거한 횡단거리와
+  square cross-section projected support radius `r1+r2`를 빼는 식으로 교체함.
+- 고정 palm/opening normal은 사용하지 않으며 gap reward, stability, success, diagnostic이 같은
+  corrected helper를 사용함. `pose_005` gap은 old 16.322 mm에서 corrected 13.310 mm로 바뀜.
+- episode를 30초로 늘리고 3초마다 OPEN/CLOSE가 반드시 토글되게 해 한 reset에서 약 10개 mode
+  구간을 학습함. success는 mode당 1회 bonus이고 종료시키지 않으며 drop/timeout만 reset함.
+- corrected-gap fresh `11-14-30`은 iter 1214에서 OPEN/CLOSE raw 0.301/0.287,
+  final gap error 3.28 mm, full contact 98.0%, drop 0임. OPEN은 play에서 보이나 느림.
+- anchor/contact가 아니라 max angular speed 4.15 rad/s, quiet-valid 9.5%인 전환 후 감속/정착이
+  현재 병목임. 같은 설정으로 iter 1500~2000까지 보고, 필요하면 다음 fresh에서 dwell 4~6초 후
+  3초로 줄이는 curriculum을 검토함.
+- 다음 물체 환경 전에는 stick/object를 직접 이동하지 않고 hand/root scripted
+  z→xyz→회전 motion에서 현재 파지의 palm-relative pose, contact, gap, slip/drop을 먼저 검증함.
+- 상세는 `ACTIVITY_2026-07-29.md`, canonical 현재 상태는 `AGENTS.md`에 기록함.
+
+## 2026-07-29 hand_grasp Stick2-axis gap
+
+- OPEN/CLOSE에서 Stick2는 기준 rail이고 Stick1만 움직인다는 비대칭 task 의미에 맞춰,
+  `_tip_surface_gap()`의 투영축을 두 stick 평균 공통축에서 현재 Stick2 local `+y` 장축으로 변경함.
+- square cross-section support radius 계산과 OPEN/CLOSE target, reward/action/PPO 설정은 유지함.
+- Stick1 장축 계산과 축 부호 정렬·평균·정규화를 제거해 측정축 흔들림과 일부 텐서 연산을 줄임.
+- `11-14-30`은 공통축 baseline으로 보존하고 다음 학습은 resume 없이 fresh run으로 비교함.
+
+## 2026-07-29 hand_grasp current-state residual A/B
+
+- episode/mode timing을 `10 s / 5 s`로 바꿔 한 episode에 OPEN↔CLOSE 전환을 한 번만 넣음.
+- action을 저장 PD target 중심 residual에서 기존 custom residual
+  `target=current joint position+0.1×action`으로 전환함.
+- reset target을 `pose_005` actual joint state와 같게 해 수동 contact preload 주입을 제거함.
+- 저장 PD target과 이전 reference action 설정은 삭제하지 않고 재현용 주석으로 보존함.
+- shape는 obs `103D`, action `20D` 그대로이나 action semantics가 달라져 다음 학습은 fresh로 함.
+
+## 2026-07-29 hand_grasp 각속도 페널티 복구와 palm-relative 속도
+
+- 각속도 페널티 제거 run `17-25-14`가 페널티 적용 run `16-24-00`보다 뚜렷하게 개선되지 않았고,
+  단일 seed 변동도 커서 제거 이점이 확인되지 않음. 충돌·튐 억제를 위해 기존 항을 다시 활성화함.
+- 활성 페널티는 두 stick 중 더 빠른 상대 각속도에
+  `-0.1 * clip(max_speed - 3, 0, 10)^2`를 적용함.
+- 향후 floating hand에서 손과 stick이 함께 이동·회전하는 정상 동작을 감점하지 않도록 reward,
+  success gate, TensorBoard 속도 지표를 모두 palm-relative로 통일함.
+  `ω_rel=ω_stick-ω_palm`,
+  `v_rel=v_stick-v_palm-ω_palm×(p_stick-p_palm)`을 사용함.
+- 변경 대상은 독립 각속도 페널티, mode stability의 선·각속도 shaping,
+  `OpenCloseModeHeld`의 30-step 속도 조건과 `Metrics/hand_grasp*` 속도/quiet-valid임.
+- 현재 palm 고정 환경에서는 world와 relative 속도가 사실상 같으므로 `16-24-00`은 유효한 baseline임.
+  실행 중 process에는 반영되지 않고 새 run부터 적용됨. 상세는 `ACTIVITY_2026-07-29.md`.
+
+## 2026-07-29 hand_grasp tip lateral alignment
+
+- corrected radial gap만 맞춘 채 distal tip이 Stick2 옆으로 빗겨나는 해를 막기 위해,
+  `pose_005`에서 측정한 Stick2-local separation 방향을 기준으로 lateral error를 추가함.
+- OPEN/CLOSE gap reward와 mode stability에 `exp(-lateral_error/5mm)`를 결합하고,
+  mode success에도 `lateral_error <= 5mm`를 요구함. 독립 양수 reward는 추가하지 않음.
+- TensorBoard에 `tip_lateral_error`를 추가하고, 기존 diagnostic gap도 reward/success와 같은
+  Stick2-axis square-section 계산을 사용하도록 정정함.
+- obs/action은 `103D/20D` 그대로지만 reward/success 변경이므로 다음 판정은 fresh run으로 함.
+  상세는 `ACTIVITY_2026-07-29.md`.
+
+## 2026-07-29 hand_grasp object-pick 환경 분리
+
+- 현재 OPEN/CLOSE task와 디버그 도구를
+  `nrmk_isaaclab_wuji/backups/hand_grasp_pre_object_env_2026-07-29/`에 백업함.
+- 기존 `hand_grasp`는 건드리지 않고 별도 물리 task `hand_grasp_object`를 등록함.
+- 검증된 `pose_005` hand-stick 상대 자세 전체를 world x축으로 약 `-60.16°` 회전해 두
+  젓가락 평균 장축을 바닥과 평행하게 배치함.
+- `10 mm` 동적 큐브(`2 g`)를 두 distal tip 기준점의 중점에 reset하고, 큐브 아래에는
+  `6 x 6 mm` 단면의 좁은 kinematic 지지대를 둠. 지지대 윗면은 큐브 아랫면에 맞춤.
+- 이번 변경에는 object observation/reward/success와 hand root action을 추가하지 않음.
+  기존 action/observation/reward는 그대로 `20D/103D`이며, 다음 단계에서 물체 파지와
+  hand 이동 조건을 별도로 설계함.
+- `hand_grasp_object` 1 env / 1 iteration smoke에서 scene 생성, reset event 3개,
+  24 policy step을 통과함. 로그: `logs/rsl_rl/hand_grasp_object/2026-07-30_09-16-16`.
+
+## 2026-07-30 hand_grasp 6-contact 보존 구조
+
+- run `2026-07-29_21-05-32`는 약 1500 iter에서 final contact `5.97/6`,
+  full-contact `96.9%`까지 갔지만 3100 iter부터 약 `3/6`으로 붕괴했고 success도 0이 됨.
+  다른 보상을 더 먹는 대체해가 아니라 gap·pivot·Stick2 pose와 총 reward까지 함께 감소한
+  policy collapse였음.
+- 변경 전 파일은
+  `nrmk_isaaclab_wuji/backups/hand_grasp_pre_contact_gate_2026-07-30/`에 백업함.
+- 접촉 shaping을 `10*mean(clip(F_i/0.02,0,1)) +
+  40*min(clip(F_i/0.02,0,1))`으로 변경함. mean은 빠진 접촉별 복구 신호,
+  min은 가장 약한 접촉을 bottleneck으로 만들며 0.02 N 이상 힘은 추가 보상을 주지 않음.
+- OPEN/CLOSE gap+lateral reward에 같은 6-contact smooth minimum gate를 곱함.
+  joint reference, Stick1 pivot, Stick2 pose는 접촉 상실 시 복귀 신호로 약하게 ungated 유지함.
+- 6/6이 0.02 N 이상으로 5 policy step 유지되면 contact latch를 켬. 이후 0.01 N 이상
+  접촉이 4개 이하인 상태가 10 step 지속되면 `functional_contact_lost`로 종료함.
+  5/6에는 종료 대신 복구 기회를 남기며 acquire/release threshold 차이로 chatter를 막음.
+- success `30000`, entropy `0.001`, action/obs `20D/103D`는 이번 변경에서 유지함.
+  reward/termination 의미가 바뀌었으므로 다음 학습은 fresh run으로 판정함.
+- 1 env / 1 iteration smoke에서 reward 11개, termination 5개가 resolve되고 24 step 통과함.
+  로그: `logs/rsl_rl/hand_grasp/2026-07-30_09-32-09`.
+
+## 2026-07-30 hand_grasp gap/lateral shaping 분리
+
+- 변경 전 contact-gated 결합형은
+  `contact_gate * exp(-gap_error/5mm - lateral_error/5mm)`라 세 신호 중 하나만 나빠도
+  gap shaping 전체가 작아지고 원인 판독도 어려웠음.
+- 변경 전 파일은
+  `nrmk_isaaclab_wuji/backups/hand_grasp_pre_lateral_split_2026-07-30/`에 백업함.
+- OPEN/CLOSE reward는 Stick2 장축 성분을 제외한 transverse square-section surface gap만
+  평가하고 6-contact smooth gate는 유지함:
+  `contact_gate * exp(-gap_error/5mm)`.
+- lateral은 mode/contact와 독립적인 bounded penalty
+  `-5 * (1-exp(-lateral_error/5mm))`로 분리함. 정렬이 맞으면 추가 이득이 0이고,
+  접촉을 끊어도 penalty가 사라지지 않으며 최악에도 -5로 제한됨.
+- `mode_grasp_stability`의 contact×gap×lateral×quiet 결합과 success의 lateral `<=5mm`
+  hard 조건은 유지함. obs/action은 `103D/20D` 그대로임.
+- smoke `logs/rsl_rl/hand_grasp/2026-07-30_10-28-30`에서 reward 12개,
+  termination 5개가 resolve되고 24 step 통과함. 다음 학습은 fresh run으로 시작함.
+
+## 2026-07-30 hand_grasp Stick2 dynamic anchor 강화
+
+- fresh run `2026-07-30_10-31-54` 초반(~330 iter)은 ring-tip→Stick2 force가
+  `0.737 N`까지 증가했지만 Stick2 position/orientation error가
+  `9.72 mm / 0.580 rad(33.3°)`, palm-relative angular speed가 `6.45 rad/s`였음.
+  따라서 병목은 약지 힘 자체가 아니라 접촉한 Stick2가 함께 밀리고 도는 것이었음.
+- 변경 전 파일은
+  `nrmk_isaaclab_wuji/backups/hand_grasp_pre_stick2_anchor_2026-07-30/`에 백업함.
+- positive pose reward `15*exp(-e_pos/10mm-e_ori/10°)`를 없애고 독립 bounded penalty:
+  `-10*(1-exp(-e_pos/5mm))`, `-10*(1-exp(-e_ori/10°))`로 교체함.
+- OPEN/CLOSE gap reward와 mode stability에
+  `exp(-e_pos/5mm-e_ori/10°)` Stick2 anchor gate를 곱함. Stick2가 움직인 채 gap만
+  맞추는 해는 mode reward도 잃게 됨.
+- success Stick2 hard limit를 `20 mm/20°`에서 `5 mm/10°`로 강화함.
+  Stick2 rigid body는 여전히 dynamic이며 fixed/kinematic으로 바꾸지 않음.
+- command는 source 기준 `5 s`마다 반전하고 episode은 `10 s`; action/obs/entropy 및
+  6-contact latch는 `20D/103D/0.001`과 기존 조건을 유지함.
+- smoke `logs/rsl_rl/hand_grasp/2026-07-30_11-25-34`에서 reward 13개,
+  termination 5개가 resolve되고 24 policy step을 통과함. 다음 판정은 fresh run으로 함.
+
+## 2026-07-30 hand_grasp `21-05-32` exact baseline 복원
+
+- 사용자가 contact 6/6이 유지되던 `2026-07-29_21-05-32` 구성을 그대로 fresh 재학습하고
+  좋은 시점에서 수동 중단하기로 결정함.
+- 직전 Stick2-anchor 강화 버전은
+  `nrmk_isaaclab_wuji/backups/hand_grasp_stick2_anchor_2026-07-30/`에 보존함.
+- 원 run `params/env.yaml` 기준 실제 command dwell은 `2 s`이고 episode은 `10 s`.
+  reward는 positive Stick2 pose 15, gap+lateral 결합형 OPEN/CLOSE 각 20,
+  contact min 20/force scale 0.10 등 총 10개를 복원함.
+- contact gate/mean-min 강화/독립 lateral penalty/Stick2 anchor penalty·gate/
+  contact-collapse termination은 모두 active에서 제거함. termination은 원래의 4개임.
+- exact reproduction이므로 CLOSE `3 mm`, 공통 success gap tolerance `±3 mm`도 유지함.
+  0 mm CLOSE 제안은 이번 run에 섞지 않음.
+- smoke `logs/rsl_rl/hand_grasp/2026-07-30_12-13-39`에서 reward 10개,
+  termination 4개, 24 step 통과. 생성 YAML을 원 run과 비교했을 때 num_envs/max_iterations/
+  log path 외 모든 환경·PPO 값이 동일함.
+- 이후 단일 변경으로 CLOSE 목표를 `3 mm→0 mm`, OPEN/CLOSE 공통 success gap tolerance를
+  `±3 mm→±0.5 mm`로 변경함. gap reward sigma `5 mm`와 나머지 `21-05-32` 구조는 유지함.
+
+## 2026-07-30 — `12-21-21` 성공 run 백업 + axial 단일변수 A/B
+
+- 가장 잘 된 OPEN/CLOSE run `2026-07-30_12-21-21` 전체를
+  `backups/runs/hand_grasp/2026-07-30_12-21-21_success/`에 보존함.
+  checkpoint 0~900, event, exported policy, params, git diff를 포함하며 원본/백업
+  checksum 비교가 일치함. 축 변경 전 소스는
+  `nrmk_isaaclab_wuji/backups/hand_grasp_pre_axial_2026-07-30/`에 보존함.
+- 새 A/B는 별도 axial penalty를 만들지 않고 기존 mode reward와 stability의
+  `exp(-gap/5mm-lateral/5mm)`에
+  `-abs(axial_offset-(-4.8016mm))/5mm`만 추가함.
+- `tip_axial_offset/error` TensorBoard metric을 추가함. reward 항 개수 10,
+  obs/action `103D/20D`, success 조건과 PPO는 유지하며 fresh run으로 비교함.
+- 장기 FSM은 8 phase 구조를 유지하되 phase one-hot/timer observation,
+  dwell+hysteresis 전이, 이전 phase invariant gate, phase-conditioned reset을 사용하기로
+  설계 방향을 정리함. 실제 FSM 구현은 axial A/B 뒤로 미룸.
+
+## 2026-07-30 — Phase 2→3 `hand_setting` 단일 단계 구현
+
+- 사용자 요청에 따라 `hand_setting`은 thumb-seat/roll/support subphase를 넣지 않고,
+  열린 손과 정렬된 두 stick에서 `pose_005` functional grasp까지 한 정책이 연속 수행하도록 구현함.
+- reset:
+  - Wuji는 모두 열린 상태이며 thumb `finger1_joint2=-0.1659 rad`.
+  - Stick1/2는 world `x=0.055/0.035, y=0, z=0.5195`, identity orientation,
+    zero velocity의 dynamic rigid body임.
+  - joint state와 PD target을 동일하게 초기화해 수동 preload를 주입하지 않음.
+- action은 기존과 같은 20D `target=current_joint_position+0.1*action`.
+  OPEN/CLOSE command를 제거해 obs는 `103D→101D`이며 구성은 joint position/velocity
+  40 + fingertip 15 + stick pose 14 + palm-relative velocity 12 + previous action 20임.
+- 보상은 하나의 연속 ladder임:
+  - 약한 final joint prior `2`, Stick1/2 palm pose `8/12`
+  - thumb-distal/index-tip/middle-tip→Stick1, ring-tip→Stick2의 central-shaft
+    proximity 각 `2`; 특정 표면 법선이나 한 점은 강제하지 않음.
+  - `clip(F/0.10,0,1)`의 6-group mean 총 weight `5`는 실제 cfg에서 여섯 개
+    per-contact tag(weight `5/6`씩)로 분해되어 첫 접촉부터 부분 신호와 원인별 로그를 주고,
+    min `20`은 하나라도 빠지면 0인 6/6 completion pressure임.
+  - final stick pose와 중앙 shaft region으로 gate한 completion/stability `30/50`.
+  - 성공 pulse `30000`, action-rate `-0.001`.
+- 성공/종료는 6개 exact semantic pair가 모두 `>=0.02 N`, 네 좁은 link 접촉이
+  각 stick 중앙 160 mm 안, Stick1 position/orientation error `<=20 mm/20°`,
+  Stick2 `<=15 mm/20°`, 최대 palm-relative linear/angular speed `<=0.15 m/s/3 rad/s`를
+  30 policy step 유지할 때 발생함. 어느 stick이든 `z<0.40 m`면 drop 종료함.
+- episode는 15초이며 별도 command/hidden phase는 없음. 기존 `hand_grasp`와
+  `12-21-21` 성공 baseline은 수정하지 않음.
+- 최종 smoke `hand_setting/2026-07-30_17-05-31`에서 command 0, obs/action `101D/20D`,
+  reset event 2개, reward/termination `18/4`와 24-step rollout을 확인함.
+  접근 shaping 네 항도 모두 nonzero였음. 기존 103D checkpoint는 load하지 않고 fresh run으로 시작함.
+- task 전체 import를 막던 Chopsticks acquire cfg의 누락 상수 `STICK_POS=(0.62,-0.20)`도
+  파일 내 기존 주석/배치값과 동일하게 복구함.
+
+## 2026-07-30 — root backup 분류 정리
+
+- loose code snapshot을 `backups/code/box_transport/` 5개와
+  `backups/code/chopsticks_grasp/` 8개로 분류함.
+- 완전한 hand run은 `backups/runs/hand_grasp/2026-07-30_12-21-21_success/`로 이동함.
+- `backups/README.md`를 인덱스로 추가했으며 파일 삭제나 checkpoint 변경은 없음.
+
+## 2026-07-30 — hand_grasp play keyboard OPEN/CLOSE command
+
+- `scripts/rsl_rl/play.py --keyboard_hand_mode`를 추가함. 실행 중 `1=OPEN`, `2=CLOSE`이며
+  선택 one-hot을 observation에 다시 반영한 다음 policy action부터 적용함.
+- Isaac/Carb viewport listener는 queue에 mode index만 전달하고 simulation thread가 command tensor를 갱신함.
+- reset 뒤에도 마지막 키보드 mode를 복원하며 mode/gap diagnostics가 자동으로 켜짐.
+- GUI viewport 입력 전용이므로 `--headless` 동시 사용을 CLI에서 차단함.
+- 보조 `--hand_mode open|close`, 기존 `--alternate_hand_mode`도 유지하고 세 방식은 상호 배타적으로 함.
+- 정적 컴파일, whitespace 검사, 실제 `--help` CLI 노출을 검증함.
+
+## 2026-07-30 — hand_setting TensorBoard metrics
+
+- `CustomRewardManager`에 `hand_setting` 전용 진단을 추가함.
+- `Metrics/hand_setting{,_final,_min,_max}/*` 아래에서 six-pair contact force/count,
+  central-shaft region score/count, Stick1/2 palm-relative pose error,
+  palm-relative speed, `setting_valid`, `success_stable_steps`를 기록함.
+- active reward/termination cfg의 sensor group과 threshold를 재사용해 판정 기준을 일치시킴.
+- smoke `hand_setting/2026-07-30_17-26-48`에서 24 step을 통과했고,
+  event 파일에서 32개 metric × 4 family = scalar tag 128개를 확인함.
+- 실행 중이던 run에는 동적 반영되지 않으므로 프로세스 재시작이 필요함. obs/action/reward/PPO는
+  불변이라 최신 hand_setting checkpoint resume는 호환됨.

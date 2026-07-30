@@ -671,3 +671,72 @@ hold / reach = 10.0     (이전 4.0,  논문 25)
 
 **즉 직육면체 파지는 젓가락으로 가는 정석 경로임.** 지금 큐브에서 하는 임시방편(게이팅, palm_facing
 축 추측)은 젓가락에선 전부 버려짐.
+
+## 2026-07-24 — 젓가락질 전체 Phase 로드맵 (연구 방향)
+
+> 큐브→박스→1스틱 functional grasp를 거쳐 확정한 최종 연구 방향. 상세·논문 근거는
+> `ACTIVITY_2026-07-23.md`, 실험 이력은 `worklog.md`.
+
+**Phase 1 — 젓가락 획득 + functional grasp 형성** (현재 단계)
+- 완료 조건: 두 젓가락 획득 → 손바닥 위 정렬 → 각 손가락이 지정 젓가락의 지정 영역 접촉 →
+  아래 stick 안정 유지 → 위 stick 개폐 → 반복 open-close에도 안 미끄러지고 안 떨어짐.
+- topology 가설: 엄지·검지·중지→Stick1, 약지→Stick2, 새끼 보조(스타일 A/B/C).
+- 내부 3단계로 분리(한 reward sum 금지): STATE A 획득+staging / B standard grip 형성 / C open-close.
+  각 단계 성공을 latch(0.5~1s 연속)로 전환, 이후 이전 reward 끄고 성공 bonus 1회(파밍 차단).
+- 구현: **방식 2(단계별 별도 환경/curriculum) 먼저 → 나중에 FSM 결합.** FSM 한 번에는
+  horizon·reward 충돌·파밍 위험. 단계 하나가 아직 취약(액션 구조 하나로 파지 성패가 갈린 실측).
+- BO(논문 C 축소): surface_axis/sign 고정, 손가락별 **axial center만** sweep → 유망 범위서 BO.
+
+**Phase 2 — 젓가락으로 물체 집기** (나중)
+- tip으로 물체 파지 → 들기 → 이동 → **큰 목표 공간(바구니)에 놓기**.
+- ⚠ **정밀 pick&place 아님.** 자세 정렬 불필요 → 목표항은 위치 φ만으로 충분.
+  keypoint/쿼터니안 자세매칭은 Phase 1 staging에서나 필요. Phase 2 병목은 tip 파지+open-close 유지.
+
+**목표항 방식 정리 (성공 전제 품질 비교)**
+- keypoint(pos·ori 융합): 정밀·단일항·튜닝 편함. 단 목표 대칭이 물체마다 다르면 over-constrain.
+- 분리형(위치 φ + 자세 게이팅): 필요한 축만·진단성·물체별 유연. 항이 많아 밸런싱 어려움.
+- → 접근/운반엔 keypoint 성향(선형 견인), 말단 정밀엔 분리형 성향. Phase 1 staging은 keypoint 적합.
+
+**진행 순서**: 1-stick 고정 pose 수렴 → 랜덤 pose 도달성 검증(2-stick 전제) → STATE A → B → C.
+
+**참고 논문**: SimToolReal(keypoint goal-pose, best-so-far, I_grasped 전후 gate 분리),
+Dexterous Pre-grasp Manipulation(functional pre-grasp 상태로 도구 이동),
+Learning to Use Chopsticks in Diverse Gripping Styles 2205.14313
+(gripping style로 손가락-젓가락 담당 지정, axial 접촉위치 BO 탐색, open-close 평가, r_contact=−w·Σdᵢ).
+
+## 2026-07-25 — Phase 1 재정의(주먹 파지) + 성공-래치 커리큘럼 수식
+
+> 위 로드맵의 Phase 1(2-stick functional grasp)을 1-stick 관점으로 구체화. A/B·파지 진단으로
+> 확정한 실사용 계획. 상세 실험 이력은 `ACTIVITY_2026-07-25.md`, `worklog.md`.
+
+**Phase 1 종료 상태(확정)**: 주먹(5-finger wrap) 파지 → goal로 transport → **palm-up 자세 매칭**.
+- wrap은 Phase 1 목표 자체 (tool grasp는 Phase 2). 나중에 tool로 가도 "다시 배우기"가 아니라
+  성공-래치로 보상만 전환 → unlearning 최소.
+
+**A/B 결론(정정) — keypoint는 고정 pose에서 검증됨, 방법 우열은 미결**:
+- ⚠ 앞서 "랜덤 pose에서 keypoint/쿼터니안 우열"로 판단하려던 시도는 **confound 투성이라 폐기**.
+  - chopstick 쿼터니안 "34° 벽"은 방법이 아니라 **grip 오설정 아티팩트**였음. 엄지·중지 x부호를
+    창발 파지에 맞추자(엄지−x/중지+x) 같은 쿼터니안이 ori min 4°까지 내려감(08-47-53).
+  - box keypoint "정체"도 방법이 아니라 **랜덤 pose(1.57~3.14)** 때문. **고정 pose(09-43-43)에선
+    keypoint가 err_pos 4cm·ori 3°로 수렴, success 상승** — 잘 됨. ("kp_raw 0.0003=신호죽음"은
+    오판; 잘 된 09-43-43도 동일 raw. best-so-far 텔레스코핑이라 raw 작은 게 정상.)
+- **핵심**: 랜덤 자세매칭은 **두 Phase 어디도 요구 안 함**(Phase 1=palm-up 고정, Phase 2=위치만).
+  즉 실제 과제는 keypoint가 강한 고정-pose 영역. 랜덤 우열 비교는 요구 밖이라 의미 축소.
+- 방향: **keypoint(box)를 주력 라인으로**, 파지를 주먹(wrap)으로. chopstick(쿼터니안+tripod)은
+  known-good 상태로 park. (2026-07-25 코드: box에 penta wrap 적용, chopstick wrap 철회·복원.)
+
+**파지 자세 진단 (왜 자세가 안 다듬어지나)**:
+- grip 보상(FingertipGripProgressReward, progress형)은 에피소드 예산 ~1.3점, cube_lift(gate형)는
+  240~800점. **grip 완성 보상이 lift의 ~1/500** → 자세를 독립적으로 당기는 신호가 사실상 없음.
+  자세는 오직 `lift×gate` 결합으로만 형성됨. 위험 = "느슨-lift 국소최적"(gate 0.3에서 안주).
+- 개입 기준: **느슨-lift가 실제 드롭(stick_dropped)을 유발할 때만** gate를 sharp하게(`gate^k`).
+  드롭 안 나면 자세 완벽화는 과잉공학.
+
+**성공-래치 커리큘럼 수식 (Phase 전환, fresh-run 규칙 준수)**:
+- env i마다 래치 `L[i]∈{0,1}`: `s1[i]`=Phase1 성공조건, `L ← max(L, s1)` (에피소드 리셋 때 0).
+- `R[i] = (1−L[i])·R_phase1[i] + L[i]·R_phase2[i]`.
+- **리워드 함수가 하나로 연속** → resume 아님(fresh-run 규칙 안 어김), critic 충격은 env별 성공
+  시점이 staggered라 배치 평균이 매끄러움. 하드 래치 걱정되면 `L ← clamp(L + s1/K, 0, 1)` 램프.
+- `GoalReachedBonus._awarded` 래치 패턴 재사용 가능.
+
+**진행**: 1-stick wrap+palm-up 수렴 → (성공-래치로) Phase 2 tool grasp 보상 전환.
