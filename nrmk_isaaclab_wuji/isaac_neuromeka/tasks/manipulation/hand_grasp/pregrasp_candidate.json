@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "purpose": "nominal_5_of_6_pregrasp_seed_not_final_stable_grasp",
+  "source_run": "logs/debug/hand_grasp_ik_search/2026-07-27_22-45-04",
+  "source_candidate_rank": 6,
+  "search_self_collision": "on",
+  "contact_topology": {
+    "stick1": [
+      "thumb_tip",
+      "index_tip",
+      "middle_tip"
+    ],
+    "stick2": [
+      "ring_tip",
+      "palm",
+      "thumb_middle"
+    ]
+  },
+  "training_topology_override": {
+    "reason": "ring_joint2_full_range_probe_missed_the_shaft_laterally",
+    "ring_support_logic": "finger4_tip_link OR finger4_link4",
+    "source_probe": "logs/debug/hand_grasp_ik_search/2026-07-27_23-15-18"
+  },
+  "stick2_pose_palm": {
+    "position_m": [
+      0.043187499046325684,
+      0.025004500523209572,
+      0.05436628311872482
+    ],
+    "quaternion_wxyz": [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "stick_pair": {
+    "center_offset_m": 0.02922779880464077,
+    "close_angle_deg": 2.623365523401531,
+    "pivot_local_y_m": 0.06
+  },
+  "joint_positions_rad": {
+    "finger1_joint1": 0.527073085308075,
+    "finger1_joint2": 0.19501075148582458,
+    "finger1_joint3": -0.11286279559135437,
+    "finger1_joint4": 1.219683289527893,
+    "finger2_joint1": 1.2196367979049683,
+    "finger2_joint2": 0.18747277557849884,
+    "finger2_joint3": 1.2824510335922241,
+    "finger2_joint4": 1.4151599407196045,
+    "finger3_joint1": 1.2032766342163086,
+    "finger3_joint2": -0.023032205179333687,
+    "finger3_joint3": 1.415114164352417,
+    "finger3_joint4": 1.3313233852386475,
+    "finger4_joint1": 1.439659833908081,
+    "finger4_joint2": -0.06709425151348114,
+    "finger4_joint3": 1.4151599407196045,
+    "finger4_joint4": 1.4151599407196045
+  },
+  "selection_diagnostics": {
+    "geometric_errors_m": {
+      "thumb_tip_stick1": 0.007376929745078087,
+      "index_tip_stick1": 0.007373897824436426,
+      "middle_tip_stick1": 0.0001694289967417717,
+      "ring_tip_stick2": 0.021640289574861526,
+      "thumb_mid_stick2": 0.008207429200410843
+    },
+    "contact_fraction": {
+      "thumb_tip_stick1": 1.0,
+      "index_tip_stick1": 1.0,
+      "middle_tip_stick1": 1.0,
+      "ring_tip_stick2": 0.0,
+      "palm_stick2": 0.9833333333333333,
+      "thumb_mid_stick2": 0.9958333333333333
+    },
+    "maintained_contact_count": 5,
+    "stick1_displacement_m": 0.0011584312887862325,
+    "stick2_displacement_m": 0.014002558775246143,
+    "stick1_max_speed_m_s": 0.08832547068595886,
+    "stick2_max_speed_m_s": 0.05685143545269966,
+    "pair_first_contact_region": "none",
+    "pair_peak_force_N": 0.0,
+    "max_joint_tracking_error_rad": 0.24823665618896484,
+    "max_torque_clip_fraction": 0.11666667461395264,
+    "minimum_joint_limit_margin_fraction": 0.09999997913837433
+  },
+  "limitations": [
+    "This is a pre-grasp reference, not a final force-closure or release-stable grasp.",
+    "The candidate was generated with self-collision enabled and the five structural palm-link2 filters active.",
+    "Ring-tip to Stick2 contact was 0%; the other five required contacts persisted for at least 98.3% of validation.",
+    "The ring target reached the CEM 10% joint-margin boundary and finger4_joint4 torque clipped for 11.7% of validation.",
+    "Residual RL uses finger4_tip_link OR finger4_link4 as the Wuji lower-stick support and must reduce sustained actuator loading."
+  ]
+}
