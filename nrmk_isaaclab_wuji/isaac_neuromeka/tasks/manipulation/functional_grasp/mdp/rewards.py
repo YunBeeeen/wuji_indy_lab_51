@@ -1,135 +1,660 @@
-"""논문(Dexterous Pre-grasp Manipulation)의 보상 항들.
-
-전체 보상 (Eq. 21):
-    r = r_grasp + r_lift + r_man + r_MP + r_T
-
-    r_grasp = r_hp + r_hr + λ·r_hj        (Eq. 8)   목표 파지 g로 가기
-    r_man   = r_reach + r_hold + r_orient (Eq. 13)  pre-grasp manipulation
-    r_MP                                  (Eq. 17)  특이점 회피        <- 이미 있음
-    r_T                                   (Eq. 18)  g 도달 성공 (희소)
-    r_lift                                (Eq. 20)  들어올리기         <- 이미 있음
-
-가중치 (논문 p.9):
-    r_reach x 1  |  r_hold x 25  |  r_orient x 500  |  r_T x 5000     <- 단계마다 약 20배
-    나머지는 스케일 안 함 (x1)
-    이유: "reduces the probability that the policy gets stuck in the local minima, created by
-           accumulating rewards for actions that are easier to achieve compared to the following
-           more complex sub-tasks."
-
-★ 거의 전부 **차분형**이다 (r_hp, r_hr, r_hj, r_reach, r_orient).
-  절대형은 r_hold 하나뿐. r_T는 희소 이진 보상.
-  차분형은 총합이 (초기오차 - 최종오차)로 telescoping되어 farming이 불가능하다.
-  ★ 차분형에 곱셈 게이트를 걸 땐 반드시 부호를 나눌 것 (음수에 곱하면 telescoping이 깨짐 —
-    2026-07-13에 그 버그로 "왕복 farming"이 발생했음. mdp/rewards.py의 ObjectCageProgressReward 참고).
-
-★ 이미 있어서 그대로 쓰는 것 (isaac_neuromeka/mdp/rewards.py):
-    ObjectCageProgressReward   -> r_reach   (단, 게이팅은 제거. r_hr이 그 역할을 함)
-    object_in_finger_cage      -> r_hold
-    arm_manipulability_penalty -> r_MP
-    object_lift_in_cage        -> r_lift
-    _box_signed_distance, cage_points, box_ground_clearance 등 전부 재사용
-"""
+"""Functional-grasp rewards for the one-stick A1 experiment."""
 
 from __future__ import annotations
 
-from isaaclab.managers import ManagerTermBase
+from collections.abc import Sequence
 
-# -----------------------------------------------------------------------------
-# 흐름
-#
-#   [ 물체 pose ] --+--> g_world = 물체pose ∘ g_local
-#                   |         |
-#   [ 손 pose   ] --+---------+--> Δhp, Δhr, Δhj
-#                             |         |
-#                             |         +--> r_hp  (차분)  ─┐
-#                             |         +--> r_hr  (차분)  ─┼─> r_grasp
-#                             |         +--> r_hj  (차분)  ─┘   (λ로 가중)
-#                             |         +--> r_T   (희소: 셋 다 임계 이하면 1)
-#                             |
-#   [ cage 가상점 ] ----------+--> r_reach (차분, 기존 재사용)  ─┐
-#                             +--> r_hold  (절대, 기존 재사용)  ─┼─> r_man
-#   [ 물체 rotation ] --------+--> r_orient (차분)              ─┘
-#
-#   [ arm Jacobian ] -------------> r_MP   (기존 재사용)
-#   [ 물체 높이 ] ----------------> r_lift (기존 재사용)
-# -----------------------------------------------------------------------------
+import torch
+from isaaclab.envs import ManagerBasedRLEnv
+from isaaclab.managers import ManagerTermBase, SceneEntityCfg
+
+from isaac_neuromeka.mdp.rewards import box_ground_clearance, object_in_finger_cage
+
+from .target_grasp import (
+    fingertip_grip_region_error,
+    hand_tool_orientation_error,
+    index_grip_error,
+    thumb_grip_error,
+)
 
 
-class HandPositionProgressReward(ManagerTermBase):
-    """r_hp (Eq. 9~10): 손을 목표 파지 위치로.  차분형.
+def balanced_tripod_cage_gate(
+    env: ManagerBasedRLEnv,
+    index_cage_cfg: SceneEntityCfg,
+    middle_cage_cfg: SceneEntityCfg,
+    object_cfg: SceneEntityCfg,
+    object_half_extent: tuple[float, float, float] = (0.01, 0.09, 0.01),
+    num_points: int = 3,
+    point_fractions: tuple[float, ...] | None = None,
+    sphere_radius: float = 0.005,
+    depth_max: float = 0.005,
+) -> torch.Tensor:
+    """Require both thumb-index and thumb-middle cage groups to engage."""
+    index_gate = object_in_finger_cage(
+        env,
+        index_cage_cfg,
+        object_cfg,
+        object_half_extent,
+        num_points,
+        sphere_radius,
+        depth_max,
+        point_fractions,
+    )
+    middle_gate = object_in_finger_cage(
+        env,
+        middle_cage_cfg,
+        object_cfg,
+        object_half_extent,
+        num_points,
+        sphere_radius,
+        depth_max,
+        point_fractions,
+    )
+    return torch.minimum(index_gate, middle_gate)
 
-        r_hp(t) = [Δhp(t-1) - Δhp(t)] / Δhp_max,    Δhp = |hp_target_world - hp_hand|
 
-    Δhp_max는 한 step에 손이 갈 수 있는 최대 거리 (v_max * dt). 정규화 상수.
-    논문은 v_hp_max를 손의 최대 속도로 잡음.
+def object_lift_in_balanced_tripod_cage(
+    env: ManagerBasedRLEnv,
+    index_cage_cfg: SceneEntityCfg,
+    middle_cage_cfg: SceneEntityCfg,
+    object_cfg: SceneEntityCfg,
+    object_half_extent: tuple[float, float, float] = (0.01, 0.09, 0.01),
+    num_points: int = 3,
+    point_fractions: tuple[float, ...] | None = None,
+    sphere_radius: float = 0.005,
+    depth_max: float = 0.005,
+    lift_height: float = 0.08,
+    surface_z: float = 0.0,
+) -> torch.Tensor:
+    """Reward clearance only while both functional cage groups remain engaged."""
+    gate = balanced_tripod_cage_gate(
+        env,
+        index_cage_cfg,
+        middle_cage_cfg,
+        object_cfg,
+        object_half_extent,
+        num_points,
+        point_fractions,
+        sphere_radius,
+        depth_max,
+    )
+    clearance = box_ground_clearance(env, object_cfg, object_half_extent, surface_z)
+    lift = torch.clamp(clearance, 0.0, lift_height) / lift_height
+    return gate * lift
 
-    reset()에서 기준선(_previous)을 리셋 자세에서 seeding할 것.
-    안 하면 첫 액션이 기준선을 공짜로 부풀림 (= swing-out 해킹). 기존 ObjectCageProgressReward 참고.
+
+# ── 5-finger wrap gate (2026-07-25, Phase 1 주먹 파지) ──────────────────────────
+# tripod(엄지 대 검지·중지 2쌍) → penta(엄지 대 검지·중지·약지·새끼 4쌍)로 확장.
+# 엄지가 한 면, 나머지 4손가락이 반대 면을 감싸는 주먹 파지를 강제. min이라 4쌍이 모두
+# 물려야 게이트가 열림 → lift·hold가 5손가락 wrap을 요구. tripod 함수는 그대로 보존(되돌리기).
+def balanced_penta_cage_gate(
+    env: ManagerBasedRLEnv,
+    index_cage_cfg: SceneEntityCfg,
+    middle_cage_cfg: SceneEntityCfg,
+    ring_cage_cfg: SceneEntityCfg,
+    pinky_cage_cfg: SceneEntityCfg,
+    object_cfg: SceneEntityCfg,
+    object_half_extent: tuple[float, float, float] = (0.01, 0.09, 0.01),
+    num_points: int = 3,
+    point_fractions: tuple[float, ...] | None = None,
+    sphere_radius: float = 0.005,
+    depth_max: float = 0.005,
+) -> torch.Tensor:
+    """Require thumb-vs-{index,middle,ring,pinky} cages to all engage (min)."""
+    gate = None
+    for cage_cfg in (index_cage_cfg, middle_cage_cfg, ring_cage_cfg, pinky_cage_cfg):
+        g = object_in_finger_cage(
+            env,
+            cage_cfg,
+            object_cfg,
+            object_half_extent,
+            num_points,
+            sphere_radius,
+            depth_max,
+            point_fractions,
+        )
+        gate = g if gate is None else torch.minimum(gate, g)
+    return gate
+
+
+def object_lift_in_balanced_penta_cage(
+    env: ManagerBasedRLEnv,
+    index_cage_cfg: SceneEntityCfg,
+    middle_cage_cfg: SceneEntityCfg,
+    ring_cage_cfg: SceneEntityCfg,
+    pinky_cage_cfg: SceneEntityCfg,
+    object_cfg: SceneEntityCfg,
+    object_half_extent: tuple[float, float, float] = (0.01, 0.09, 0.01),
+    num_points: int = 3,
+    point_fractions: tuple[float, ...] | None = None,
+    sphere_radius: float = 0.005,
+    depth_max: float = 0.005,
+    lift_height: float = 0.08,
+    surface_z: float = 0.0,
+    gate_exponent: float = 1.0,
+) -> torch.Tensor:
+    """Reward clearance only while the 5-finger wrap remains engaged.
+
+    ``gate_exponent`` > 1 이면 느슨한 게이트에서 lift 지급이 급감(gate^k) — "꽉 물어야
+    든다"를 부드럽게 강제. 기본 1.0(선형)이라 penta 게이트만으로 시작하고, 느슨-lift가
+    드롭을 유발하면 그때 k=2~3으로 올리면 됨(코드 수정 없이 cfg 인자만).
     """
-
-    # TODO: __init__ / reset / __call__ 구현.  ObjectCageProgressReward와 같은 골격.
-
-
-class HandRotationProgressReward(ManagerTermBase):
-    """r_hr (Eq. 9 유사): 손을 목표 파지 회전으로.  차분형.
-
-        r_hr(t) = [Δhr(t-1) - Δhr(t)] / Δhr_max,    Δhr = angle(hr_target_world, hr_hand)
-
-    Δhr_max = v_hr_max * dt.  논문은 v_hr_max = π rad/s.
-
-    ★ 이 항이 우리가 큐브에서 게이팅으로 때우던 문제를 정면으로 푼다.
-      "손을 어떤 방향으로 돌려야 하는가"의 답(hr_target)을 알고 있으므로,
-      palm_facing 같은 대용품도, 그 축을 추측하는 삽질도, 게이팅도 전부 필요 없다.
-    """
-
-    # TODO
-
-
-class HandJointProgressReward(ManagerTermBase):
-    """r_hj (Eq. 11): 손가락 관절을 목표 파지 관절각으로.  차분형.
-
-        r_hj(t) = [Δhj(t-1) - Δhj(t)] / Δhj_max,    Δhj = (1/N) Σ |hj_i - g_ji|
-
-    λ (Eq. 12): 손이 목표에서 멀 때는 손가락 관절 보상을 무시한다.
-        λ = [1 - min(h_prox_p, Δhp)/h_prox_p] * [1 - min(h_prox_r, Δhr)/h_prox_r]
-        h_prox_p = 손의 길이 (논문). h_prox_r도 상수.
-
-    ★ λ가 곧 "순서 강제"다. 손이 멀면 λ≈0 -> 손가락을 미리 오므릴 이유가 없음.
-      가까워져야 λ↑ -> 그때 손가락을 목표 자세로 만듦.
-      **우리가 게이팅으로 흉내내던 것을 논문은 이 λ로 한다.**
-    """
-
-    # TODO
+    gate = balanced_penta_cage_gate(
+        env,
+        index_cage_cfg,
+        middle_cage_cfg,
+        ring_cage_cfg,
+        pinky_cage_cfg,
+        object_cfg,
+        object_half_extent,
+        num_points,
+        point_fractions,
+        sphere_radius,
+        depth_max,
+    )
+    clearance = box_ground_clearance(env, object_cfg, object_half_extent, surface_z)
+    lift = torch.clamp(clearance, 0.0, lift_height) / lift_height
+    return torch.pow(gate, gate_exponent) * lift
 
 
-class ObjectOrientProgressReward(ManagerTermBase):
-    """r_orient (Eq. 16): 물체를 nominal 자세로 돌리기.  차분형.
+# ── N-finger wrap gate 공용 헬퍼 (2026-07-26) ──────────────────────────────────
+# 엄지 대 여러 손가락 cage의 min. cage_cfgs는 파이썬 리스트지만 **공개 함수는 반드시
+# SceneEntityCfg를 개별 named 파라미터로 받아야** 매니저가 resolve한다(manager_base.py:398
+# 은 params의 직접 SceneEntityCfg만 resolve, 리스트 안은 안 함). 그래서 공개 함수에서
+# 이 헬퍼로 리스트를 만들어 넘기는 구조로 둔다.
+def _min_cage_gate(
+    env: ManagerBasedRLEnv,
+    cage_cfgs,
+    object_cfg: SceneEntityCfg,
+    object_half_extent: tuple[float, float, float],
+    num_points: int,
+    point_fractions: tuple[float, ...] | None,
+    sphere_radius: float,
+    depth_max: float,
+) -> torch.Tensor:
+    gate = None
+    for cage_cfg in cage_cfgs:
+        g = object_in_finger_cage(
+            env,
+            cage_cfg,
+            object_cfg,
+            object_half_extent,
+            num_points,
+            sphere_radius,
+            depth_max,
+            point_fractions,
+        )
+        gate = g if gate is None else torch.minimum(gate, g)
+    return gate
 
-        r_orient(t) = [Δo_r(t-1) - Δo_r(t)] / π,    Δo_r = angle(o_r, o_r_nominal)
 
-    ★ 이게 논문의 핵심이고, 정육면체로는 쓸 수 없었던 항이다.
-      막대가 누워 있으면 그대로는 못 잡으므로 **먼저 굴려서 세워야** 한다.
-      그 "굴리기"가 pre-grasp manipulation이고, 이 보상이 그걸 시킨다.
+# ── 4-finger wrap gate (2026-07-26) ────────────────────────────────────────────
+# penta에서 새끼(pinky)를 뺀 버전: 엄지 대 검지·중지·약지 3쌍. 새끼는 엄지 대향이
+# 해부학적으로 가장 어려워 안 붙어 penta 게이트를 0으로 끌던 문제(21-44-48 실측) 대응.
+# 새끼는 게이트에서 빼되 pinky_grip(약한 progress)으로만 "오면 좋고" 유도.
+def balanced_quad_cage_gate(
+    env: ManagerBasedRLEnv,
+    index_cage_cfg: SceneEntityCfg,
+    middle_cage_cfg: SceneEntityCfg,
+    ring_cage_cfg: SceneEntityCfg,
+    object_cfg: SceneEntityCfg,
+    object_half_extent: tuple[float, float, float] = (0.01, 0.09, 0.01),
+    num_points: int = 3,
+    point_fractions: tuple[float, ...] | None = None,
+    sphere_radius: float = 0.005,
+    depth_max: float = 0.005,
+) -> torch.Tensor:
+    """Require thumb-vs-{index,middle,ring} cages to all engage (min)."""
+    return _min_cage_gate(
+        env,
+        (index_cage_cfg, middle_cage_cfg, ring_cage_cfg),
+        object_cfg,
+        object_half_extent,
+        num_points,
+        point_fractions,
+        sphere_radius,
+        depth_max,
+    )
 
-    가중치 500 (논문). r_hold(25)의 20배.
-    """
 
-    # TODO
+def object_lift_in_balanced_quad_cage(
+    env: ManagerBasedRLEnv,
+    index_cage_cfg: SceneEntityCfg,
+    middle_cage_cfg: SceneEntityCfg,
+    ring_cage_cfg: SceneEntityCfg,
+    object_cfg: SceneEntityCfg,
+    object_half_extent: tuple[float, float, float] = (0.01, 0.09, 0.01),
+    num_points: int = 3,
+    point_fractions: tuple[float, ...] | None = None,
+    sphere_radius: float = 0.005,
+    depth_max: float = 0.005,
+    lift_height: float = 0.08,
+    surface_z: float = 0.0,
+    gate_exponent: float = 1.0,
+) -> torch.Tensor:
+    """Reward clearance only while the 4-finger wrap (thumb+index+middle+ring) engages."""
+    gate = balanced_quad_cage_gate(
+        env,
+        index_cage_cfg,
+        middle_cage_cfg,
+        ring_cage_cfg,
+        object_cfg,
+        object_half_extent,
+        num_points,
+        point_fractions,
+        sphere_radius,
+        depth_max,
+    )
+    clearance = box_ground_clearance(env, object_cfg, object_half_extent, surface_z)
+    lift = torch.clamp(clearance, 0.0, lift_height) / lift_height
+    return torch.pow(gate, gate_exponent) * lift
 
 
-def target_grasp_reached(env, **kwargs):
-    """r_T (Eq. 18): 목표 파지 도달 성공.  **희소 이진 보상.**
+def _maintained_fingertip_proximity_gate(
+    env: ManagerBasedRLEnv,
+    palm_cfg: SceneEntityCfg,
+    fingertip_cfgs: tuple[SceneEntityCfg, ...],
+    grip_regions: tuple[dict, ...],
+    object_cfg: SceneEntityCfg,
+    object_half_extent: tuple[float, float, float],
+    proximity_near: float,
+    proximity_far: float,
+) -> torch.Tensor:
+    """Smooth minimum gate over current fingertip-to-region distances."""
+    if proximity_far <= proximity_near:
+        raise ValueError(
+            f"proximity_far ({proximity_far}) must be greater than proximity_near ({proximity_near})"
+        )
 
-        r_T = 1  if Δhp < T_p  and  Δhr < T_r  and  Δhj < T_j
-              0  otherwise
+    scale = proximity_far - proximity_near
+    gate = None
+    for fingertip_cfg, grip_region in zip(fingertip_cfgs, grip_regions, strict=True):
+        distance = fingertip_grip_region_error(
+            env,
+            palm_cfg,
+            fingertip_cfg,
+            object_cfg,
+            object_half_extent=object_half_extent,
+            **grip_region,
+        )
+        current = torch.clamp((proximity_far - distance) / scale, min=0.0, max=1.0)
+        gate = current if gate is None else torch.minimum(gate, current)
+    return gate
 
-    가중치 5000 (논문. "default value in the RL Games framework").
-    T_p, T_r, T_j는 "얼마나 정확히 목표 파지에 도달해야 성공인가"를 정하는 임계값.
 
-    ★ 논문은 이걸 **종료 조건**으로도 씀:
-      "An episode is terminated when (i) a provided target constraint—defining the functional
-       grasp—is satisfied **and the object is lifted off the table**, (ii) an object falls from
-       the table, or (iii) a maximum number of 200 steps is reached."
-    -> terminations에 (i) 성공, (ii) 물체 낙하 를 추가해야 함. 지금은 time_out 하나뿐.
-    """
-    raise NotImplementedError
+def maintained_tripod_cage_gate(
+    env: ManagerBasedRLEnv,
+    index_cage_cfg: SceneEntityCfg,
+    middle_cage_cfg: SceneEntityCfg,
+    palm_cfg: SceneEntityCfg,
+    thumb_fingertip_cfg: SceneEntityCfg,
+    index_fingertip_cfg: SceneEntityCfg,
+    middle_fingertip_cfg: SceneEntityCfg,
+    thumb_grip_region: dict,
+    index_grip_region: dict,
+    middle_grip_region: dict,
+    object_cfg: SceneEntityCfg,
+    object_half_extent: tuple[float, float, float] = (0.01, 0.09, 0.01),
+    num_points: int = 3,
+    point_fractions: tuple[float, ...] | None = None,
+    sphere_radius: float = 0.005,
+    depth_max: float = 0.005,
+    proximity_near: float = 0.02,
+    proximity_far: float = 0.10,
+) -> torch.Tensor:
+    """Tripod cage multiplied by maintained thumb/index/middle region proximity."""
+    cage_gate = balanced_tripod_cage_gate(
+        env,
+        index_cage_cfg,
+        middle_cage_cfg,
+        object_cfg,
+        object_half_extent,
+        num_points,
+        point_fractions,
+        sphere_radius,
+        depth_max,
+    )
+    proximity_gate = _maintained_fingertip_proximity_gate(
+        env,
+        palm_cfg,
+        (thumb_fingertip_cfg, index_fingertip_cfg, middle_fingertip_cfg),
+        (thumb_grip_region, index_grip_region, middle_grip_region),
+        object_cfg,
+        object_half_extent,
+        proximity_near,
+        proximity_far,
+    )
+    return cage_gate * proximity_gate
+
+
+def object_lift_in_maintained_tripod_cage(
+    env: ManagerBasedRLEnv,
+    index_cage_cfg: SceneEntityCfg,
+    middle_cage_cfg: SceneEntityCfg,
+    palm_cfg: SceneEntityCfg,
+    thumb_fingertip_cfg: SceneEntityCfg,
+    index_fingertip_cfg: SceneEntityCfg,
+    middle_fingertip_cfg: SceneEntityCfg,
+    thumb_grip_region: dict,
+    index_grip_region: dict,
+    middle_grip_region: dict,
+    object_cfg: SceneEntityCfg,
+    object_half_extent: tuple[float, float, float] = (0.01, 0.09, 0.01),
+    num_points: int = 3,
+    point_fractions: tuple[float, ...] | None = None,
+    sphere_radius: float = 0.005,
+    depth_max: float = 0.005,
+    proximity_near: float = 0.02,
+    proximity_far: float = 0.10,
+    lift_height: float = 0.08,
+    surface_z: float = 0.0,
+) -> torch.Tensor:
+    """Reward clearance only while the maintained tripod gate is engaged."""
+    gate = maintained_tripod_cage_gate(
+        env,
+        index_cage_cfg,
+        middle_cage_cfg,
+        palm_cfg,
+        thumb_fingertip_cfg,
+        index_fingertip_cfg,
+        middle_fingertip_cfg,
+        thumb_grip_region,
+        index_grip_region,
+        middle_grip_region,
+        object_cfg,
+        object_half_extent,
+        num_points,
+        point_fractions,
+        sphere_radius,
+        depth_max,
+        proximity_near,
+        proximity_far,
+    )
+    clearance = box_ground_clearance(env, object_cfg, object_half_extent, surface_z)
+    return gate * (torch.clamp(clearance, 0.0, lift_height) / lift_height)
+
+
+def maintained_quad_cage_gate(
+    env: ManagerBasedRLEnv,
+    index_cage_cfg: SceneEntityCfg,
+    middle_cage_cfg: SceneEntityCfg,
+    ring_cage_cfg: SceneEntityCfg,
+    palm_cfg: SceneEntityCfg,
+    thumb_fingertip_cfg: SceneEntityCfg,
+    index_fingertip_cfg: SceneEntityCfg,
+    middle_fingertip_cfg: SceneEntityCfg,
+    ring_fingertip_cfg: SceneEntityCfg,
+    thumb_grip_region: dict,
+    index_grip_region: dict,
+    middle_grip_region: dict,
+    ring_grip_region: dict,
+    object_cfg: SceneEntityCfg,
+    object_half_extent: tuple[float, float, float] = (0.01, 0.09, 0.01),
+    num_points: int = 3,
+    point_fractions: tuple[float, ...] | None = None,
+    sphere_radius: float = 0.005,
+    depth_max: float = 0.005,
+    proximity_near: float = 0.02,
+    proximity_far: float = 0.10,
+) -> torch.Tensor:
+    """Quad cage multiplied by maintained thumb/index/middle/ring region proximity."""
+    cage_gate = balanced_quad_cage_gate(
+        env,
+        index_cage_cfg,
+        middle_cage_cfg,
+        ring_cage_cfg,
+        object_cfg,
+        object_half_extent,
+        num_points,
+        point_fractions,
+        sphere_radius,
+        depth_max,
+    )
+    proximity_gate = _maintained_fingertip_proximity_gate(
+        env,
+        palm_cfg,
+        (
+            thumb_fingertip_cfg,
+            index_fingertip_cfg,
+            middle_fingertip_cfg,
+            ring_fingertip_cfg,
+        ),
+        (thumb_grip_region, index_grip_region, middle_grip_region, ring_grip_region),
+        object_cfg,
+        object_half_extent,
+        proximity_near,
+        proximity_far,
+    )
+    return cage_gate * proximity_gate
+
+
+def object_lift_in_maintained_quad_cage(
+    env: ManagerBasedRLEnv,
+    index_cage_cfg: SceneEntityCfg,
+    middle_cage_cfg: SceneEntityCfg,
+    ring_cage_cfg: SceneEntityCfg,
+    palm_cfg: SceneEntityCfg,
+    thumb_fingertip_cfg: SceneEntityCfg,
+    index_fingertip_cfg: SceneEntityCfg,
+    middle_fingertip_cfg: SceneEntityCfg,
+    ring_fingertip_cfg: SceneEntityCfg,
+    thumb_grip_region: dict,
+    index_grip_region: dict,
+    middle_grip_region: dict,
+    ring_grip_region: dict,
+    object_cfg: SceneEntityCfg,
+    object_half_extent: tuple[float, float, float] = (0.01, 0.09, 0.01),
+    num_points: int = 3,
+    point_fractions: tuple[float, ...] | None = None,
+    sphere_radius: float = 0.005,
+    depth_max: float = 0.005,
+    proximity_near: float = 0.02,
+    proximity_far: float = 0.10,
+    lift_height: float = 0.08,
+    surface_z: float = 0.0,
+    gate_exponent: float = 1.0,
+) -> torch.Tensor:
+    """Reward clearance only while the maintained quad gate is engaged."""
+    gate = maintained_quad_cage_gate(
+        env,
+        index_cage_cfg,
+        middle_cage_cfg,
+        ring_cage_cfg,
+        palm_cfg,
+        thumb_fingertip_cfg,
+        index_fingertip_cfg,
+        middle_fingertip_cfg,
+        ring_fingertip_cfg,
+        thumb_grip_region,
+        index_grip_region,
+        middle_grip_region,
+        ring_grip_region,
+        object_cfg,
+        object_half_extent,
+        num_points,
+        point_fractions,
+        sphere_radius,
+        depth_max,
+        proximity_near,
+        proximity_far,
+    )
+    clearance = box_ground_clearance(env, object_cfg, object_half_extent, surface_z)
+    lift = torch.clamp(clearance, 0.0, lift_height) / lift_height
+    return torch.pow(gate, gate_exponent) * lift
+
+
+class FingertipGripProgressReward(ManagerTermBase):
+    """Signed progress toward an object-relative fingertip grip region."""
+
+    def __init__(self, cfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        self._previous_error = torch.zeros(env.num_envs, dtype=torch.float, device=env.device)
+
+    def _error(self) -> torch.Tensor:
+        p = self.cfg.params
+        return fingertip_grip_region_error(
+            self._env,
+            p["palm_cfg"],
+            p["fingertip_cfg"],
+            p["object_cfg"],
+            object_half_extent=p.get("object_half_extent", (0.01, 0.09, 0.01)),
+            long_axis=p.get("long_axis", 1),
+            axial_region=p.get("axial_region", (-0.60, -0.30)),
+            surface_axis=p.get("surface_axis", 2),
+            surface_sign=p.get("surface_sign", 1.0),
+            surface_offset=p.get("surface_offset", 0.0),
+            surface_tolerance=p.get("surface_tolerance", 0.005),
+        )
+
+    def reset(self, env_ids: Sequence[int] | None = None) -> None:
+        if env_ids is None:
+            env_ids = slice(None)
+        self._previous_error[env_ids] = self._error()[env_ids]
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        palm_cfg: SceneEntityCfg,
+        fingertip_cfg: SceneEntityCfg,
+        object_cfg: SceneEntityCfg,
+        object_half_extent: tuple[float, float, float] = (0.01, 0.09, 0.01),
+        long_axis: int = 1,
+        axial_region: tuple[float, float] = (-0.60, -0.30),
+        surface_axis: int = 2,
+        surface_sign: float = 1.0,
+        surface_offset: float = 0.0,
+        surface_tolerance: float = 0.005,
+        distance_scale: float = 0.20,
+    ) -> torch.Tensor:
+        del env, palm_cfg, fingertip_cfg, object_cfg, object_half_extent
+        del long_axis, axial_region, surface_axis, surface_sign, surface_offset, surface_tolerance
+        current = self._error()
+        progress = (self._previous_error - current) / distance_scale
+        self._previous_error[:] = current
+        return torch.clamp(progress, min=-1.0, max=1.0)
+
+
+class HandToolOrientationProgressReward(ManagerTermBase):
+    """Signed progress of palm orientation relative to the stick."""
+
+    def __init__(self, cfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        self._previous_error = torch.zeros(env.num_envs, dtype=torch.float, device=env.device)
+
+    def _error(self) -> torch.Tensor:
+        p = self.cfg.params
+        return hand_tool_orientation_error(
+            self._env,
+            p["palm_cfg"],
+            p["object_cfg"],
+            target_buffer_name=p.get("target_buffer_name", "chopstick_target_palm_quat_o"),
+            fallback_quat_o=p.get("fallback_quat_o", (1.0, 0.0, 0.0, 0.0)),
+        )
+
+    def reset(self, env_ids: Sequence[int] | None = None) -> None:
+        if env_ids is None:
+            env_ids = slice(None)
+        self._previous_error[env_ids] = self._error()[env_ids]
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        palm_cfg: SceneEntityCfg,
+        object_cfg: SceneEntityCfg,
+        target_buffer_name: str = "chopstick_target_palm_quat_o",
+        fallback_quat_o: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0),
+        angle_scale: float = 0.7853981633974483,
+    ) -> torch.Tensor:
+        del env, palm_cfg, object_cfg, target_buffer_name, fallback_quat_o
+        current = self._error()
+        progress = (self._previous_error - current) / angle_scale
+        self._previous_error[:] = current
+        return torch.clamp(progress, min=-1.0, max=1.0)
+
+
+class FunctionalGraspHeld(ManagerTermBase):
+    """Terminal condition for a lifted, stable constraint-based one-stick grasp."""
+
+    def __init__(self, cfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        self._stable_steps = torch.zeros(env.num_envs, dtype=torch.long, device=env.device)
+
+    def reset(self, env_ids: Sequence[int] | None = None) -> None:
+        if env_ids is None:
+            env_ids = slice(None)
+        self._stable_steps[env_ids] = 0
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        palm_cfg: SceneEntityCfg,
+        index_cfg: SceneEntityCfg,
+        thumb_cfg: SceneEntityCfg,
+        index_cage_cfg: SceneEntityCfg,
+        middle_cage_cfg: SceneEntityCfg,
+        object_cfg: SceneEntityCfg,
+        object_half_extent: tuple[float, float, float] = (0.01, 0.09, 0.01),
+        index_target: dict | None = None,
+        thumb_target: dict | None = None,
+        target_buffer_name: str = "chopstick_target_palm_quat_o",
+        fallback_quat_o: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0),
+        num_points: int = 3,
+        point_fractions: tuple[float, ...] | None = None,
+        sphere_radius: float = 0.005,
+        depth_max: float = 0.005,
+        index_error_limit: float = 0.02,
+        thumb_error_limit: float = 0.02,
+        orientation_error_limit: float = 0.2617993877991494,
+        gate_threshold: float = 0.3,
+        clearance_threshold: float = 0.05,
+        surface_z: float = 0.0,
+        hold_steps: int = 15,
+    ) -> torch.Tensor:
+        if index_target is None:
+            index_target = {}
+        if thumb_target is None:
+            thumb_target = {"surface_axis": 0, "surface_sign": 1.0}
+        index_err = index_grip_error(
+            env,
+            palm_cfg,
+            index_cfg,
+            object_cfg,
+            object_half_extent=object_half_extent,
+            **index_target,
+        )
+        thumb_err = thumb_grip_error(
+            env,
+            palm_cfg,
+            thumb_cfg,
+            object_cfg,
+            object_half_extent=object_half_extent,
+            **thumb_target,
+        )
+        orientation_err = hand_tool_orientation_error(
+            env,
+            palm_cfg,
+            object_cfg,
+            target_buffer_name=target_buffer_name,
+            fallback_quat_o=fallback_quat_o,
+        )
+        gate = balanced_tripod_cage_gate(
+            env,
+            index_cage_cfg,
+            middle_cage_cfg,
+            object_cfg,
+            object_half_extent,
+            num_points,
+            point_fractions,
+            sphere_radius,
+            depth_max,
+        )
+        clearance = box_ground_clearance(env, object_cfg, object_half_extent, surface_z)
+        valid = (
+            (index_err < index_error_limit)
+            & (thumb_err < thumb_error_limit)
+            & (orientation_err < orientation_error_limit)
+            & (gate > gate_threshold)
+            & (clearance > clearance_threshold)
+        )
+        self._stable_steps = torch.where(valid, self._stable_steps + 1, torch.zeros_like(self._stable_steps))
+        return self._stable_steps >= hold_steps

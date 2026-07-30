@@ -1,7 +1,7 @@
 """Indy-Wuji-Box-Transport 장면/환경 설정 (2026-07-16).
 
 cube_grasp_env_cfg.py의 사본 + 랜덤 직육면체 확장 (큐브 태스크 동결 방침으로 별도 파일).
-차이: env별 상자 치수 랜덤화(prestartup) → replicate_physics=False, obs 64.
+차이: env별 상자 치수 랜덤화(prestartup) → replicate_physics=False, obs 73.
 asset 이름은 mdp 파라미터 호환을 위해 "cube"를 유지함 (실체는 직육면체).
 """
 
@@ -73,7 +73,7 @@ class BoxTransportSceneCfg(ReachSceneCfg):
                 max_depenetration_velocity=5.0,
             ),
             # 질량은 크기와 무관하게 고정 (밀도가 env마다 다름 — 변수 통제 의도)
-            mass_props=sim_utils.MassPropertiesCfg(mass=0.10),
+            mass_props=sim_utils.MassPropertiesCfg(mass=0.03),
             collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
             physics_material=sim_utils.RigidBodyMaterialCfg(
                 static_friction=1.0,

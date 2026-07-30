@@ -1,21 +1,18 @@
+"""Indy7 + Wuji override for one-stick functional grasp."""
+
 from __future__ import annotations
 
-import isaac_neuromeka.mdp as mdp
+import os
+
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils import configclass
 
-##
-# Pre-defined configs
-##
 from isaac_neuromeka.assets import INDY7_WUJI_RIGHT_CFG
-from isaac_neuromeka.mdp.actions import CustomJointPositionAction
-from isaac_neuromeka.tasks.manipulation.functional_grasp.chopsticks_grasp_env_cfg import (  # noqa: F401
+from isaac_neuromeka.mdp.actions import CustomResidualJointActionCfg, MimicJointActionCfg  # noqa: F401
+from isaac_neuromeka.tasks.manipulation.functional_grasp.chopsticks_grasp_env_cfg import (
     ChopsticksGraspEnvCfg,
 )
 
-##
-# Environment configuration
-##
 
 @configclass
 class Indy7WujiChopsticksGraspEnvCfg(ChopsticksGraspEnvCfg):
@@ -24,47 +21,107 @@ class Indy7WujiChopsticksGraspEnvCfg(ChopsticksGraspEnvCfg):
 
         self.scene.robot = INDY7_WUJI_RIGHT_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
         self.sim.render_interval = self.decimation
-        # 약지/새끼는 액션에 없는데(dim 축소) 액추에이터는 stiffness=20으로 붙어 있어서, 편 자세(0.0)에
-        # 뻣뻣하게 고정된 채 손에서 제일 앞으로 튀어나와 있었음 (tip x: 약지 .841 > 새끼 .838 > 중지 .837
-        # > 검지 .825). 접근하면 이 둘이 큐브를 먼저 쳐서 12cm 밀어내고 반작용으로 팔이 튕겨나감.
-        # 3지 파지처럼 안쪽으로 접어둠 (사람도 엄지-검지-중지로 집을 땐 약지/새끼를 접음).
-        # asset의 finger[1-5] 키는 반드시 지울 것 — 안 그러면 정규식이 중복 매칭돼서 죽음.
+
         joint_pos = self.scene.robot.init_state.joint_pos
         joint_pos.pop("finger[1-5]_joint[1-4]", None)
         joint_pos.update(
             {
+                "joint0": 0.0,
                 "joint1": -0.45,
                 "joint2": -1.85,
-                "joint4": 1.20,
-                "finger[1-3]_joint[1-4]": 0.0,  # 제어하는 3지는 그대로 편 채로 시작
-                # 약지/새끼는 액션에 없는데(dim 축소) 액추에이터는 stiffness=20으로 붙어 있어서,
-                # 편 자세(0.0)면 뻣뻣하게 고정된 채 손에서 제일 앞으로 튀어나옴 -> 접근할 때
-                # 이 둘이 큐브를 먼저 쳐서 12cm 밀어내고 반작용으로 팔이 튕겨나갔음.
-                # 3지 파지처럼 안쪽으로 접어둠 (사람도 엄지-검지-중지로 집을 땐 약지/새끼를 접음).
-                "finger[4-5]_joint1": 1.20,  # 한계 +1.636
-                "finger[4-5]_joint2": 0.0,  # 벌림은 중립
-                "finger[4-5]_joint3": 1.20,  # 한계 +1.627
-                "finger[4-5]_joint4": 1.20,  # 한계 +1.627
+                "joint3": -1.61,
+                "joint4": -1.62,
+                "joint5": 2.356194490192345,
+                "finger[1-5]_joint[1-4]": 0.0,
             }
         )
 
-        controlled_joint_names = ["joint[0-5]", "finger[1-3]_joint[1-4]"]
+        # ── 액션 구조 스위치 (2026-07-23) ────────────────────────────────────────────
+        # 기본 = 잔차(residual) + 커플링 해제: action 26, policy obs 91.
+        #   (joint_pos 18→26 + action_history 18→26 = +16. action_history가 prev_action이라
+        #    액션 차원을 따라감 — obs 83으로 잘못 세기 쉬움)
+        # `WUJI_LEGACY_ACTION=1` 이면 2026-07-23 이전 구성(절대형 + 약지·새끼 mimic):
+        #   action 18, policy obs 75. **옛 체크포인트를 play할 때만** 쓸 것.
+        #   예) WUJI_LEGACY_ACTION=1 python scripts/rsl_rl/play.py \
+        #         --task Indy-Wuji-Chopsticks-Grasp --num_envs 1 --load_run 2026-07-23_12-13-23
+        legacy_action = os.environ.get("WUJI_LEGACY_ACTION", "") == "1"
+        if legacy_action:
+            print("[INFO] WUJI_LEGACY_ACTION=1 → 절대형 + mimic 액션 (action 18 / obs 75)")
+
+        # 약지·새끼 mimic 커플링 해제 — 20개 손가락 관절을 정책이 직접 제어. fresh 필수.
+        controlled_joint_names = (
+            ["joint[0-5]", "finger[1-3]_joint[1-4]"]
+            if legacy_action
+            else ["joint[0-5]", "finger[1-5]_joint[1-4]"]
+        )
 
         def controlled_joint_cfg():
             return SceneEntityCfg("robot", joint_names=controlled_joint_names)
 
         self.observations.policy.joint_pos.params = {"asset_cfg": controlled_joint_cfg()}
 
-        self.actions.arm_action = mdp.JointPositionActionCfg(
-            class_type=CustomJointPositionAction,
-            asset_name="robot",
-            joint_names=controlled_joint_names,
-            # 절대 위치 명령임 (target = default + scale * action). 즉 scale이 곧 "도달 반경".
-            # 0.2 + clip 없음이었는데, 그러면 |a|=1로는 관절이 11°밖에 안 움직여서 큐브(55cm 아래)에
-            # 절대 못 닿음. 정책이 살려고 |a|를 5, 10까지 밀어내다가 발산했음 (실측 |Δa| 최대 9.66
-            # = 관절 목표가 한 step에 110° 점프 -> 팔이 전속력으로 왕복 -> 큐브를 67cm 날림).
-            # 1.0 + clip_actions=1.0 이면 목표가 default ± 1.0 rad로 묶임. 4096x8 샘플링으로
-            # 그 안에 손끝 3개가 큐브 표면 2mm까지 닿는 자세가 있음을 확인함 (0.5면 3.6cm, 도달 불가).
-            scale=1.0,
-            use_default_offset=True,
-        )
+        # ── 잔차(residual) 액션 — 활성 (2026-07-23) ──────────────────────────────────
+        # target = 현재 관절각 + action*scale. 뉴로메카 예제(JointResidualAction)와 같은 구조.
+        # 전환 근거: 절대형은 target = default + action인데 손가락 default가 0(굽힘 하한)이라
+        #   액션 범위의 약 34%가 관절 limit 밖 = 도달 불가였음 (2026-07-23 진단).
+        #
+        # scale 단위가 절대형과 다름(기본자세로부터의 변위 → 스텝당 증분).
+        #   최대속도 ≈ (kp/kd)×scale [rad/s] : 팔 5×0.3=1.5 (속도한계 2.775~3.3)
+        #   최대 유지토크 ≈ kp×scale         : 손가락 joint1·2는 2×0.3=0.6 (effort_limit과 동일)
+        #                                      joint3·4는 1×0.3=0.3 (URDF 스펙과 동일)
+        #
+        # ⚠ fresh 필수 (액션 의미가 바뀜 — 절대형 체크포인트 resume 금지)
+        # ⚠ 잔차는 기본자세로 당기는 스프링이 없음(a=0 → "제자리 유지", 예압 0).
+        #   파지 유지에 지속적인 양수 액션이 필요하고 유지 토크 ≈ kp × action × scale.
+        #   스모크에서 눈으로 볼 것: ① 리셋 직후 손이 안 튀는가 ② 스틱을 잡은 뒤 놓지 않는가.
+        # ⚠ action_rate 페널티 의미가 "속도 벌점"에서 "가속도 벌점"으로 바뀜 — 가중치 재검토 대상.
+        if legacy_action:
+            # 2026-07-23 이전 모든 런의 구성: 절대형 + 약지·새끼 mimic 커플링.
+            # target = default_joint_pos + action*1.0
+            self.actions.arm_action = MimicJointActionCfg(
+                asset_name="robot",
+                joint_names=controlled_joint_names,
+                scale=1.0,
+                use_default_offset=True,
+                mimic={
+                    "finger4_joint1": "finger3_joint1",
+                    "finger4_joint2": "finger3_joint2",
+                    "finger4_joint3": "finger3_joint3",
+                    "finger4_joint4": "finger3_joint4",
+                    "finger5_joint1": "finger3_joint1",
+                    "finger5_joint2": "finger3_joint2",
+                    "finger5_joint3": "finger3_joint3",
+                    "finger5_joint4": "finger3_joint4",
+                },
+            )
+        else:
+            self.actions.arm_action = CustomResidualJointActionCfg(
+                asset_name="robot",
+                joint_names=controlled_joint_names,
+                scale={
+                    "joint[0-5]": 0.3,
+                    # 2026-07-30: 손가락 scale 0.1→**0.3** 복구. 0.1은 1cm 얇은 스틱용으로
+                    #   hand_grasp의 0.1 rad 정밀도에 맞춘 값이었으나, 됐던 2cm 파지(run 09-42-28)는
+                    #   0.3이었음. 잔차 유지토크 ≈ kp×action×scale라 0.1이면 joint1·2 최대토크가
+                    #   effort_limit(0.6)의 1/3(0.2)로 떨어져 2cm를 못 들었음(obs 검증 런 22-51-28 회귀).
+                    #   (1cm 얇은 스틱 작업 재개 시 다시 0.1로.)
+                    "finger[1-5]_joint[1-4]": 0.3,
+                },
+                clamp_to_limits=True,  # 예제와 100% 동일하게 가려면 False
+            )
+
+        # ⚠ mimic follower(finger[4-5])는 액션 관절과 겹치면 안 됨. legacy 분기가
+        #   controlled_joint_names를 finger[1-3]으로 함께 되돌리는 이유 —
+        #   finger[1-5]인 채 MimicJointActionCfg를 쓰면 __init__이 ValueError로 죽는다.
+        #
+        # 참고: chopstick_mdp_cfg.py의 hold_folded_fingers(finger[4-5] 목표를 기본자세로 고정하는
+        #   리셋 이벤트)는 이제 정책이 직접 제어하므로 무의미해짐. 잔차 액션의 reset이 26관절 전부
+        #   "현재 자세"로 목표를 채우고, 이벤트는 그보다 먼저 실행되므로 덮어써짐 — 무해해서 남겨 둠.
+        # ──────────────────────────────────────────────────────────────────────────────
+
+        fingers = self.scene.robot.actuators["fingers"]
+        fingers.stiffness = {
+            "finger[1-5]_joint[1-2]": 2.0,
+            "finger[1-5]_joint[3-4]": 1.0,
+        }
+        fingers.damping = 0.05

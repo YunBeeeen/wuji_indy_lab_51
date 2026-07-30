@@ -1,103 +1,394 @@
-"""목표 파지 g = (hp, hr, hj) 정의.
+"""Object-relative targets for the one-stick functional-grasp task.
 
-논문(Dexterous Pre-grasp Manipulation)은 g를 외부 oracle/데이터셋에서 받는다.
-우리는 직육면체이므로 **치수에서 해석적으로 계산**한다. 젓가락으로 넘어가면 constraint-based
-표현(검지끝 3D 위치 + EE 회전)으로 바꾸면 되고, 이 모듈의 인터페이스는 그대로 쓴다.
-
-핵심: **g는 "물체 로컬 좌표계"에서 정의한다.**
-    물체가 굴러가면 g도 같이 월드에서 움직인다.
-    -> "지금 물체 자세로는 g에 도달할 수 없다" 상황이 자연스럽게 생기고,
-       정책은 먼저 물체를 굴려서(r_orient) g를 도달 가능하게 만들어야 한다.
-       그게 논문 제목의 pre-grasp manipulation이다.
-    로봇 기준으로 정의하면 이 성질이 사라진다. 반드시 물체 기준으로 둘 것.
+The A1 experiment uses constraint-based fingertip regions and a palm orientation
+relative to the stick. No full hand joint pose is prescribed.
 """
 
 from __future__ import annotations
 
 import torch
-
-# -----------------------------------------------------------------------------
-# 흐름
-#
-#   물체 pose (월드)          손 상태 (월드)
-#        │                         │
-#        ▼                         │
-#   g_local (물체 로컬, 상수)       │
-#        │                         │
-#        ▼                         │
-#   g_world = 물체pose ∘ g_local   │      <- 매 step 계산
-#        │                         │
-#        └──────────┬──────────────┘
-#                   ▼
-#        Δhp = |hp_world - hp_hand|      (위치 오차)
-#        Δhr = angle(hr_world, hr_hand)  (회전 오차)
-#        Δhj = mean|hj_target - hj_hand| (관절 오차)
-#                   │
-#                   ├─> r_hp, r_hr, r_hj  (전부 차분형)  -> r_grasp
-#                   ├─> r_T  (세 오차가 전부 임계 이하면 1, 아니면 0)
-#                   └─> observation (정책이 목표를 알아야 하므로)
-# -----------------------------------------------------------------------------
+from isaaclab.managers import SceneEntityCfg
+from isaaclab.utils import math as math_utils
 
 
-def box_target_grasp_local(
-    half_extent: tuple[float, float, float],
-    approach_clearance: float = 0.0,
-) -> dict[str, torch.Tensor]:
-    """직육면체의 목표 파지를 물체 로컬 좌표로 계산.
+def _half_extents(
+    env,
+    fallback: tuple[float, float, float],
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    half = getattr(env, "box_half_extents", None)
+    if half is None:
+        half = torch.tensor(fallback, dtype=dtype, device=env.device).unsqueeze(0)
+        half = half.expand(env.num_envs, -1)
+    elif half.dim() == 1:
+        half = half.unsqueeze(0).expand(env.num_envs, -1)
+    return half
 
-    직육면체(3 x 3 x 16 cm)의 파지 논리:
-      - 긴 축(로컬 z)을 **가로질러** 잡는다. 짧은 축(3cm)이 손가락 사이 간극에 들어감.
-      - 손은 물체의 옆면에서 접근. 파지 개구부(엄지-손가락 사이)가 물체 중심을 향해야 함.
-      - 젓가락으로 바뀌면 "긴 축의 특정 지점을 검지로" 로 바뀜 -> 여기만 고치면 됨.
 
-    Returns:
-        hp: (3,)  손 위치 목표 (물체 로컬)
-        hr: (4,)  손 회전 목표 (물체 로컬, quaternion wxyz)
-        hj: (N,)  손가락 관절 목표 (물체와 무관하므로 로컬/월드 구분 없음)
+def grip_target_position_o(
+    env,
+    object_half_extent: tuple[float, float, float],
+    long_axis: int = 1,
+    grip_fraction: float = -0.45,
+    surface_axis: int = 2,
+    surface_sign: float = 1.0,
+    surface_offset: float = 0.0,
+) -> torch.Tensor:
+    """Return the semantic index target in the object frame.
 
-    TODO:
-      - hp: 물체 옆면에서 `half_extent[0] + palm_offset` 만큼 떨어진 점.
-            palm_offset은 palm_link 원점에서 파지 중심까지의 거리 (실측 약 0.13 m,
-            palm 로컬 (0.19, 0.28, 0.94) 방향으로).
-      - hr: 파지 개구부 축이 -hp 방향(= 물체 중심 쪽)을 향하고,
-            손가락이 닫히는 평면이 물체의 긴 축과 수직이 되는 quaternion.
-            -> palm 로컬의 개구부 축 (0.19, 0.28, 0.94)를 목표 방향에 정렬시키는 회전.
-      - hj: 짧은 축(3cm)을 감쌌을 때의 손가락 관절각.
-            cage_span이 물체 폭 근처가 되는 값. 샘플링이나 IK로 한 번 구해서 상수로 박아둘 것.
+    ``grip_fraction`` is normalized by the half length: -1 is the tail, +1 is
+    the tip.  The default -0.45 puts the index in the rear grip region while
+    preserving the tip-tail direction for later chopstick use.
     """
-    raise NotImplementedError
+    if long_axis == surface_axis:
+        raise ValueError("long_axis and surface_axis must differ")
+    if not -1.0 <= grip_fraction <= 1.0:
+        raise ValueError(f"grip_fraction must be in [-1, 1], got {grip_fraction}")
+    if surface_sign not in (-1.0, 1.0):
+        raise ValueError(f"surface_sign must be -1 or 1, got {surface_sign}")
+
+    half = _half_extents(env, object_half_extent, torch.float)
+    target_o = torch.zeros(env.num_envs, 3, dtype=half.dtype, device=env.device)
+    target_o[:, long_axis] = grip_fraction * half[:, long_axis]
+    target_o[:, surface_axis] = surface_sign * half[:, surface_axis] + surface_offset
+    return target_o
 
 
-def target_grasp_world(
-    object_pos_w: torch.Tensor,   # (N, 3)
-    object_quat_w: torch.Tensor,  # (N, 4)
-    hp_local: torch.Tensor,       # (3,)
-    hr_local: torch.Tensor,       # (4,)
+def grip_target_position_w(
+    env,
+    object_cfg: SceneEntityCfg,
+    object_half_extent: tuple[float, float, float],
+    long_axis: int = 1,
+    grip_fraction: float = -0.45,
+    surface_axis: int = 2,
+    surface_sign: float = 1.0,
+    surface_offset: float = 0.0,
+) -> torch.Tensor:
+    """Transform the semantic index target from object to world coordinates."""
+    obj = env.scene[object_cfg.name]
+    target_o = grip_target_position_o(
+        env,
+        object_half_extent,
+        long_axis,
+        grip_fraction,
+        surface_axis,
+        surface_sign,
+        surface_offset,
+    )
+    return obj.data.root_pos_w + math_utils.quat_apply(obj.data.root_quat_w, target_o)
+
+
+def grip_region_bounds_o(
+    env,
+    object_half_extent: tuple[float, float, float],
+    long_axis: int = 1,
+    axial_region: tuple[float, float] = (-0.60, -0.30),
+    surface_axis: int = 2,
+    surface_sign: float = 1.0,
+    surface_offset: float = 0.0,
+    surface_tolerance: float = 0.005,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """물체 로컬의 g를 월드로 변환. 매 step 호출.
+    """Return lower/upper bounds of a rectangular grip region in object frame.
 
-    hp_w = object_pos + R(object_quat) @ hp_local
-    hr_w = object_quat * hr_local        (quaternion 곱)
-
-    **이게 pre-grasp manipulation의 핵심.** 물체가 굴러가면 g_world가 따라 움직이므로,
-    정책은 "물체를 어떻게 놓아야 g에 도달할 수 있는가"를 스스로 풀어야 한다.
+    ``axial_region`` is normalized by the object's half length. The remaining
+    tangent axis spans the object face, while ``surface_tolerance`` gives the
+    fingertip a narrow band around the selected surface.
     """
-    raise NotImplementedError
+    if long_axis == surface_axis:
+        raise ValueError("long_axis and surface_axis must differ")
+    if not 0 <= long_axis < 3 or not 0 <= surface_axis < 3:
+        raise ValueError("long_axis and surface_axis must be in [0, 2]")
+    if len(axial_region) != 2 or axial_region[0] > axial_region[1]:
+        raise ValueError(f"axial_region must be an ordered pair, got {axial_region}")
+    if axial_region[0] < -1.0 or axial_region[1] > 1.0:
+        raise ValueError(f"axial_region must lie in [-1, 1], got {axial_region}")
+    if surface_sign not in (-1.0, 1.0):
+        raise ValueError(f"surface_sign must be -1 or 1, got {surface_sign}")
+    if surface_tolerance < 0.0:
+        raise ValueError(f"surface_tolerance must be non-negative, got {surface_tolerance}")
+
+    half = _half_extents(env, object_half_extent, torch.float)
+    lower = -half.clone()
+    upper = half.clone()
+    lower[:, long_axis] = axial_region[0] * half[:, long_axis]
+    upper[:, long_axis] = axial_region[1] * half[:, long_axis]
+    surface = surface_sign * half[:, surface_axis] + surface_offset
+    lower[:, surface_axis] = surface - surface_tolerance
+    upper[:, surface_axis] = surface + surface_tolerance
+    return lower, upper
 
 
-def nominal_object_rotation() -> torch.Tensor:
-    """물체의 "정상(nominal)" 자세. r_orient가 이쪽으로 물체를 돌리도록 보상.
+def fingertip_grip_region_error_b(
+    env,
+    palm_cfg: SceneEntityCfg,
+    fingertip_cfg: SceneEntityCfg,
+    object_cfg: SceneEntityCfg,
+    object_half_extent: tuple[float, float, float] = (0.01, 0.09, 0.01),
+    long_axis: int = 1,
+    axial_region: tuple[float, float] = (-0.60, -0.30),
+    surface_axis: int = 2,
+    surface_sign: float = 1.0,
+    surface_offset: float = 0.0,
+    surface_tolerance: float = 0.005,
+) -> torch.Tensor:
+    """Vector from a fingertip to the nearest point in its grip region, in palm frame."""
+    robot = env.scene[palm_cfg.name]
+    obj = env.scene[object_cfg.name]
+    palm_id = palm_cfg.body_ids[0]
+    fingertip_id = fingertip_cfg.body_ids[0]
 
-    논문: "the object z-axis points upwards, and the object x-axis (the direction of the tool tip)
-           points away from the hand."
+    fingertip_w = robot.data.body_state_w[:, fingertip_id, :3]
+    fingertip_o = math_utils.quat_apply_inverse(
+        obj.data.root_quat_w,
+        fingertip_w - obj.data.root_pos_w,
+    )
+    lower_o, upper_o = grip_region_bounds_o(
+        env,
+        object_half_extent,
+        long_axis,
+        axial_region,
+        surface_axis,
+        surface_sign,
+        surface_offset,
+        surface_tolerance,
+    )
+    nearest_o = torch.minimum(torch.maximum(fingertip_o, lower_o), upper_o)
+    error_o = nearest_o - fingertip_o
+    error_w = math_utils.quat_apply(obj.data.root_quat_w, error_o)
+    palm_quat_w = robot.data.body_state_w[:, palm_id, 3:7]
+    return math_utils.quat_apply_inverse(palm_quat_w, error_w)
 
-    직육면체(막대)의 경우:
-      - 지금 초기 자세는 **누워 있음** (긴 축이 월드 x) -> 그대로는 잡기 어려움
-      - nominal은 **세워진 자세** (긴 축이 월드 z) 또는 "긴 축이 손에서 멀어지는 방향"
-      - 이 값이 곧 "정책이 물체를 어떤 자세로 만들어야 하는가"를 정의함
 
-    **여기가 pre-grasp manipulation의 난이도를 정하는 손잡이임.**
-    초기 자세와 nominal이 같으면 굴릴 필요가 없어서 과제가 무의미해지고,
-    너무 멀면 학습이 안 됨. 커리큘럼으로 조절할 것.
+def fingertip_grip_region_error(
+    env,
+    palm_cfg: SceneEntityCfg,
+    fingertip_cfg: SceneEntityCfg,
+    object_cfg: SceneEntityCfg,
+    **kwargs,
+) -> torch.Tensor:
+    """Scalar distance from a fingertip to its object-relative grip region."""
+    del palm_cfg  # A distance is rotation invariant; avoid two unnecessary frame transforms.
+    object_half_extent = kwargs.pop("object_half_extent", (0.01, 0.09, 0.01))
+    robot = env.scene[fingertip_cfg.name]
+    obj = env.scene[object_cfg.name]
+    fingertip_w = robot.data.body_state_w[:, fingertip_cfg.body_ids[0], :3]
+    fingertip_o = math_utils.quat_apply_inverse(
+        obj.data.root_quat_w,
+        fingertip_w - obj.data.root_pos_w,
+    )
+    lower_o, upper_o = grip_region_bounds_o(env, object_half_extent, **kwargs)
+    nearest_o = torch.minimum(torch.maximum(fingertip_o, lower_o), upper_o)
+    return torch.norm(nearest_o - fingertip_o, dim=-1)
+
+
+def index_grip_error_b(
+    env,
+    palm_cfg: SceneEntityCfg,
+    index_cfg: SceneEntityCfg,
+    object_cfg: SceneEntityCfg,
+    object_half_extent: tuple[float, float, float] = (0.01, 0.09, 0.01),
+    long_axis: int = 1,
+    axial_region: tuple[float, float] = (-0.60, -0.30),
+    surface_axis: int = 2,
+    surface_sign: float = 1.0,
+    surface_offset: float = 0.0,
+    surface_tolerance: float = 0.005,
+) -> torch.Tensor:
+    """Vector from the index tip to the nearest point in its grip region."""
+    return fingertip_grip_region_error_b(
+        env,
+        palm_cfg,
+        index_cfg,
+        object_cfg,
+        object_half_extent,
+        long_axis,
+        axial_region,
+        surface_axis,
+        surface_sign,
+        surface_offset,
+        surface_tolerance,
+    )
+
+
+def index_grip_error(
+    env,
+    palm_cfg: SceneEntityCfg,
+    index_cfg: SceneEntityCfg,
+    object_cfg: SceneEntityCfg,
+    **kwargs,
+) -> torch.Tensor:
+    """Scalar index target error in metres."""
+    return torch.norm(index_grip_error_b(env, palm_cfg, index_cfg, object_cfg, **kwargs), dim=-1)
+
+
+def thumb_grip_error_b(
+    env,
+    palm_cfg: SceneEntityCfg,
+    thumb_cfg: SceneEntityCfg,
+    object_cfg: SceneEntityCfg,
+    object_half_extent: tuple[float, float, float] = (0.01, 0.09, 0.01),
+    long_axis: int = 1,
+    axial_region: tuple[float, float] = (-0.55, -0.25),
+    surface_axis: int = 0,
+    surface_sign: float = 1.0,
+    surface_offset: float = 0.0,
+    surface_tolerance: float = 0.005,
+) -> torch.Tensor:
+    """Vector from the thumb tip to the nearest point in its grip region."""
+    return fingertip_grip_region_error_b(
+        env,
+        palm_cfg,
+        thumb_cfg,
+        object_cfg,
+        object_half_extent,
+        long_axis,
+        axial_region,
+        surface_axis,
+        surface_sign,
+        surface_offset,
+        surface_tolerance,
+    )
+
+
+def thumb_grip_error(
+    env,
+    palm_cfg: SceneEntityCfg,
+    thumb_cfg: SceneEntityCfg,
+    object_cfg: SceneEntityCfg,
+    **kwargs,
+) -> torch.Tensor:
+    """Scalar thumb grip-region error in metres."""
+    return torch.norm(thumb_grip_error_b(env, palm_cfg, thumb_cfg, object_cfg, **kwargs), dim=-1)
+
+
+def middle_grip_error_b(
+    env,
+    palm_cfg: SceneEntityCfg,
+    middle_cfg: SceneEntityCfg,
+    object_cfg: SceneEntityCfg,
+    object_half_extent: tuple[float, float, float] = (0.01, 0.09, 0.01),
+    long_axis: int = 1,
+    axial_region: tuple[float, float] = (-0.55, -0.25),
+    surface_axis: int = 0,
+    surface_sign: float = -1.0,
+    surface_offset: float = 0.0,
+    surface_tolerance: float = 0.005,
+) -> torch.Tensor:
+    """Vector from the middle tip to the nearest point in its grip region."""
+    return fingertip_grip_region_error_b(
+        env,
+        palm_cfg,
+        middle_cfg,
+        object_cfg,
+        object_half_extent,
+        long_axis,
+        axial_region,
+        surface_axis,
+        surface_sign,
+        surface_offset,
+        surface_tolerance,
+    )
+
+
+def middle_grip_error(
+    env,
+    palm_cfg: SceneEntityCfg,
+    middle_cfg: SceneEntityCfg,
+    object_cfg: SceneEntityCfg,
+    **kwargs,
+) -> torch.Tensor:
+    """Scalar middle grip-region error in metres."""
+    return torch.norm(middle_grip_error_b(env, palm_cfg, middle_cfg, object_cfg, **kwargs), dim=-1)
+
+
+def hand_orientation_in_object(
+    env,
+    palm_cfg: SceneEntityCfg,
+    object_cfg: SceneEntityCfg,
+) -> torch.Tensor:
+    """Palm quaternion expressed in the object frame, ``q_O_H``."""
+    robot = env.scene[palm_cfg.name]
+    obj = env.scene[object_cfg.name]
+    palm_id = palm_cfg.body_ids[0]
+    _, quat_o_h = math_utils.subtract_frame_transforms(
+        obj.data.root_pos_w,
+        obj.data.root_quat_w,
+        robot.data.body_state_w[:, palm_id, :3],
+        robot.data.body_state_w[:, palm_id, 3:7],
+    )
+    return quat_o_h
+
+
+def capture_hand_tool_target(
+    env,
+    env_ids: torch.Tensor | None,
+    palm_cfg: SceneEntityCfg,
+    object_cfg: SceneEntityCfg,
+    target_buffer_name: str = "chopstick_target_palm_quat_o",
+    target_quat_o: tuple[float, float, float, float] | None = None,
+) -> None:
+    """Capture or assign the desired object-relative palm orientation after reset.
+
+    The baseline captures the configured pre-grasp orientation instead of
+    embedding an unexplained quaternion.  A measured target can later be passed
+    with ``target_quat_o`` without changing observation or action dimensions.
     """
-    raise NotImplementedError
+    all_env_ids = torch.arange(env.num_envs, device=env.device)
+    if env_ids is None:
+        env_ids = all_env_ids
+    elif isinstance(env_ids, slice):
+        env_ids = all_env_ids[env_ids]
+    if target_quat_o is None:
+        target = hand_orientation_in_object(env, palm_cfg, object_cfg)[env_ids].clone()
+    else:
+        target = torch.tensor(target_quat_o, dtype=torch.float, device=env.device)
+        target = target / torch.clamp(torch.norm(target), min=1.0e-6)
+        target = target.unsqueeze(0).expand(len(env_ids), -1).clone()
+
+    buffer = getattr(env, target_buffer_name, None)
+    if buffer is None:
+        buffer = torch.zeros(env.num_envs, 4, dtype=target.dtype, device=env.device)
+        buffer[:, 0] = 1.0
+        setattr(env, target_buffer_name, buffer)
+    buffer[env_ids] = target
+
+
+def target_hand_orientation_in_object(
+    env,
+    target_buffer_name: str = "chopstick_target_palm_quat_o",
+    fallback_quat_o: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0),
+) -> torch.Tensor:
+    """Read the captured target, with an explicit fallback for static analysis/tests."""
+    target = getattr(env, target_buffer_name, None)
+    if target is not None:
+        return target
+    target = torch.tensor(fallback_quat_o, dtype=torch.float, device=env.device)
+    target = target / torch.clamp(torch.norm(target), min=1.0e-6)
+    return target.unsqueeze(0).expand(env.num_envs, -1)
+
+
+def hand_tool_orientation_error_axis_angle(
+    env,
+    palm_cfg: SceneEntityCfg,
+    object_cfg: SceneEntityCfg,
+    target_buffer_name: str = "chopstick_target_palm_quat_o",
+    fallback_quat_o: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0),
+) -> torch.Tensor:
+    """Signed axis-angle error from target to current ``q_O_H``."""
+    current = hand_orientation_in_object(env, palm_cfg, object_cfg)
+    target = target_hand_orientation_in_object(env, target_buffer_name, fallback_quat_o)
+    error_quat = math_utils.quat_mul(current, math_utils.quat_inv(target))
+    return math_utils.axis_angle_from_quat(error_quat)
+
+
+def hand_tool_orientation_error(
+    env,
+    palm_cfg: SceneEntityCfg,
+    object_cfg: SceneEntityCfg,
+    target_buffer_name: str = "chopstick_target_palm_quat_o",
+    fallback_quat_o: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0),
+) -> torch.Tensor:
+    """Geodesic hand-stick relative orientation error in radians."""
+    current = hand_orientation_in_object(env, palm_cfg, object_cfg)
+    target = target_hand_orientation_in_object(env, target_buffer_name, fallback_quat_o)
+    return math_utils.quat_error_magnitude(current, target)

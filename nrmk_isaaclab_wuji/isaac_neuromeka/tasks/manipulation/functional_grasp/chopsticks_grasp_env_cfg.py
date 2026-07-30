@@ -1,73 +1,88 @@
+"""One-stick acquisition and functional pre-grasp environment.
+
+This is the standalone A1 testbed.  It does not share MDP cfg objects with
+Cube-Grasp or Box-Transport, so reward/observation experiments cannot leak
+between tasks.  The rigid object is still named ``cube`` only to reuse the
+well-tested generic box SDF and metric plumbing.
+"""
+
 from __future__ import annotations
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import RigidObjectCfg
 from isaaclab.utils import configclass
 
-from isaac_neuromeka.tasks.manipulation.reach.reach_env_cfg import (
-    ReachSceneCfg,
-)
-
-
-import isaac_neuromeka.mdp as mdp  # noqa: F401
 from isaac_neuromeka.env.rl_task_env_cfg import NrmkRLEnvCfg
-
-# Import common environment configuration
-from isaac_neuromeka.tasks.manipulation.common.env_cfg_common import (  # noqa: F401
-    CubeGraspActionsCfg,
-    CubeGraspCommandsCfg,
-    CubeGraspEventCfg,
-    CubeGraspObservationsCfg,
-    CubeGraspRewardsCfg,
-    CubeGraspTerminationsCfg,
+from isaac_neuromeka.tasks.manipulation.functional_grasp.chopstick_mdp_cfg import (
+    ChopstickAcquireActionsCfg,
+    ChopstickAcquireCommandsCfg,
+    ChopstickAcquireEventCfg,
+    ChopstickAcquireObservationsCfg,
+    ChopstickAcquireRewardsCfg,
+    ChopstickAcquireTerminationsCfg,
 )
+from isaac_neuromeka.tasks.manipulation.reach.reach_env_cfg import ReachSceneCfg
 from isaac_neuromeka.utils.etc import EmptyCfg
 
+
+BASE_Z = 0.25
+STICK_POS = (0.62, -0.20)
+STICK_SIZE = (0.014, 0.18, 0.014)  # square-section proxy; +y=tip, -y=tail
+# 2026-07-30: 1cm 단일 프록시가 인위적으로 어려워 whack-a-mole → 실제 타깃(7mm 젓가락 2개 다발 ≈ 1.4cm)로 전환.
+#   1.4cm은 2cm에 가까워 되던 config가 대체로 전이됨 → 2cm 성공값으로 리사이즈: mass 0.02·offset None·
+#   depenet 5.0·solver_vel 1. STICK_HALF_EXTENT(chopstick_mdp_cfg.py)도 (0.007,0.09,0.007) 동반.
+#   보상은 2cm 성공 구조 복귀(grip 40·sphere 0.005·cage_hold 5·goal_prox 20·lift 0.05).
+#   (1cm 복귀: size 0.01·mass 0.01·offset 0.001/0.0·depenet 0.2·solver_vel 4·half_extent 0.005·sphere 0.004·grip 150.)
+STICK_MASS = 0.02
+STICK_CONTACT_OFFSET = None
+STICK_REST_OFFSET = None
+STICK_MAX_DEPENETRATION_VELOCITY = 5.0
 
 
 @configclass
 class ChopsticksGraspSceneCfg(ReachSceneCfg):
-    """직육면체(= 젓가락의 단순화 모델)를 잡는 씬.
+    """Table and one fixed-size chopstick proxy."""
 
-    정육면체는 대칭이라 "목표 파지 회전"을 정의할 수 없음 -> 논문의 r_hr / r_orient를 못 씀.
-    직육면체는 긴 축이 있어서 목표 파지 자세가 해석적으로 정의됨 (짧은 축을 가로질러 잡기).
-    나중에 실제 젓가락 메시로 교체할 것. entity 이름(cube)은 reward/metric 공유 때문에 아직 유지함.
-    """
+    support = RigidObjectCfg(
+        prim_path="{ENV_REGEX_NS}/Support",
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(STICK_POS[0], STICK_POS[1], BASE_Z / 2)),
+        spawn=sim_utils.CuboidCfg(
+            size=(0.5, 1.0, BASE_Z),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+            collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
+            visual_material=sim_utils.PreviewSurfaceCfg(
+                diffuse_color=(0.45, 0.42, 0.38), metallic=0.0, roughness=0.8
+            ),
+        ),
+    )
 
     cube = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/Cube",
         init_state=RigidObjectCfg.InitialStateCfg(
-            # x=0.45 (베이스로부터 0.485m)에서 옮김.
-            # 손바닥을 아래로 향한 자세들을 샘플링해보면, "최고" manipulability는 거리에 따라 거의
-            # 안 변하는데 (0.116 vs 최적점 0.125) "좋은 자세의 밀도"가 크게 다름:
-            # manip>0.08인 비율이 0.485m에선 11.9%, 여기선 22.6%. 파지가 불가능했던 게 아니라
-            # "가능하지만 찾기 어려웠던" 것. 논문도 물체를 manipulation workspace 안에 스폰함.
-            # 단, 더 멀리는 금물: Indy7 도달거리가 약 0.8m이고 완전히 뻗은 팔은 그 자체가 특이점임.
-            # (x=0.82면 큐브가 0.84m -> 팔 밖)
-            pos=(0.62, -0.18, 0.015),  # 3cm 면으로 누워 있으므로 중심이 z=0.015
-            # 긴 축(로컬 z)을 월드 x로 눕힘 (y축 기준 90도). 바닥에 누운 막대기.
-            # 이 자세에선 바로 못 잡으므로 먼저 세우거나 굴려야 함 -> 그게 pre-grasp manipulation.
-            rot=(0.70711, 0.0, 0.70711, 0.0),
+            pos=(STICK_POS[0], STICK_POS[1], BASE_Z + STICK_SIZE[2] / 2),
+            rot=(1.0, 0.0, 0.0, 0.0),
         ),
         spawn=sim_utils.CuboidCfg(
-            size=(0.03, 0.03, 0.16),  # 3cm x 3cm x 16cm 막대. 젓가락 프록시
+            size=STICK_SIZE,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 disable_gravity=False,
                 solver_position_iteration_count=16,
-                solver_velocity_iteration_count=1,
-                max_depenetration_velocity=5.0,
+                solver_velocity_iteration_count=1,  # 1.4cm (2cm값; 1cm 복귀 시 4)
+                max_depenetration_velocity=STICK_MAX_DEPENETRATION_VELOCITY,
             ),
-            mass_props=sim_utils.MassPropertiesCfg(mass=0.30),
-            collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=True),
+            mass_props=sim_utils.MassPropertiesCfg(mass=STICK_MASS),
+            collision_props=sim_utils.CollisionPropertiesCfg(
+                collision_enabled=True,
+                contact_offset=STICK_CONTACT_OFFSET,
+                rest_offset=STICK_REST_OFFSET,
+            ),
             physics_material=sim_utils.RigidBodyMaterialCfg(
                 static_friction=1.0,
                 dynamic_friction=1.0,
                 restitution=0.0,
             ),
             visual_material=sim_utils.PreviewSurfaceCfg(
-                diffuse_color=(0.1, 0.4, 1.0),
-                metallic=0.0,
-                roughness=0.5,
+                diffuse_color=(0.95, 0.55, 0.08), metallic=0.0, roughness=0.55
             ),
         ),
     )
@@ -75,50 +90,35 @@ class ChopsticksGraspSceneCfg(ReachSceneCfg):
 
 @configclass
 class ChopsticksGraspEnvCfg(NrmkRLEnvCfg):
-    """Configuration for the reach end-effector pose tracking environment."""
+    """A1: fixed one-stick functional-grasp baseline."""
 
-    # Scene settings
     scene: ChopsticksGraspSceneCfg = ChopsticksGraspSceneCfg(num_envs=4096, env_spacing=3.0)
-    # Basic settings
-    observations: CubeGraspObservationsCfg = CubeGraspObservationsCfg()
-    actions: CubeGraspActionsCfg = CubeGraspActionsCfg()
-    commands: CubeGraspCommandsCfg = CubeGraspCommandsCfg()
-    # MDP settings
-    rewards: CubeGraspRewardsCfg | EmptyCfg = CubeGraspRewardsCfg()
-    terminations: CubeGraspTerminationsCfg = CubeGraspTerminationsCfg()
-    events: CubeGraspEventCfg | EmptyCfg = CubeGraspEventCfg()
-    curriculum = EmptyCfg()  # Not used for now
-    # CMDP settings
-    costs = EmptyCfg()  # Not used for now
+    observations: ChopstickAcquireObservationsCfg = ChopstickAcquireObservationsCfg()
+    actions: ChopstickAcquireActionsCfg = ChopstickAcquireActionsCfg()
+    commands: ChopstickAcquireCommandsCfg = ChopstickAcquireCommandsCfg()
+    rewards: ChopstickAcquireRewardsCfg | EmptyCfg = ChopstickAcquireRewardsCfg()
+    terminations: ChopstickAcquireTerminationsCfg = ChopstickAcquireTerminationsCfg()
+    events: ChopstickAcquireEventCfg | EmptyCfg = ChopstickAcquireEventCfg()
+    curriculum = EmptyCfg()
+    costs = EmptyCfg()
 
-    #
-    actor_obs_list: list = ["policy"]  # ["proprioception", "point_cloud", "privileged"]
-    critic_obs_list: list | None = None  # None: same as actor_obs_list
-    teacher_obs_list: list | None = None  # None: same as actor_obs_list
+    actor_obs_list: list = ["policy"]
+    critic_obs_list: list | None = None
+    teacher_obs_list: list | None = None
 
     def __post_init__(self):
-        """Post initialization."""
-        # task settings
-        # 24였음 -> 0.4초/step = 2.5 Hz. 정책이 내는 건 "관절 목표 위치"이고 그 목표를 0.4초 내내
-        # 고정한 채 PD가 밀어붙임. 즉 바닥에 닿아도 0.4초가 지나야 알아챔 -> 모든 접촉이 슬램이 됨.
-        # (실측: 손이 바닥에 처박고 87cm까지 튕겨 오르길 반복, 큐브가 67cm 날아감)
-        # reach는 접촉이 없어서 2.5 Hz로 충분했지만 파지는 접촉이 전부임.
-        # 30 Hz는 IsaacLab 공식 접촉 task들의 하한임 (Lift-Cube 50, ShadowHand 40~60, Allegro 30).
-        # 15 Hz(dec 4)면 판단 사이에 손이 3.3cm(큐브 반 개) 움직여서 아슬아슬함.
         self.sim.dt = 1.0 / 60.0
-        self.decimation = 2  # 33ms/step -> 30 Hz
-        self.episode_length_s = 8.0  # -> 240 step/episode (기존 20)
-        # 2026-07-10 run이 2**18에서 약 263k patch로 overflow남. 지금은 finger_cage_hold가 손가락을
-        # 오므리게 해서 접촉이 더 늘어남. overflow는 크래시가 아니라 "접촉을 조용히 버림" -> 손이
-        # 큐브를 통과하고 cage reward가 안 오름 -> "reward 설계가 잘못됨"과 구별이 불가능해짐.
+        self.decimation = 2
+        self.episode_length_s = 8.0
         self.sim.physx.gpu_max_rigid_patch_count = 2**20
 
-        # reward는 아직 CubeGraspRewardsCfg를 공유함 (half_extent가 정육면체 기준으로 하드코딩됨).
-        # 여기서 직육면체 치수로 덮어씀. reward를 논문 방식으로 재설계할 때 제대로 분리할 것.
-        # metric(managers.py)은 scene cfg에서 크기를 읽으므로 자동으로 맞춰짐.
-        half = tuple(x / 2.0 for x in self.scene.cube.spawn.size)
-        for term in ("finger_cage_reach", "finger_cage_hold", "cube_lift"):
-            self.rewards.__dict__[term].params["object_half_extent"] = half
+        self.rewards.cube_lift.params["surface_z"] = BASE_Z
+        self.rewards.hand_floor.params["surface_z"] = BASE_Z
+        self.terminations.stick_dropped.params["minimum_height"] = BASE_Z - 0.05
 
-        # viewer settings
-        self.viewer.eye = (2.5, 2.5, 2.5)
+        # 운반 이식(2026-07-22): world goal = 스폰 위 +20cm, 자세 yaw 45° 고정.
+        # pos_x/pos_y는 cfg에서 STICK_POS(0.62, -0.20)로 이미 고정, z만 여기서 오버라이드.
+        # 이후 ranges를 넓히면 랜덤 목표(위치/자세)가 됨.
+        self.commands.cube_goal.ranges.pos_z = (BASE_Z + 0.20, BASE_Z + 0.20)
+
+        self.viewer.eye = (2.5, 2.5, 2.0)
