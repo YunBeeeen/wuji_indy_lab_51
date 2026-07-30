@@ -24,4 +24,5 @@ from .indy import *
 from .moby import *
 from .moby200 import *
 from .nami import *
+from .wuji import *
 from .zen import *

@@ -118,9 +118,12 @@ from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg  # no
 
 
 class UniformCubeGoalCommand(CommandTerm):
-    """에피소드마다 큐브 운반 goal 위치를 env-로컬 박스에서 균일 샘플.
+    """에피소드마다 큐브 운반 goal pose를 env-로컬 범위에서 균일 샘플.
 
-    command는 (N, 3) env-로컬 위치. 월드 좌표가 필요하면 env_origins를 더할 것 —
+    command는 ``(N, 7) = position xyz + quaternion wxyz``. 위치는 env-로컬이므로
+    월드 좌표가 필요하면 position에만 env_origins를 더할 것. orientation은 env frame이
+    world와 평행하므로 그대로 world quaternion으로 사용한다.
+
     기존 object_position_error_to_target이 이 보정을 빼먹어서 다중 env에서 goal 관측이
     env마다 다른 상수(사실상 잡음 채널)였던 것을 고치는 구현임 (2026-07-15 발견).
     resampling_time_range를 에피소드보다 길게 두면 리셋에서만 리샘플됨 (에피소드 내 고정
@@ -133,11 +136,13 @@ class UniformCubeGoalCommand(CommandTerm):
         super().__init__(cfg, env)
         self.cube = env.scene[cfg.asset_name]
         self.goal_pos_e = torch.zeros(self.num_envs, 3, device=self.device)
+        self.goal_quat_w = torch.zeros(self.num_envs, 4, device=self.device)
+        self.goal_quat_w[:, 0] = 1.0
         self.metrics["error_pos"] = torch.zeros(self.num_envs, device=self.device)
 
     @property
     def command(self) -> torch.Tensor:
-        return self.goal_pos_e
+        return torch.cat((self.goal_pos_e, self.goal_quat_w), dim=-1)
 
     def _resample_command(self, env_ids: Sequence[int]):
         r = self.cfg.ranges
@@ -145,6 +150,11 @@ class UniformCubeGoalCommand(CommandTerm):
             self.goal_pos_e[env_ids, i] = (
                 torch.rand(len(env_ids), device=self.device) * (hi - lo) + lo
             )
+        euler = torch.empty(len(env_ids), 3, device=self.device)
+        for i, (lo, hi) in enumerate((r.roll, r.pitch, r.yaw)):
+            euler[:, i] = torch.rand(len(env_ids), device=self.device) * (hi - lo) + lo
+        quat = quat_from_euler_xyz(euler[:, 0], euler[:, 1], euler[:, 2])
+        self.goal_quat_w[env_ids] = quat_unique(quat)
 
     def _update_command(self):
         pass
@@ -162,7 +172,23 @@ class UniformCubeGoalCommand(CommandTerm):
             self.goal_visualizer.set_visibility(False)
 
     def _debug_vis_callback(self, event):
-        self.goal_visualizer.visualize(translations=self._env.scene.env_origins + self.goal_pos_e)
+        # 마커 2종(구슬=위치, 반투명 박스=자세)을 같은 goal pose에 겹쳐 그림.
+        # marker_indices: 앞 N개=구슬(0), 뒤 N개=박스(1).
+        goal_w = self._env.scene.env_origins + self.goal_pos_e
+        n = goal_w.shape[0]
+        translations = torch.cat([goal_w, goal_w], dim=0)
+        orientations = torch.cat([self.goal_quat_w, self.goal_quat_w], dim=0)
+        marker_indices = torch.cat(
+            [
+                torch.zeros(n, dtype=torch.long, device=goal_w.device),
+                torch.ones(n, dtype=torch.long, device=goal_w.device),
+            ]
+        )
+        self.goal_visualizer.visualize(
+            translations=translations,
+            orientations=orientations,
+            marker_indices=marker_indices,
+        )
 
 
 @configclass
@@ -176,21 +202,25 @@ class UniformCubeGoalCommandCfg(CommandTermCfg):
         pos_x: tuple[float, float] = MISSING
         pos_y: tuple[float, float] = MISSING
         pos_z: tuple[float, float] = MISSING
+        roll: tuple[float, float] = (0.0, 0.0)
+        pitch: tuple[float, float] = (0.0, 0.0)
+        yaw: tuple[float, float] = (0.0, 0.0)
 
     ranges: Ranges = MISSING
 
-    # 2026-07-19: 구슬 → 반투명 직육면체 (goal "자세"가 보이게 — ori 판정 15°의 목표가
-    # 월드 정렬임을 시각화. 마커 자세는 identity 기본값 = 목표 자세 그대로).
-    # 길이축 y로 길쭉하게 — 어느 축을 맞춰야 하는지 눈에 보임. goal 자세 랜덤화(v2)에서는
-    # _debug_vis_callback에 orientations=command quat을 넘기도록 확장할 것.
+    # 위치(구슬) + 자세(반투명 직육면체) 동시 마커. 박스 길이축 y가 goal orientation을 표시.
     goal_marker_cfg: VisualizationMarkersCfg = VisualizationMarkersCfg(
         prim_path="/Visuals/Command/cube_goal",
         markers={
+            "position_sphere": _sim_utils.SphereCfg(
+                radius=0.012,
+                visual_material=_sim_utils.PreviewSurfaceCfg(diffuse_color=(0.0, 0.9, 0.3)),
+            ),
             "goal_box": _sim_utils.CuboidCfg(
-                size=(0.025, 0.10, 0.025),
+                size=(0.02, 0.18, 0.02),
                 visual_material=_sim_utils.PreviewSurfaceCfg(
                     diffuse_color=(0.0, 0.9, 0.3), opacity=0.35
                 ),
-            )
+            ),
         },
     )

@@ -20,6 +20,7 @@ from isaaclab.managers import (  # noqa: F401
 from prettytable import PrettyTable
 
 from isaac_neuromeka.mdp.rewards import square_prism_ori_error as _square_prism_ori_error
+from isaac_neuromeka.mdp.rewards import _SQUARE_PRISM_Y_SYMS_TIP as _TIP_SYMS
 from isaac_neuromeka.utils.running_stats import TorchRunningStats
 
 
@@ -82,14 +83,17 @@ class CustomActionManager(ActionManager):
         # nothing to log here
         return {}
 
-    def apply_action(self, env_ids: Sequence[int] | None = None) -> None:
+    def apply_action(self) -> None:
         """Applies the actions to the environment/simulation.
 
         Note:
             This should be called at every simulation step.
         """
         for term in self._terms.values():
-            term.apply_actions(env_ids)
+            # Match Isaac Lab's ActionManager interface. Standard action terms such as
+            # JointPositionToLimitsAction do not accept an env_ids argument, while the
+            # local action terms keep it optional and therefore also work with no argument.
+            term.apply_actions()
 
     def process_action(self, action: torch.Tensor):
         """Processes the actions sent to the environment.
@@ -125,9 +129,14 @@ class CustomRewardManager(RewardManager):
             self._episode_stats[term_name] = TorchRunningStats(dim=self.num_envs, device=self.device)
             self._episode_raw_sums[term_name] = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
         self._configure_cube_metrics()
+        self._configure_hand_grasp_metrics()
+        self._configure_hand_setting_metrics()
 
     def _configure_cube_metrics(self):
         self._cube_metric_enabled = False
+        self._tripod_metric_params = None
+        self._functional_grasp_metric_params = None
+        self._functional_grasp_term = None
         self._cube_metric_body_names = [
             "palm_link",
             "finger1_tip_link",
@@ -136,8 +145,8 @@ class CustomRewardManager(RewardManager):
             "finger4_tip_link",
             "finger5_tip_link",
         ]
-        # cage 가상점을 만드는 body들. reward cfg의 CAGE_BODIES와 반드시 동일해야 함.
-        # 한쪽만 바꾸면 metric이 reward와 다른 점을 측정하게 됨.
+        # Fallback for configurations without finger_cage_hold. Normally body ids and fractions are
+        # read from the resolved reward term below so metrics always measure the active cage.
         self._cage_body_names = [
             "finger1_tip_link",  # thumb tip: the anchor every line starts from
             "finger2_tip_link",
@@ -182,10 +191,12 @@ class CustomRewardManager(RewardManager):
             # palm_link 기준 arm 6축의 sqrt(det(J Jt)). 0에 가까우면 팔이 특이점으로 접힌 것.
             # 기준: 초기 자세 약 0.064, 무작위 최대 약 0.113. 0.02 아래면 특이점 근처.
             "arm_manipulability",
-            # 물체 자세 오차 [rad]: 월드 정렬 대비, 정사각 단면 프리즘 대칭 8개 중 최소각.
+            # 물체 자세 오차 [rad]: command quaternion 대비, 정사각 단면 프리즘 대칭 8개 중 최소각.
             # orientation v1 success(ori_limit)의 판독용. 정육면체(큐브 태스크)에서는 값이
             # 과대평가될 수 있음 (대칭 24개 중 8개만 고려) — box 태스크 기준 지표.
             "box_ori_error",
+            # position < activation_distance + cage gate 조건을 한 번 통과했는지 (0/1 latch).
+            "orientation_stage_active",
             # 손이 큐브를 실제로 건드렸나, 그리고 바닥에서 떴나
             "cube_displacement",
             # 중심 높이. lift 신호가 "아님": 바닥의 큐브를 짜면 모서리로 세워져 중심만 몇 mm 올라감.
@@ -200,6 +211,37 @@ class CustomRewardManager(RewardManager):
             "action_track_err",  # |관절목표 - 관절실제| 최대 [rad]
             "action_delta",  # |a_t - a_{t-1}| 평균. action 범위가 [-1,1]임
         ]
+
+        # The one-stick task has no command, but its tool_ready termination contains all
+        # constraint definitions needed to reproduce the current-state success metrics.
+        try:
+            tool_ready_cfg = self._env.termination_manager.get_term_cfg("tool_ready")
+        except ValueError:
+            tool_ready_cfg = None
+        if tool_ready_cfg is not None:
+            required_params = {
+                "palm_cfg",
+                "index_cfg",
+                "thumb_cfg",
+                "index_cage_cfg",
+                "middle_cage_cfg",
+                "object_cfg",
+            }
+            if required_params.issubset(tool_ready_cfg.params):
+                self._functional_grasp_metric_params = tool_ready_cfg.params
+                self._functional_grasp_term = tool_ready_cfg.func
+                self._cube_metric_names.extend(
+                    [
+                        "tripod_index_gate",
+                        "tripod_middle_gate",
+                        "tripod_gate",
+                        "index_grip_error",
+                        "thumb_grip_error",
+                        "hand_stick_orientation_error",
+                        "tool_ready_valid",
+                        "tool_ready_stable_steps",
+                    ]
+                )
         self._cube_metric_body_ids = []
         self._cage_body_ids = []
         self._cube_metric_finger_weights = torch.tensor(
@@ -239,7 +281,45 @@ class CustomRewardManager(RewardManager):
                 return
             robot = self._env.scene["robot"]
             self._cube_metric_body_ids = [robot.find_bodies(n)[0][0] for n in self._cube_metric_body_names]
-            self._cage_body_ids = [robot.find_bodies(n)[0][0] for n in self._cage_body_names]
+
+            # Keep diagnostic cage metrics synchronized with the active reward configuration.
+            # This supports both the cube task and Box-Transport cage experiments without another
+            # hard-coded body list drifting out of sync.
+            try:
+                hold_cfg = self.get_term_cfg("finger_cage_hold")
+            except ValueError:
+                hold_cfg = None
+
+            def resolved_body_ids(entity_cfg):
+                body_ids = entity_cfg.body_ids
+                if isinstance(body_ids, slice):
+                    body_names = entity_cfg.body_names or self._cage_body_names
+                    if isinstance(body_names, str):
+                        body_names = [body_names]
+                    return [robot.find_bodies(name)[0][0] for name in body_names]
+                return list(body_ids)
+
+            if hold_cfg is None:
+                self._cage_body_ids = [robot.find_bodies(n)[0][0] for n in self._cage_body_names]
+            elif "asset_cfg" in hold_cfg.params:
+                self._cage_body_ids = resolved_body_ids(hold_cfg.params["asset_cfg"])
+            elif {"index_cage_cfg", "middle_cage_cfg"}.issubset(hold_cfg.params):
+                index_ids = resolved_body_ids(hold_cfg.params["index_cage_cfg"])
+                middle_ids = resolved_body_ids(hold_cfg.params["middle_cage_cfg"])
+                # Generic cage SDF metrics pool both tripod groups. The exact active reward
+                # remains visible separately through tripod_index/middle/gate below.
+                self._cage_body_ids = index_ids + [body_id for body_id in middle_ids if body_id not in index_ids]
+                self._tripod_metric_params = hold_cfg.params
+            else:
+                self._cage_body_ids = [robot.find_bodies(n)[0][0] for n in self._cage_body_names]
+
+            if hold_cfg is not None:
+                point_fractions = hold_cfg.params.get("point_fractions")
+                if point_fractions is None:
+                    num_points = int(hold_cfg.params.get("num_points", 3))
+                    point_fractions = tuple(i / (num_points + 1) for i in range(1, num_points + 1))
+                self._cage_fractions = torch.tensor(point_fractions, dtype=torch.float, device=self.device)
+
             self._arm_joint_ids, _ = robot.find_joints(["joint[0-5]"])
             size = self._env.cfg.scene.cube.spawn.size
             self._cube_half_extent = torch.tensor(size, dtype=torch.float, device=self.device) / 2.0
@@ -247,10 +327,812 @@ class CustomRewardManager(RewardManager):
             cube_lift_cfg = getattr(rewards_cfg, "cube_lift", None)
             if cube_lift_cfg is not None:
                 self._cube_surface_z = float(cube_lift_cfg.params.get("surface_z", 0.0))
-        except Exception:
+        except Exception as exc:
+            print(f"[WARNING] CustomRewardManager object metrics disabled: {type(exc).__name__}: {exc}")
             return
 
         self._cube_metric_enabled = True
+
+    def _configure_hand_grasp_metrics(self):
+        """Enable contact and OPEN/CLOSE diagnostics only for hand_grasp."""
+        self._hand_grasp_metric_enabled = False
+        self._hand_grasp_sensor_names = (
+            "thumb_distal_stick1",
+            "index_tip_stick1",
+            "middle_tip_stick1",
+            "palm_stick2",
+            "thumb_mid_stick2",
+            "ring_tip_stick2",
+        )
+        self._hand_grasp_metric_names = [
+            *[f"{name}_force" for name in self._hand_grasp_sensor_names],
+            "ring_support_force",
+            "min_functional_force",
+            "functional_contact_count",
+            "functional_contact_fraction",
+            "full_contact",
+            "quiet_valid",
+            "stick1_linear_speed",
+            "stick2_linear_speed",
+            "max_linear_speed",
+            "stick1_angular_speed",
+            "stick2_angular_speed",
+            "max_angular_speed",
+            "mode_open",
+            "mode_close",
+            "tip_surface_gap",
+            "tip_lateral_error",
+            "tip_axial_offset",
+            "tip_axial_error",
+            "target_tip_gap",
+            "tip_gap_error",
+            "stick1_pivot_error",
+            "stick2_position_error",
+            "stick2_orientation_error",
+            "mode_geometry_valid",
+            "success_stable_steps",
+        ]
+
+        try:
+            success_cfg = self._env.termination_manager.get_term_cfg("success")
+        except ValueError:
+            return
+        required_params = {
+            "command_name",
+            "sensor_groups",
+            "palm_cfg",
+            "stick1_cfg",
+            "stick2_cfg",
+            "stick1_pivot_offset_o",
+            "stick1_tip_offset_o",
+            "stick2_tip_offset_o",
+            "stick_thickness",
+            "open_target_gap",
+            "close_target_gap",
+            "stick1_reference_position_p",
+            "stick1_reference_quaternion_p",
+            "stick2_reference_position_p",
+            "stick2_reference_quaternion_p",
+            "reference_separation_direction_stick2",
+            "contact_threshold",
+            "pivot_error_limit",
+            "tip_gap_error_limit",
+            "lateral_error_limit",
+            "stick2_position_error_limit",
+            "stick2_orientation_error_limit",
+            "linear_speed_limit",
+            "angular_speed_limit",
+        }
+        if not required_params.issubset(success_cfg.params):
+            return
+        if any(name not in self._env.scene.sensors for name in self._hand_grasp_sensor_names):
+            return
+
+        stick1_name = success_cfg.params["stick1_cfg"].name
+        stick2_name = success_cfg.params["stick2_cfg"].name
+        if stick1_name not in self._env.scene.rigid_objects or stick2_name not in self._env.scene.rigid_objects:
+            return
+
+        self._hand_grasp_stick1_name = stick1_name
+        self._hand_grasp_stick2_name = stick2_name
+        self._hand_grasp_palm_cfg = success_cfg.params["palm_cfg"]
+        self._hand_grasp_success_term = success_cfg.func
+        self._hand_grasp_command_name = success_cfg.params["command_name"]
+        self._hand_grasp_contact_threshold = float(success_cfg.params["contact_threshold"])
+        self._hand_grasp_pivot_error_limit = float(
+            success_cfg.params["pivot_error_limit"]
+        )
+        self._hand_grasp_tip_gap_error_limit = float(
+            success_cfg.params["tip_gap_error_limit"]
+        )
+        self._hand_grasp_lateral_error_limit = float(
+            success_cfg.params["lateral_error_limit"]
+        )
+        self._hand_grasp_stick2_position_error_limit = float(
+            success_cfg.params["stick2_position_error_limit"]
+        )
+        self._hand_grasp_stick2_orientation_error_limit = float(
+            success_cfg.params["stick2_orientation_error_limit"]
+        )
+        self._hand_grasp_linear_speed_limit = float(success_cfg.params["linear_speed_limit"])
+        self._hand_grasp_angular_speed_limit = float(success_cfg.params["angular_speed_limit"])
+        stick1_position_reference = torch.tensor(
+            success_cfg.params["stick1_reference_position_p"],
+            dtype=torch.float,
+            device=self.device,
+        )
+        stick1_quaternion_reference = torch.tensor(
+            success_cfg.params["stick1_reference_quaternion_p"],
+            dtype=torch.float,
+            device=self.device,
+        )
+        stick1_pivot_offset = torch.tensor(
+            success_cfg.params["stick1_pivot_offset_o"],
+            dtype=torch.float,
+            device=self.device,
+        )
+        self._hand_grasp_stick1_pivot_reference = (
+            stick1_position_reference
+            + math_utils.quat_apply(
+                stick1_quaternion_reference.unsqueeze(0),
+                stick1_pivot_offset.unsqueeze(0),
+            )[0]
+        )
+        self._hand_grasp_stick1_pivot_offset = stick1_pivot_offset
+        self._hand_grasp_stick1_tip_offset = torch.tensor(
+            success_cfg.params["stick1_tip_offset_o"],
+            dtype=torch.float,
+            device=self.device,
+        )
+        self._hand_grasp_stick2_tip_offset = torch.tensor(
+            success_cfg.params["stick2_tip_offset_o"],
+            dtype=torch.float,
+            device=self.device,
+        )
+        self._hand_grasp_stick_thickness = float(
+            success_cfg.params["stick_thickness"]
+        )
+        self._hand_grasp_open_target_gap = float(
+            success_cfg.params["open_target_gap"]
+        )
+        self._hand_grasp_close_target_gap = float(
+            success_cfg.params["close_target_gap"]
+        )
+        self._hand_grasp_stick2_position_reference = torch.tensor(
+            success_cfg.params["stick2_reference_position_p"],
+            dtype=torch.float,
+            device=self.device,
+        )
+        self._hand_grasp_stick2_quaternion_reference = torch.tensor(
+            success_cfg.params["stick2_reference_quaternion_p"],
+            dtype=torch.float,
+            device=self.device,
+        )
+        self._hand_grasp_tip_separation_direction_stick2 = torch.tensor(
+            success_cfg.params["reference_separation_direction_stick2"],
+            dtype=torch.float,
+            device=self.device,
+        )
+        # Resolve the task-specific geometry helper once; compute() runs every
+        # policy step and should not repeat the import lookup.
+        from isaac_neuromeka.tasks.manipulation.hand_grasp.mdp import (
+            _tip_geometry_from_palm_poses,
+        )
+
+        self._hand_grasp_tip_geometry = _tip_geometry_from_palm_poses
+        _, _, reference_axial_offset = self._hand_grasp_tip_geometry(
+            stick1_position_reference.unsqueeze(0),
+            stick1_quaternion_reference.unsqueeze(0),
+            self._hand_grasp_stick2_position_reference.unsqueeze(0),
+            self._hand_grasp_stick2_quaternion_reference.unsqueeze(0),
+            self._hand_grasp_stick1_tip_offset,
+            self._hand_grasp_stick2_tip_offset,
+            self._hand_grasp_stick_thickness,
+        )
+        self._hand_grasp_tip_axial_reference = reference_axial_offset[0]
+
+        def zeros():
+            return {
+                name: torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+                for name in self._hand_grasp_metric_names
+            }
+
+        self._hand_grasp_metric_sums = zeros()
+        self._hand_grasp_metric_last = zeros()
+        self._hand_grasp_metric_min = {
+            name: torch.full_like(value, float("inf"))
+            for name, value in zeros().items()
+        }
+        self._hand_grasp_metric_max = {
+            name: torch.full_like(value, float("-inf"))
+            for name, value in zeros().items()
+        }
+        self._hand_grasp_metric_enabled = True
+
+    def _compute_hand_grasp_metrics(self) -> dict[str, torch.Tensor]:
+        """Compute per-contact forces and the mode-conditioned success gate."""
+        sensor_forces = {}
+        for name in self._hand_grasp_sensor_names:
+            force_matrix = self._env.scene.sensors[name].data.force_matrix_w
+            if force_matrix is None:
+                force = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+            else:
+                force = torch.linalg.vector_norm(force_matrix, dim=-1).sum(dim=(-1, -2))
+            sensor_forces[name] = force
+
+        ring_support = sensor_forces["ring_tip_stick2"]
+        functional_forces = torch.stack(
+            [
+                sensor_forces["thumb_distal_stick1"],
+                sensor_forces["index_tip_stick1"],
+                sensor_forces["middle_tip_stick1"],
+                sensor_forces["palm_stick2"],
+                sensor_forces["thumb_mid_stick2"],
+                ring_support,
+            ],
+            dim=-1,
+        )
+        contacts_valid = functional_forces >= self._hand_grasp_contact_threshold
+
+        stick1 = self._env.scene[self._hand_grasp_stick1_name]
+        stick2 = self._env.scene[self._hand_grasp_stick2_name]
+        robot = self._env.scene[self._hand_grasp_palm_cfg.name]
+        palm_id = self._hand_grasp_palm_cfg.body_ids[0]
+        palm_position = robot.data.body_pos_w[:, palm_id]
+        palm_quaternion = robot.data.body_quat_w[:, palm_id]
+        palm_linear_velocity = robot.data.body_lin_vel_w[:, palm_id]
+        palm_angular_velocity = robot.data.body_ang_vel_w[:, palm_id]
+
+        stick1_offset = stick1.data.root_pos_w - palm_position
+        stick2_offset = stick2.data.root_pos_w - palm_position
+        stick1_relative_linear_velocity = (
+            stick1.data.root_lin_vel_w
+            - palm_linear_velocity
+            - torch.cross(
+                palm_angular_velocity,
+                stick1_offset,
+                dim=-1,
+            )
+        )
+        stick2_relative_linear_velocity = (
+            stick2.data.root_lin_vel_w
+            - palm_linear_velocity
+            - torch.cross(
+                palm_angular_velocity,
+                stick2_offset,
+                dim=-1,
+            )
+        )
+        stick1_relative_angular_velocity = (
+            stick1.data.root_ang_vel_w - palm_angular_velocity
+        )
+        stick2_relative_angular_velocity = (
+            stick2.data.root_ang_vel_w - palm_angular_velocity
+        )
+        stick1_linear_speed = torch.linalg.vector_norm(
+            stick1_relative_linear_velocity,
+            dim=-1,
+        )
+        stick2_linear_speed = torch.linalg.vector_norm(
+            stick2_relative_linear_velocity,
+            dim=-1,
+        )
+        max_linear_speed = torch.maximum(
+            stick1_linear_speed,
+            stick2_linear_speed,
+        )
+        stick1_angular_speed = torch.linalg.vector_norm(
+            stick1_relative_angular_velocity,
+            dim=-1,
+        )
+        stick2_angular_speed = torch.linalg.vector_norm(
+            stick2_relative_angular_velocity,
+            dim=-1,
+        )
+        max_angular_speed = torch.maximum(
+            stick1_angular_speed,
+            stick2_angular_speed,
+        )
+
+        stick1_position_p, stick1_quaternion_p = math_utils.subtract_frame_transforms(
+            palm_position,
+            palm_quaternion,
+            stick1.data.root_pos_w,
+            stick1.data.root_quat_w,
+        )
+        stick2_position_p, stick2_quaternion_p = math_utils.subtract_frame_transforms(
+            palm_position,
+            palm_quaternion,
+            stick2.data.root_pos_w,
+            stick2.data.root_quat_w,
+        )
+        stick1_pivot = (
+            stick1_position_p
+            + math_utils.quat_apply(
+                stick1_quaternion_p,
+                self._hand_grasp_stick1_pivot_offset.expand(
+                    self.num_envs,
+                    -1,
+                ),
+            )
+        )
+        stick1_pivot_error = torch.linalg.vector_norm(
+            stick1_pivot - self._hand_grasp_stick1_pivot_reference,
+            dim=-1,
+        )
+        stick2_position_error = torch.linalg.vector_norm(
+            stick2_position_p - self._hand_grasp_stick2_position_reference,
+            dim=-1,
+        )
+        stick2_orientation_error = 2.0 * torch.acos(
+            torch.clamp(
+                torch.abs(
+                    torch.sum(
+                        stick2_quaternion_p
+                        * self._hand_grasp_stick2_quaternion_reference,
+                        dim=-1,
+                    )
+                ),
+                min=0.0,
+                max=1.0,
+            )
+        )
+        # Use exactly the same transverse square-section geometry as the
+        # OPEN/CLOSE rewards and success term.
+        (
+            tip_surface_gap,
+            tip_lateral_error,
+            tip_axial_offset,
+        ) = self._hand_grasp_tip_geometry(
+            stick1_position_p,
+            stick1_quaternion_p,
+            stick2_position_p,
+            stick2_quaternion_p,
+            self._hand_grasp_stick1_tip_offset,
+            self._hand_grasp_stick2_tip_offset,
+            self._hand_grasp_stick_thickness,
+            self._hand_grasp_tip_separation_direction_stick2,
+        )
+        tip_axial_error = torch.abs(
+            tip_axial_offset - self._hand_grasp_tip_axial_reference
+        )
+        mode = self._env.command_manager.get_command(
+            self._hand_grasp_command_name
+        )
+        target_tip_gap = (
+            mode[:, 0] * self._hand_grasp_open_target_gap
+            + mode[:, 1] * self._hand_grasp_close_target_gap
+        )
+        tip_gap_error = torch.abs(tip_surface_gap - target_tip_gap)
+        mode_geometry_valid = (
+            (stick1_pivot_error <= self._hand_grasp_pivot_error_limit)
+            & (
+                stick2_position_error
+                <= self._hand_grasp_stick2_position_error_limit
+            )
+            & (
+                stick2_orientation_error
+                <= self._hand_grasp_stick2_orientation_error_limit
+            )
+            & (tip_gap_error <= self._hand_grasp_tip_gap_error_limit)
+            & (
+                tip_lateral_error
+                <= self._hand_grasp_lateral_error_limit
+            )
+        )
+        full_contact = torch.all(contacts_valid, dim=-1)
+        quiet_valid = (
+            full_contact
+            & mode_geometry_valid
+            & (max_linear_speed <= self._hand_grasp_linear_speed_limit)
+            & (max_angular_speed <= self._hand_grasp_angular_speed_limit)
+        )
+        stable_steps = getattr(self._hand_grasp_success_term, "_stable_steps", None)
+        if stable_steps is None:
+            stable_steps = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        else:
+            stable_steps = stable_steps.float()
+
+        metrics = {
+            f"{name}_force": force
+            for name, force in sensor_forces.items()
+        }
+        metrics.update(
+            {
+                "ring_support_force": ring_support,
+                "min_functional_force": torch.min(functional_forces, dim=-1).values,
+                "functional_contact_count": contacts_valid.float().sum(dim=-1),
+                "functional_contact_fraction": contacts_valid.float().mean(dim=-1),
+                "full_contact": full_contact.float(),
+                "quiet_valid": quiet_valid.float(),
+                "stick1_linear_speed": stick1_linear_speed,
+                "stick2_linear_speed": stick2_linear_speed,
+                "max_linear_speed": max_linear_speed,
+                "stick1_angular_speed": stick1_angular_speed,
+                "stick2_angular_speed": stick2_angular_speed,
+                "max_angular_speed": max_angular_speed,
+                "mode_open": mode[:, 0],
+                "mode_close": mode[:, 1],
+                "tip_surface_gap": tip_surface_gap,
+                "tip_lateral_error": tip_lateral_error,
+                "tip_axial_offset": tip_axial_offset,
+                "tip_axial_error": tip_axial_error,
+                "target_tip_gap": target_tip_gap,
+                "tip_gap_error": tip_gap_error,
+                "stick1_pivot_error": stick1_pivot_error,
+                "stick2_position_error": stick2_position_error,
+                "stick2_orientation_error": stick2_orientation_error,
+                "mode_geometry_valid": mode_geometry_valid.float(),
+                "success_stable_steps": stable_steps,
+            }
+        )
+        return metrics
+
+    def _configure_hand_setting_metrics(self):
+        """Enable open-hand-to-functional-setting diagnostics for hand_setting."""
+        self._hand_setting_metric_enabled = False
+        self._hand_setting_sensor_names = (
+            "thumb_distal_stick1",
+            "index_tip_stick1",
+            "middle_tip_stick1",
+            "palm_stick2",
+            "thumb_mid_stick2",
+            "ring_tip_stick2",
+        )
+        self._hand_setting_region_term_names = (
+            "thumb_distal_region",
+            "index_tip_region",
+            "middle_tip_region",
+            "ring_tip_region",
+        )
+        self._hand_setting_metric_names = [
+            *[f"{name}_force" for name in self._hand_setting_sensor_names],
+            "min_functional_force",
+            "functional_contact_count",
+            "functional_contact_fraction",
+            "full_contact",
+            *[
+                f"{name}_score"
+                for name in self._hand_setting_region_term_names
+            ],
+            "shaft_region_count",
+            "shaft_region_fraction",
+            "all_shaft_regions_valid",
+            "stick1_position_error",
+            "stick1_orientation_error",
+            "stick2_position_error",
+            "stick2_orientation_error",
+            "stick1_pose_valid",
+            "stick2_pose_valid",
+            "pose_valid",
+            "stick1_linear_speed",
+            "stick2_linear_speed",
+            "max_linear_speed",
+            "stick1_angular_speed",
+            "stick2_angular_speed",
+            "max_angular_speed",
+            "setting_valid",
+            "success_stable_steps",
+        ]
+
+        try:
+            success_cfg = self._env.termination_manager.get_term_cfg("success")
+        except ValueError:
+            return
+        required_params = {
+            "sensor_groups",
+            "palm_cfg",
+            "stick1_cfg",
+            "stick2_cfg",
+            "thumb_distal_cfg",
+            "index_tip_cfg",
+            "middle_tip_cfg",
+            "ring_tip_cfg",
+            "stick1_reference_position_p",
+            "stick1_reference_quaternion_p",
+            "stick2_reference_position_p",
+            "stick2_reference_quaternion_p",
+            "contact_threshold",
+            "stick1_position_error_limit",
+            "stick1_orientation_error_limit",
+            "stick2_position_error_limit",
+            "stick2_orientation_error_limit",
+            "linear_speed_limit",
+            "angular_speed_limit",
+            "long_axis",
+            "axial_half_length",
+        }
+        if not required_params.issubset(success_cfg.params):
+            return
+        if any(
+            name not in self._env.scene.sensors
+            for name in self._hand_setting_sensor_names
+        ):
+            return
+
+        try:
+            region_cfgs = {
+                name: self.get_term_cfg(name)
+                for name in self._hand_setting_region_term_names
+            }
+        except ValueError:
+            return
+
+        self._hand_setting_params = success_cfg.params
+        self._hand_setting_success_term = success_cfg.func
+        self._hand_setting_region_cfgs = region_cfgs
+
+        from isaac_neuromeka.tasks.manipulation.hand_grasp.mdp import (
+            _body_in_box_shaft_region,
+            _group_forces,
+            _object_pair_speeds_relative_to_palm,
+            _setting_geometry,
+        )
+
+        self._hand_setting_body_in_region = _body_in_box_shaft_region
+        self._hand_setting_group_forces = _group_forces
+        self._hand_setting_object_pair_speeds = (
+            _object_pair_speeds_relative_to_palm
+        )
+        self._hand_setting_geometry = _setting_geometry
+
+        def zeros():
+            return {
+                name: torch.zeros(
+                    self.num_envs,
+                    dtype=torch.float,
+                    device=self.device,
+                )
+                for name in self._hand_setting_metric_names
+            }
+
+        self._hand_setting_metric_sums = zeros()
+        self._hand_setting_metric_last = zeros()
+        self._hand_setting_metric_min = {
+            name: torch.full_like(value, float("inf"))
+            for name, value in zeros().items()
+        }
+        self._hand_setting_metric_max = {
+            name: torch.full_like(value, float("-inf"))
+            for name, value in zeros().items()
+        }
+        self._hand_setting_metric_enabled = True
+
+    def _compute_hand_setting_metrics(self) -> dict[str, torch.Tensor]:
+        """Compute region, contact, pose, and stability progress for hand_setting."""
+        params = self._hand_setting_params
+        functional_forces = self._hand_setting_group_forces(
+            self._env,
+            params["sensor_groups"],
+        )
+        contacts_valid = (
+            functional_forces >= float(params["contact_threshold"])
+        )
+        full_contact = torch.all(contacts_valid, dim=-1)
+
+        region_scores = {
+            name: cfg.func(self._env, **cfg.params)
+            for name, cfg in self._hand_setting_region_cfgs.items()
+        }
+        region_specs = (
+            (
+                "thumb_distal_region",
+                params["thumb_distal_cfg"],
+                params["stick1_cfg"],
+            ),
+            (
+                "index_tip_region",
+                params["index_tip_cfg"],
+                params["stick1_cfg"],
+            ),
+            (
+                "middle_tip_region",
+                params["middle_tip_cfg"],
+                params["stick1_cfg"],
+            ),
+            (
+                "ring_tip_region",
+                params["ring_tip_cfg"],
+                params["stick2_cfg"],
+            ),
+        )
+        region_valid = torch.stack(
+            [
+                self._hand_setting_body_in_region(
+                    self._env,
+                    body_cfg,
+                    object_cfg,
+                    int(params["long_axis"]),
+                    float(params["axial_half_length"]),
+                )
+                for _, body_cfg, object_cfg in region_specs
+            ],
+            dim=-1,
+        )
+        all_regions_valid = torch.all(region_valid, dim=-1)
+
+        (
+            stick1_position_error,
+            stick1_orientation_error,
+            stick2_position_error,
+            stick2_orientation_error,
+            geometry_region_valid,
+        ) = self._hand_setting_geometry(
+            self._env,
+            params["palm_cfg"],
+            params["stick1_cfg"],
+            params["stick2_cfg"],
+            params["thumb_distal_cfg"],
+            params["index_tip_cfg"],
+            params["middle_tip_cfg"],
+            params["ring_tip_cfg"],
+            params["stick1_reference_position_p"],
+            params["stick1_reference_quaternion_p"],
+            params["stick2_reference_position_p"],
+            params["stick2_reference_quaternion_p"],
+            int(params["long_axis"]),
+            float(params["axial_half_length"]),
+        )
+        stick1_pose_valid = (
+            (
+                stick1_position_error
+                <= float(params["stick1_position_error_limit"])
+            )
+            & (
+                stick1_orientation_error
+                <= float(params["stick1_orientation_error_limit"])
+            )
+        )
+        stick2_pose_valid = (
+            (
+                stick2_position_error
+                <= float(params["stick2_position_error_limit"])
+            )
+            & (
+                stick2_orientation_error
+                <= float(params["stick2_orientation_error_limit"])
+            )
+        )
+        pose_valid = stick1_pose_valid & stick2_pose_valid
+
+        (
+            stick1_linear_speed,
+            stick2_linear_speed,
+            stick1_angular_speed,
+            stick2_angular_speed,
+        ) = self._hand_setting_object_pair_speeds(
+            self._env,
+            params["palm_cfg"],
+            params["stick1_cfg"],
+            params["stick2_cfg"],
+        )
+        max_linear_speed = torch.maximum(
+            stick1_linear_speed,
+            stick2_linear_speed,
+        )
+        max_angular_speed = torch.maximum(
+            stick1_angular_speed,
+            stick2_angular_speed,
+        )
+        setting_valid = (
+            full_contact
+            & geometry_region_valid
+            & pose_valid
+            & (
+                max_linear_speed
+                <= float(params["linear_speed_limit"])
+            )
+            & (
+                max_angular_speed
+                <= float(params["angular_speed_limit"])
+            )
+        )
+
+        stable_steps = getattr(
+            self._hand_setting_success_term,
+            "_stable_steps",
+            None,
+        )
+        if stable_steps is None:
+            stable_steps = torch.zeros(
+                self.num_envs,
+                dtype=torch.float,
+                device=self.device,
+            )
+        else:
+            stable_steps = stable_steps.float()
+
+        metrics = {
+            f"{name}_force": functional_forces[:, index]
+            for index, name in enumerate(self._hand_setting_sensor_names)
+        }
+        metrics.update(
+            {
+                "min_functional_force": torch.min(
+                    functional_forces,
+                    dim=-1,
+                ).values,
+                "functional_contact_count": contacts_valid.float().sum(dim=-1),
+                "functional_contact_fraction": contacts_valid.float().mean(dim=-1),
+                "full_contact": full_contact.float(),
+                **{
+                    f"{name}_score": score
+                    for name, score in region_scores.items()
+                },
+                "shaft_region_count": region_valid.float().sum(dim=-1),
+                "shaft_region_fraction": region_valid.float().mean(dim=-1),
+                "all_shaft_regions_valid": all_regions_valid.float(),
+                "stick1_position_error": stick1_position_error,
+                "stick1_orientation_error": stick1_orientation_error,
+                "stick2_position_error": stick2_position_error,
+                "stick2_orientation_error": stick2_orientation_error,
+                "stick1_pose_valid": stick1_pose_valid.float(),
+                "stick2_pose_valid": stick2_pose_valid.float(),
+                "pose_valid": pose_valid.float(),
+                "stick1_linear_speed": stick1_linear_speed,
+                "stick2_linear_speed": stick2_linear_speed,
+                "max_linear_speed": max_linear_speed,
+                "stick1_angular_speed": stick1_angular_speed,
+                "stick2_angular_speed": stick2_angular_speed,
+                "max_angular_speed": max_angular_speed,
+                "setting_valid": setting_valid.float(),
+                "success_stable_steps": stable_steps,
+            }
+        )
+        return metrics
+
+    def _compute_functional_grasp_metrics(self, clearance: torch.Tensor) -> dict[str, torch.Tensor]:
+        """Compute one-stick constraints with the same definitions used by tool_ready."""
+        if self._functional_grasp_metric_params is None:
+            return {}
+
+        from isaac_neuromeka.mdp.rewards import object_in_finger_cage
+        from isaac_neuromeka.tasks.manipulation.functional_grasp.mdp.target_grasp import (
+            hand_tool_orientation_error,
+            index_grip_error,
+            thumb_grip_error,
+        )
+
+        p = self._functional_grasp_metric_params
+        object_half_extent = p.get("object_half_extent", (0.01, 0.09, 0.01))
+        cage_kwargs = {
+            "object_cfg": p["object_cfg"],
+            "object_half_extent": object_half_extent,
+            "num_points": p.get("num_points", 3),
+            "sphere_radius": p.get("sphere_radius", 0.005),
+            "depth_max": p.get("depth_max", 0.005),
+            "point_fractions": p.get("point_fractions"),
+        }
+        index_gate = object_in_finger_cage(self._env, p["index_cage_cfg"], **cage_kwargs)
+        middle_gate = object_in_finger_cage(self._env, p["middle_cage_cfg"], **cage_kwargs)
+        tripod_gate = torch.minimum(index_gate, middle_gate)
+
+        index_error = index_grip_error(
+            self._env,
+            p["palm_cfg"],
+            p["index_cfg"],
+            p["object_cfg"],
+            object_half_extent=object_half_extent,
+            **(p.get("index_target") or {}),
+        )
+        thumb_error = thumb_grip_error(
+            self._env,
+            p["palm_cfg"],
+            p["thumb_cfg"],
+            p["object_cfg"],
+            object_half_extent=object_half_extent,
+            **(p.get("thumb_target") or {}),
+        )
+        orientation_error = hand_tool_orientation_error(
+            self._env,
+            p["palm_cfg"],
+            p["object_cfg"],
+            target_buffer_name=p.get("target_buffer_name", "chopstick_target_palm_quat_o"),
+            fallback_quat_o=p.get("fallback_quat_o", (1.0, 0.0, 0.0, 0.0)),
+        )
+        valid = (
+            (index_error < p.get("index_error_limit", 0.02))
+            & (thumb_error < p.get("thumb_error_limit", 0.02))
+            & (orientation_error < p.get("orientation_error_limit", 0.2617993877991494))
+            & (tripod_gate > p.get("gate_threshold", 0.3))
+            & (clearance > p.get("clearance_threshold", 0.05))
+        )
+        stable_steps = getattr(self._functional_grasp_term, "_stable_steps", None)
+        if stable_steps is None:
+            stable_steps = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        else:
+            stable_steps = stable_steps.float()
+
+        return {
+            "tripod_index_gate": index_gate,
+            "tripod_middle_gate": middle_gate,
+            "tripod_gate": tripod_gate,
+            "index_grip_error": index_error,
+            "thumb_grip_error": thumb_error,
+            "hand_stick_orientation_error": orientation_error,
+            "tool_ready_valid": valid.float(),
+            "tool_ready_stable_steps": stable_steps,
+        }
 
     def _cube_signed_distance(self, points_w: torch.Tensor) -> torch.Tensor:
         """Signed distance from (N, P, 3) world points to the cube surface. Negative inside."""
@@ -284,8 +1166,10 @@ class CustomRewardManager(RewardManager):
         points = thumb[:, None, None, :] + span.unsqueeze(2) * self._cage_fractions.view(1, 1, -1, 1)
         cage_sdf = self._cube_signed_distance(points.reshape(thumb.shape[0], -1, 3))
 
-        # 큐브에서 본 엄지 vs 각 손끝 방향: +1이면 큐브 양쪽에 있음
-        index_tip, middle_tip = cage_pos_w[:, 1], cage_pos_w[:, 3]
+        # 큐브에서 본 엄지 vs 각 손끝 방향: +1이면 큐브 양쪽에 있음.
+        # Use the fixed fingertip metric bodies instead of cage indices: cage layouts can include
+        # arbitrary intermediate links or tip-only bodies.
+        thumb, index_tip, middle_tip = body_pos_w[:, 1], body_pos_w[:, 2], body_pos_w[:, 3]
 
         def _unit_from_cube(p):
             v = p - cube.data.root_pos_w
@@ -326,12 +1210,39 @@ class CustomRewardManager(RewardManager):
         # 목표를 잘 따라가면(track_err 작음) 팔이 튄 건 정책이 그렇게 시킨 것 = 학습 문제.
         # 목표를 못 따라가면(track_err 큼) 물리가 명령을 이긴 것 = dt/decimation 문제.
         action_term = self._env.action_manager.get_term("arm_action")
-        target = action_term.processed_actions
+        # 잔차(residual) 액션은 processed_actions가 절대 목표가 아니라 "증분"이고 절대 목표는
+        # joint_pos_target에 있음. 절대형(processed_actions = 목표)과 둘 다 지원 (2026-07-23).
+        target = getattr(action_term, "joint_pos_target", None)
+        if target is None:
+            target = action_term.processed_actions
         actual = robot.data.joint_pos[:, action_term._joint_ids]
         track_err = (target - actual).abs().amax(dim=-1)
         delta = (self._env.action_manager.action - self._env.action_manager.prev_action).abs().mean(dim=-1)
 
-        return {
+        goal_quat_w = None
+        try:
+            command = self._env.command_manager.get_command("cube_goal")
+            if command.shape[-1] >= 7:
+                goal_quat_w = command[:, 3:7]
+        except (KeyError, ValueError):
+            pass
+
+        # orientation 항 이름 감지: box=box_orientation(8-대칭), chopstick=stick_orientation
+        # (4-대칭, tip/tail 구분). 감지된 태스크에 맞춰 stage_active와 box_ori_error 대칭을 고름.
+        orientation_stage_active = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        ori_tip_only = False
+        for _cand, _tip in (("box_orientation", False), ("stick_orientation", True)):
+            try:
+                _ori_cfg = self.get_term_cfg(_cand)
+            except ValueError:
+                continue
+            ori_tip_only = _tip
+            _active = getattr(_ori_cfg.func, "active", None)
+            if _active is not None:
+                orientation_stage_active = _active.float()
+            break
+
+        metrics = {
             "palm_distance": distances[:, 0],
             "thumb_distance": distances[:, 1],
             "index_distance": distances[:, 2],
@@ -359,13 +1270,18 @@ class CustomRewardManager(RewardManager):
             "cage_span": torch.norm(middle_tip - thumb, dim=-1),
             "palm_facing": palm_facing,
             "arm_manipulability": manipulability,
-            "box_ori_error": _square_prism_ori_error(cube.data.root_quat_w),
+            "box_ori_error": _square_prism_ori_error(
+                cube.data.root_quat_w, goal_quat_w, syms=_TIP_SYMS if ori_tip_only else None
+            ),
+            "orientation_stage_active": orientation_stage_active,
             "cube_displacement": torch.norm(cube_offset, dim=1),
             "cube_lift": cube_offset[:, 2],
             "cube_clearance": clearance,
             "action_track_err": track_err,
             "action_delta": delta,
         }
+        metrics.update(self._compute_functional_grasp_metrics(clearance))
+        return metrics
 
     def reset(self, env_ids: Sequence[int] | None = None) -> dict[str, torch.Tensor]:
         # resolve environment ids
@@ -411,6 +1327,66 @@ class CustomRewardManager(RewardManager):
             # cube_displacement / cube_lift의 기준선이 됨.
             self._cube_init_pos[env_ids] = self._env.scene["cube"].data.root_pos_w[env_ids]
 
+        if self._hand_grasp_metric_enabled:
+            episode_duration = torch.clamp(
+                self._env.episode_length_buf[env_ids].float() * self._env.step_dt,
+                min=self._env.step_dt,
+            )
+            for name in self._hand_grasp_metric_names:
+                extras["Metrics/hand_grasp/" + name] = torch.mean(
+                    self._hand_grasp_metric_sums[name][env_ids] / episode_duration
+                )
+                extras["Metrics/hand_grasp_final/" + name] = torch.mean(
+                    self._hand_grasp_metric_last[name][env_ids]
+                )
+                extras["Metrics/hand_grasp_min/" + name] = torch.mean(
+                    torch.nan_to_num(
+                        self._hand_grasp_metric_min[name][env_ids],
+                        posinf=0.0,
+                    )
+                )
+                extras["Metrics/hand_grasp_max/" + name] = torch.mean(
+                    torch.nan_to_num(
+                        self._hand_grasp_metric_max[name][env_ids],
+                        neginf=0.0,
+                    )
+                )
+                self._hand_grasp_metric_sums[name][env_ids] = 0.0
+                self._hand_grasp_metric_last[name][env_ids] = 0.0
+                self._hand_grasp_metric_min[name][env_ids] = float("inf")
+                self._hand_grasp_metric_max[name][env_ids] = float("-inf")
+
+        if self._hand_setting_metric_enabled:
+            episode_duration = torch.clamp(
+                self._env.episode_length_buf[env_ids].float()
+                * self._env.step_dt,
+                min=self._env.step_dt,
+            )
+            for name in self._hand_setting_metric_names:
+                extras["Metrics/hand_setting/" + name] = torch.mean(
+                    self._hand_setting_metric_sums[name][env_ids]
+                    / episode_duration
+                )
+                extras["Metrics/hand_setting_final/" + name] = torch.mean(
+                    self._hand_setting_metric_last[name][env_ids]
+                )
+                extras["Metrics/hand_setting_min/" + name] = torch.mean(
+                    torch.nan_to_num(
+                        self._hand_setting_metric_min[name][env_ids],
+                        posinf=0.0,
+                    )
+                )
+                extras["Metrics/hand_setting_max/" + name] = torch.mean(
+                    torch.nan_to_num(
+                        self._hand_setting_metric_max[name][env_ids],
+                        neginf=0.0,
+                    )
+                )
+                self._hand_setting_metric_sums[name][env_ids] = 0.0
+                self._hand_setting_metric_last[name][env_ids] = 0.0
+                self._hand_setting_metric_min[name][env_ids] = float("inf")
+                self._hand_setting_metric_max[name][env_ids] = float("-inf")
+
         # reset all the reward terms
         for term_cfg in self._class_term_cfgs:
             term_cfg.func.reset(env_ids=env_ids)
@@ -454,6 +1430,32 @@ class CustomRewardManager(RewardManager):
                 self._cube_metric_last[name][:] = metric
                 self._cube_metric_min[name] = torch.minimum(self._cube_metric_min[name], metric)
                 self._cube_metric_max[name] = torch.maximum(self._cube_metric_max[name], metric)
+
+        if self._hand_grasp_metric_enabled:
+            for name, metric in self._compute_hand_grasp_metrics().items():
+                self._hand_grasp_metric_sums[name] += metric * dt
+                self._hand_grasp_metric_last[name][:] = metric
+                self._hand_grasp_metric_min[name] = torch.minimum(
+                    self._hand_grasp_metric_min[name],
+                    metric,
+                )
+                self._hand_grasp_metric_max[name] = torch.maximum(
+                    self._hand_grasp_metric_max[name],
+                    metric,
+                )
+
+        if self._hand_setting_metric_enabled:
+            for name, metric in self._compute_hand_setting_metrics().items():
+                self._hand_setting_metric_sums[name] += metric * dt
+                self._hand_setting_metric_last[name][:] = metric
+                self._hand_setting_metric_min[name] = torch.minimum(
+                    self._hand_setting_metric_min[name],
+                    metric,
+                )
+                self._hand_setting_metric_max[name] = torch.maximum(
+                    self._hand_setting_metric_max[name],
+                    metric,
+                )
 
         return self._reward_buf
 

@@ -13,7 +13,7 @@ import torch
 from isaaclab.envs import ManagerBasedEnv, ManagerBasedRLEnv
 from isaaclab.managers import CommandManager, CurriculumManager, TerminationManager
 
-from isaac_neuromeka.env.managers import CustomRewardManager, SceneEntityCfg
+from isaac_neuromeka.env.managers import CustomActionManager, CustomRewardManager, SceneEntityCfg
 
 # custom cfg
 from isaac_neuromeka.env.rl_task_env_cfg import RLEnvWithIKCfg
@@ -48,6 +48,11 @@ class CustomManagerBasedRLEnv(ManagerBasedRLEnv):
         print("[INFO] Command Manager: ", self.command_manager)
 
         ManagerBasedEnv.load_managers(self)
+
+        # 표준 ActionManager를 CustomActionManager로 교체 — prevprev_action 추적(action_second_rate_l2용).
+        # 표준 매니저 생성 직후 교체. action term init은 articulation에 write하지 않아 재생성 안전.
+        self.action_manager = CustomActionManager(self.cfg.actions, self)
+        print("[INFO] Action Manager (custom, prevprev): ", self.action_manager)
 
         self.termination_manager = TerminationManager(self.cfg.terminations, self)
         print("[INFO] Termination Manager: ", self.termination_manager)

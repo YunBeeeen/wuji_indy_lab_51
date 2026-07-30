@@ -140,6 +140,64 @@ def object_position_relative_to_bodies(
     return object_in_bodies_w.reshape(env.num_envs, -1)
 
 
+def object_position_relative_to_bodies_local(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg(
+        "robot",
+        body_names=["finger1_tip_link", "finger2_tip_link", "finger3_tip_link", "finger4_tip_link", "finger5_tip_link"],
+    ),
+    object_cfg: SceneEntityCfg = SceneEntityCfg("cube"),
+    frame_cfg: SceneEntityCfg = SceneEntityCfg("robot", body_names=["palm_link"]),
+) -> torch.Tensor:
+    """object − body 상대변위를 frame(기본 palm)의 **로컬 프레임**으로 표현 (회전 불변).
+
+    2026-07-29 신설. 기존 object_position_relative_to_bodies는 world축 상대변위라 손이 회전하면
+    같은 파지라도 값이 달라져 학습이 어렵고 일반화가 나쁨. palm-local로 회전변환하면 "손바닥 기준
+    스틱이 어디"라 회전 불변 + 손목/손바닥 카메라(egocentric)와도 일치(sim-to-real 친화).
+    box/cube 태스크가 쓰는 world축 함수는 그대로 두고 이 변형만 chopstick에 연결한다.
+    """
+    asset: FiniteArticulation = env.scene[asset_cfg.name]
+    obj = env.scene[object_cfg.name]
+    frame_asset: FiniteArticulation = env.scene[frame_cfg.name]
+
+    body_pos_w = asset.data.body_state_w[:, asset_cfg.body_ids, :3]          # (N, B, 3)
+    object_pos_w = obj.data.root_pos_w.unsqueeze(1)                          # (N, 1, 3)
+    disp_w = object_pos_w - body_pos_w                                       # (N, B, 3)
+
+    frame_quat_w = frame_asset.data.body_state_w[:, frame_cfg.body_ids[0], 3:7]  # (N, 4)
+    num_bodies = disp_w.shape[1]
+    frame_quat = frame_quat_w.unsqueeze(1).expand(-1, num_bodies, -1).reshape(-1, 4)
+    disp_local = quat_apply_inverse(frame_quat, disp_w.reshape(-1, 3))
+    return disp_local.reshape(env.num_envs, -1)
+
+
+def object_orientation_world(
+    env: ManagerBasedRLEnv,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("cube"),
+) -> torch.Tensor:
+    """object 자세 world quaternion raw (N,4).
+
+    2026-07-29. 자세오차는 프레임 독립이라 palm 변환의 이득이 없고, palm으로 바꾸면 손 움직임에
+    goal 값이 요동함. 그래서 스틱/goal 자세는 **월드 raw**로 주고 정책이 상대오차를 직접 계산
+    (4-대칭은 보상이 처리). 위치는 palm-local(잡으러 갈 때 유용)이지만 자세는 월드가 맞음.
+    """
+    return env.scene[object_cfg.name].data.root_quat_w
+
+
+def command_orientation_world(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+) -> torch.Tensor:
+    """goal 자세 world quaternion raw (커맨드 [3:7]) (N,4). object_orientation_world와 같은 월드
+    프레임이라 정책이 둘로 상대 자세오차를 바로 계산. 커맨드에 quat 없으면 identity."""
+    command = env.command_manager.get_command(command_name)
+    if command.shape[-1] >= 7:
+        return command[:, 3:7]
+    q = torch.zeros(command.shape[0], 4, device=command.device, dtype=command.dtype)
+    q[:, 0] = 1.0
+    return q
+
+
 def object_position_error_to_command(
     env: ManagerBasedRLEnv,
     command_name: str,
@@ -151,7 +209,7 @@ def object_position_error_to_command(
     env마다 다른 상수가 관측에 들어갔음 (2026-07-15 발견). 커맨드 기반 + 로컬 프레임으로 수정.
     """
     obj = env.scene[object_cfg.name]
-    goal_w = env.scene.env_origins + env.command_manager.get_command(command_name)
+    goal_w = env.scene.env_origins + env.command_manager.get_command(command_name)[:, :3]
     return goal_w - obj.data.root_pos_w
 
 
@@ -315,3 +373,45 @@ def object_dims(
         return he * 2.0
     obj = env.scene[object_cfg.name]
     return obj.data.root_pos_w.new_tensor(fallback_size).unsqueeze(0).expand(env.num_envs, -1)
+
+
+def object_ori_error_nearest_sym(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("cube"),
+) -> torch.Tensor:
+    """최근접 대칭 목표까지의 상대 회전 axis-angle (N, 3). ori 정렬 관측 (2026-07-19).
+
+    raw quat 관측만으로는 정책이 "90° 돌린 자세 = 같은 자세, 지금은 그쪽이 더 가깝다"는
+    대칭 구조를 스스로 발굴해야 함 — 실측(WRAP 슬롯 A play): 가까운 대칭을 두고 스폰
+    자세로 크게 되돌리려는 행동. 이 관측은 대칭 8개(정사각 단면 프리즘) 중 가장 가까운
+    목표 기준의 signed 상대 회전을 axis-angle로 직접 제공한다. 이 값은 회전 명령이 아니라
+    0으로 줄여야 하는 오차 벡터다. 벡터 크기 = square_prism_ori_error의 각도와 일치.
+
+    command quaternion에 정사각 프리즘의 8개 등가 대칭을 합성한 뒤 현재 자세에서 가장
+    가까운 목표를 고른다. 반환값은 ``q_current * q_target^-1``의 axis-angle이므로
+    보정 명령 자체가 아니라 "목표 대비 현재 오차"이며, 정책은 이 벡터를 0으로 줄인다.
+    """
+    from isaac_neuromeka.mdp.rewards import _SQUARE_PRISM_Y_SYMS, _sym_quat_cache
+
+    obj = env.scene[object_cfg.name]
+    quat = obj.data.root_quat_w
+    command = env.command_manager.get_command(command_name)
+    goal_quat = command[:, 3:7]
+    key = (quat.device, quat.dtype)
+    syms = _sym_quat_cache.get(key)
+    if syms is None:
+        syms = torch.tensor(_SQUARE_PRISM_Y_SYMS, device=quat.device, dtype=quat.dtype)
+        _sym_quat_cache[key] = syms
+    goal_candidates = math_utils.quat_mul(
+        goal_quat.unsqueeze(1).expand(-1, syms.shape[0], -1),
+        syms.unsqueeze(0).expand(quat.shape[0], -1, -1),
+    )
+    dots = torch.sum(quat.unsqueeze(1) * goal_candidates, dim=-1)
+    nearest = torch.abs(dots).argmax(dim=1)
+    target = goal_candidates[torch.arange(quat.shape[0], device=quat.device), nearest]
+    # 같은 반구로 정렬 (dot<0이면 -S가 같은 회전의 가까운 표현)
+    sign = torch.where(dots.gather(1, nearest.unsqueeze(1)).squeeze(1) < 0, -1.0, 1.0)
+    target = target * sign.unsqueeze(1)
+    q_err = math_utils.quat_mul(quat, math_utils.quat_inv(target))
+    return math_utils.axis_angle_from_quat(q_err)

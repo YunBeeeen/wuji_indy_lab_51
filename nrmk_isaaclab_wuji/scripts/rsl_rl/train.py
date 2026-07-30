@@ -42,6 +42,18 @@ parser.add_argument(
         " 1프레임만 그림. GUI로 학습을 볼 때는 4 정도로 낮출 것."
     ),
 )
+parser.add_argument(
+    "--reset_policy_std",
+    type=float,
+    default=None,
+    help="checkpoint resume 직후 Gaussian policy std를 이 값으로 재설정하고 해당 optimizer state를 초기화.",
+)
+parser.add_argument(
+    "--load_actor_only",
+    action="store_true",
+    default=False,
+    help="resume checkpoint에서 actor만 불러오고 critic/optimizer/iteration은 새 run으로 초기화.",
+)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -215,7 +227,39 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation":
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
         # load previously trained model
-        runner.load(resume_path)
+        load_cfg = None
+        if args_cli.load_actor_only:
+            load_cfg = {
+                "actor": True,
+                "critic": False,
+                "optimizer": False,
+                "iteration": False,
+                "rnd": False,
+            }
+        runner.load(resume_path, load_cfg=load_cfg)
+        if args_cli.load_actor_only:
+            print("[INFO]: Loaded actor only; critic, optimizer, and iteration start fresh.")
+    if args_cli.reset_policy_std is not None:
+        reset_std = float(args_cli.reset_policy_std)
+        if reset_std <= 0.0:
+            raise ValueError("--reset_policy_std must be positive.")
+        actor = runner.alg.actor
+        distribution = getattr(actor, "distribution", None)
+        if distribution is None:
+            raise ValueError("The loaded policy does not expose a Gaussian distribution.")
+        with torch.no_grad():
+            if hasattr(distribution, "std_param"):
+                std_parameter = distribution.std_param
+                std_parameter.fill_(reset_std)
+            elif hasattr(distribution, "log_std_param"):
+                std_parameter = distribution.log_std_param
+                std_parameter.fill_(torch.log(torch.tensor(reset_std, device=std_parameter.device)))
+            else:
+                raise ValueError("The loaded policy distribution has no resettable std parameter.")
+        # Adam moments from the old, diverged std would immediately push the
+        # reset value back toward it.  Reinitialize only this parameter's state.
+        runner.alg.optimizer.state.pop(std_parameter, None)
+        print(f"[INFO]: Reset policy std to {reset_std:g} and cleared its optimizer state.")
 
     # dump the configuration into log-directory
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)

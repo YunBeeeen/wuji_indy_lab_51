@@ -90,6 +90,10 @@ class FiniteArticulation(Articulation):
             env_ids = slice(None)
         if joint_ids is None:
             joint_ids = slice(None)
+        # Match Isaac Lab's state writers: two non-slice index arrays must form
+        # an outer product (num_envs, num_joints), not element-wise pairs.
+        if not isinstance(env_ids, slice) and not isinstance(joint_ids, slice):
+            env_ids = torch.as_tensor(env_ids, device=self.device)[:, None]
         self._prevprev_joint_pos[env_ids, joint_ids] = position
         self._prev_joint_pos[env_ids, joint_ids] = position
         self._prevprev_finite_joint_vel[env_ids, joint_ids] = velocity

@@ -13,8 +13,10 @@ from isaac_neuromeka.mdp.actions.base_actions import (
 )
 from isaac_neuromeka.mdp.actions.joint_actions import (
     ClampedJointPositionAction,
+    CustomResidualJointPositionAction,
     JointResidualAction,
     MimicJointPositionAction,
+    ReferenceResidualJointPositionAction,
 )
 
 
@@ -54,6 +56,7 @@ class ClampedJointActionCfg(JointActionCfg):
 
     use_default_offset = True
 
+# action scale 조정, residual joint 방식으로 바꾸라고 하심, (뉴로메카 예제 똑같이) , clamp 수정 /
 
 @configclass
 class MimicJointActionCfg(JointPositionActionCfg):
@@ -66,6 +69,44 @@ class MimicJointActionCfg(JointPositionActionCfg):
     class_type: type[ActionTerm] = MimicJointPositionAction
 
     mimic: dict[str, str] = {}
+
+
+@configclass
+class CustomResidualJointActionCfg(JointActionCfg):
+    """잔차형(residual) 위치 액션 — 뉴로메카 예제 `ResidualJointActionCfg`와 같은 구조 (2026-07-23).
+
+    예제처럼 `JointActionCfg`를 상속하고 `offset` 기본 0.0을 쓴다(= default_joint_pos를 더하지
+    않음). 커플링(mimic)은 없다 — 약지/새끼까지 정책이 직접 제어하는 구성을 위한 term.
+
+    joint_names에 `finger[1-5]`를 넣으면 action dim 18 → 26, 관측 `joint_pos`도 26이 되어
+    policy obs 75 → **91**이 된다(fresh 필수). joint_pos(18→26)뿐 아니라
+    `action_history`(= action_manager.prev_action)도 액션 차원을 따라가므로 +8이 두 번 붙는다.
+
+    ⚠ scale 단위가 절대형과 다름: "기본자세로부터의 변위"가 아니라 **스텝당 증분**.
+      최대속도 ≈ (kp/kd)×scale [rad/s], 최대 유지토크 ≈ kp×scale.
+      자세한 건 `CustomResidualJointPositionAction` docstring 참고.
+    """
+
+    class_type: type[ActionTerm] = CustomResidualJointPositionAction
+
+    offset: float | dict[str, float] = 0.0
+
+    # 예제엔 없는 추가 옵션. 관절 스토퍼를 계속 미는 토크를 없앰. 예제 그대로 가려면 False.
+    clamp_to_limits: bool = True
+
+
+@configclass
+class ReferenceResidualJointActionCfg(CustomResidualJointActionCfg):
+    """Position residual around a fixed joint-command reference.
+
+    ``target = reference_positions + action * scale + offset``.  This preserves
+    a manually measured contact preload while the policy learns small
+    stabilization corrections around it.
+    """
+
+    class_type: type[ActionTerm] = ReferenceResidualJointPositionAction
+
+    reference_positions: tuple[float, ...] = MISSING
 
 
 @configclass

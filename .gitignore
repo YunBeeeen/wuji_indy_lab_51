@@ -31,3 +31,11 @@ nrmk_isaaclab_wuji/scripts/assets/
 
 # Accidental shell typo files
 tatus --short
+
+# Local experiment artifacts and point-in-time source snapshots.
+# Canonical source and research notes stay in Git; generated checkpoints,
+# TensorBoard events, Hydra outputs, and local rollback copies do not.
+/backups/
+/outputs/
+/nrmk_isaaclab_wuji/backups/
+/nrmk_isaaclab_wuji/logs/

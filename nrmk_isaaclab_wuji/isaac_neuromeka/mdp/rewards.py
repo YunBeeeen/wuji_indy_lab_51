@@ -353,6 +353,21 @@ def object_lift_in_cage(
 # TensorBoard:
 # - Episode_Reward/cube_transport 로 기록됨.
 # env_cfg_common.py: CubeGraspRewardsCfg.cube_transport 에서 연결됨.
+def _goal_pose_from_command(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return goal position in world and goal quaternion from a pose command."""
+    command = env.command_manager.get_command(command_name)
+    goal_pos_w = env.scene.env_origins + command[:, :3]
+    if command.shape[-1] >= 7:
+        goal_quat_w = command[:, 3:7]
+    else:
+        goal_quat_w = torch.zeros(command.shape[0], 4, device=command.device, dtype=command.dtype)
+        goal_quat_w[:, 0] = 1.0
+    return goal_pos_w, goal_quat_w
+
+
 class ObjectToGoalProgressReward(ManagerTermBase):
     """운반 층 (논문 orient(500) 자리): 잡은 채 goal 거리 "신기록"을 깬 만큼 포텐셜 차분 지불.
 
@@ -395,7 +410,7 @@ class ObjectToGoalProgressReward(ManagerTermBase):
         potential_eps: float = 0.05,
     ) -> torch.Tensor:
         obj: RigidObject = env.scene[object_cfg.name]
-        goal_w = env.scene.env_origins + env.command_manager.get_command(command_name)
+        goal_w, _ = _goal_pose_from_command(env, command_name)
         dist = torch.norm(goal_w - obj.data.root_pos_w, dim=1)
 
         phi = potential_eps / (potential_eps + dist)
@@ -420,6 +435,61 @@ _CORNER_SIGNS = (
 _corner_sign_cache: dict = {}
 
 
+def square_prism_keypoint_goal_distance(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    object_cfg: SceneEntityCfg,
+    object_half_extent: tuple[float, float, float] = (0.03, 0.03, 0.03),
+    symmetry: str = "square_prism_y",
+    reduce: str = "mean",
+) -> torch.Tensor:
+    """Return the symmetry-aware corner distance used by the box transport reward.
+
+    ``reduce="mean"``(기본): 평균 꼭짓점 거리. ``reduce="max"``: SimToolReal(Eq.2)식 max 꼭짓점 거리
+    (가장 나쁜 점) — 모든 꼭짓점이 가까워야 작아져 pos·ori 강하게 결합.
+    """
+    obj: RigidObject = env.scene[object_cfg.name]
+    device = obj.data.root_pos_w.device
+    dtype = obj.data.root_pos_w.dtype
+    n = env.num_envs
+
+    key = (device, dtype)
+    signs = _corner_sign_cache.get(key)
+    if signs is None:
+        signs = torch.tensor(_CORNER_SIGNS, device=device, dtype=dtype)
+        _corner_sign_cache[key] = signs
+
+    half = getattr(env, "box_half_extents", None)
+    if half is None:
+        half = torch.tensor(object_half_extent, device=device, dtype=dtype).expand(n, 3)
+    corners = signs.unsqueeze(0) * half.unsqueeze(1)
+
+    goal_w, goal_quat_w = _goal_pose_from_command(env, command_name)
+    quat = obj.data.root_quat_w
+    cur_pts = obj.data.root_pos_w.unsqueeze(1) + quat_apply(quat.unsqueeze(1).expand(n, 8, 4), corners)
+
+    if symmetry == "square_prism_y":
+        sym_tuple = _SQUARE_PRISM_Y_SYMS          # 8-대칭 (roll 4 × flip 2)
+    elif symmetry == "square_prism_y_tip":
+        sym_tuple = _SQUARE_PRISM_Y_SYMS_TIP      # 4-대칭 (roll만, flip 제외 → tail/tip 구분)
+    else:
+        sym_tuple = ((1.0, 0.0, 0.0, 0.0),)       # 대칭 없음
+    skey = (device, dtype, sym_tuple)
+    syms = _sym_quat_cache.get(skey)
+    if syms is None:
+        syms = torch.tensor(sym_tuple, device=device, dtype=dtype)
+        _sym_quat_cache[skey] = syms
+
+    offset = cur_pts - goal_w.unsqueeze(1)
+    dists = []
+    for sym in syms:
+        target_quat = quat_mul(goal_quat_w, sym.expand(n, 4))
+        target_corners = quat_apply(target_quat.unsqueeze(1).expand(n, 8, 4), corners)
+        per_corner = torch.norm(offset - target_corners, dim=-1)  # (n, 8)
+        dists.append(per_corner.amax(dim=1) if reduce == "max" else per_corner.mean(dim=1))
+    return torch.stack(dists, dim=0).min(dim=0).values
+
+
 class KeypointGoalProgressReward(ManagerTermBase):
     """운반 층 v1.1 (2026-07-18): 위치+자세를 keypoint 거리 하나로 통합한 φ 차분 지불.
 
@@ -433,8 +503,9 @@ class KeypointGoalProgressReward(ManagerTermBase):
     - 자세가 φ에 흡수됨: 중심이 goal에 있어도 기울어 있으면 꼭짓점이 어긋나 φ를 다 못 받음
       → "기울인 채 나르기"(v1 실측 72~93°)가 직접 손해. 자세 오차는 만점에서 시작하므로
       단독 차분항은 불가능(평생 0원)했고, 거리에 흡수하는 이 형태가 유일하게 telescoping 성립.
-    - goal 자세는 v1에선 상수(월드 정렬). goal 자세 랜덤화(v2) 시 command quat을 읽어
-      S_j 앞에 곱하는 확장 (R(q_goal·S_j)cᵢ).
+    - goal 자세는 command quaternion에서 읽고 각 대칭 앞에 합성함:
+      ``R(q_goal * S_j)c_i``. 현재 command 범위는 identity 고정이며 범위를 넓히면
+      같은 보상식이 랜덤 goal orientation을 그대로 따라감.
     - 젓가락 일반화: 꼭짓점 대신 물체 좌표계 semantic point(젓가락 끝점 등) + 대칭 없음으로
       점 집합만 교체하면 동일 구조 재사용 (로드맵 킵 카드 "8-keypoint 표현"의 구현체).
     - 기준선 seeding은 ObjectToGoalProgressReward와 동일한 pending 패턴 (reset 순서 근거 동일).
@@ -464,41 +535,13 @@ class KeypointGoalProgressReward(ManagerTermBase):
         potential_eps: float = 0.05,
         symmetry: str = "square_prism_y",
     ) -> torch.Tensor:
-        obj: RigidObject = env.scene[object_cfg.name]
-        device = obj.data.root_pos_w.device
-        n = env.num_envs
-
-        key = (device, torch.float32)
-        signs = _corner_sign_cache.get(key)
-        if signs is None:
-            signs = torch.tensor(_CORNER_SIGNS, device=device, dtype=torch.float32)
-            _corner_sign_cache[key] = signs
-
-        half = getattr(env, "box_half_extents", None)
-        if half is None:
-            half = torch.tensor(object_half_extent, device=device).expand(n, 3)
-        corners = signs.unsqueeze(0) * half.unsqueeze(1)  # (N, 8, 3) 물체 좌표계
-
-        goal_w = env.scene.env_origins + env.command_manager.get_command(command_name)
-        quat = obj.data.root_quat_w
-        cur_pts = obj.data.root_pos_w.unsqueeze(1) + quat_apply(
-            quat.unsqueeze(1).expand(n, 8, 4), corners
-        )  # (N, 8, 3) 월드
-
-        if symmetry == "square_prism_y":
-            syms = _sym_quat_cache.get(key)
-            if syms is None:
-                syms = torch.tensor(_SQUARE_PRISM_Y_SYMS, device=device, dtype=torch.float32)
-                _sym_quat_cache[key] = syms
-        else:  # "none": 항등만 (semantic keypoint 물체용)
-            syms = torch.tensor([[1.0, 0.0, 0.0, 0.0]], device=device)
-
-        offset = cur_pts - goal_w.unsqueeze(1)  # (N, 8, 3): pᵢ − goal
-        dists = []
-        for j in range(syms.shape[0]):
-            sym_c = quat_apply(syms[j].expand(n, 8, 4), corners)  # R(S_j)cᵢ
-            dists.append(torch.norm(offset - sym_c, dim=-1).mean(dim=1))  # (N,)
-        d = torch.stack(dists, dim=0).min(dim=0).values
+        d = square_prism_keypoint_goal_distance(
+            env,
+            command_name,
+            object_cfg,
+            object_half_extent,
+            symmetry,
+        )
 
         phi = potential_eps / (potential_eps + d)
         self._best_phi = torch.where(self._pending, phi, self._best_phi)
@@ -543,7 +586,7 @@ def object_goal_proximity(
       ("안 잡고 근처 서성"은 0원) + success 종료 마개
     """
     obj: RigidObject = env.scene[object_cfg.name]
-    goal_w = env.scene.env_origins + env.command_manager.get_command(command_name)
+    goal_w, _ = _goal_pose_from_command(env, command_name)
     dist = torch.norm(goal_w - obj.data.root_pos_w, dim=1)
     gate = object_in_finger_cage(
         env, asset_cfg, object_cfg, object_half_extent, num_points, sphere_radius,
@@ -560,24 +603,130 @@ _SQUARE_PRISM_Y_SYMS = (
     (1.0, 0.0, 0.0, 0.0), (_SQ2, 0.0, _SQ2, 0.0), (0.0, 0.0, 1.0, 0.0), (_SQ2, 0.0, -_SQ2, 0.0),
     (0.0, 1.0, 0.0, 0.0), (0.0, _SQ2, 0.0, -_SQ2), (0.0, 0.0, 0.0, 1.0), (0.0, _SQ2, 0.0, _SQ2),
 )
+# tip/tail 구분(젓가락) 4-대칭: 길이축(y) 회전만, 끝-뒤집기 제외 (+y=tip 보존).
+# 위 8개 중 앞 4개와 동일. chopstick reward/obs/metric이 이걸 씀 (chopstick_mdp_cfg의
+# _STICK_TIP_SYMS와 같은 값 — 공유 metric용으로 여기에도 둠).
+_SQUARE_PRISM_Y_SYMS_TIP = (
+    (1.0, 0.0, 0.0, 0.0), (_SQ2, 0.0, _SQ2, 0.0), (0.0, 0.0, 1.0, 0.0), (_SQ2, 0.0, -_SQ2, 0.0),
+)
 _sym_quat_cache: dict = {}
 
 
-def square_prism_ori_error(quat_w: torch.Tensor) -> torch.Tensor:
-    """월드 정렬(스폰 자세, identity) 대비 대칭 최소 자세 오차각 [rad]. (N,4) → (N,).
+def square_prism_ori_error(
+    quat_w: torch.Tensor,
+    goal_quat_w: torch.Tensor | None = None,
+    syms: tuple | None = None,
+) -> torch.Tensor:
+    """Goal quaternion 대비 정사각 프리즘 대칭 최소 자세 오차각 [rad].
 
-    geodesic angle 2·acos(|⟨q, S_i⟩|)를 대칭 8개에 대해 최소화 — 90° 돌린 동일 자세를
+    geodesic angle 2·acos(|⟨q, S_i⟩|)를 대칭에 대해 최소화 — 90° 돌린 동일 자세를
     오답 처리하지 않기 위함 (TriFinger/keypoint 노트의 symmetry-aware 원칙, AGENTS 로드맵 2).
-    v1 한정: goal 자세가 상수(월드 정렬)라 인자가 물체 quat뿐임. goal 자세 랜덤화(v2)에서는
-    상대 quat q_goal⁻¹·q_box를 넘기는 시그니처로 확장할 것.
+    ``goal_quat_w``가 없으면 이전 동작인 identity goal을 사용한다.
+    ``syms``가 None이면 기본 8-대칭(box). tip/tail 구분(젓가락)은 ``_SQUARE_PRISM_Y_SYMS_TIP`` 전달.
     """
-    key = (quat_w.device, quat_w.dtype)
-    syms = _sym_quat_cache.get(key)
     if syms is None:
-        syms = torch.tensor(_SQUARE_PRISM_Y_SYMS, device=quat_w.device, dtype=quat_w.dtype)
-        _sym_quat_cache[key] = syms
-    dots = torch.abs(quat_w @ syms.T)  # (N, 8)
+        key = (quat_w.device, quat_w.dtype)
+        syms_t = _sym_quat_cache.get(key)
+        if syms_t is None:
+            syms_t = torch.tensor(_SQUARE_PRISM_Y_SYMS, device=quat_w.device, dtype=quat_w.dtype)
+            _sym_quat_cache[key] = syms_t
+    else:
+        key = (quat_w.device, quat_w.dtype, syms)
+        syms_t = _sym_quat_cache.get(key)
+        if syms_t is None:
+            syms_t = torch.tensor(syms, device=quat_w.device, dtype=quat_w.dtype)
+            _sym_quat_cache[key] = syms_t
+    syms = syms_t
+    if goal_quat_w is None:
+        goal_quat_w = torch.zeros_like(quat_w)
+        goal_quat_w[:, 0] = 1.0
+    candidates = quat_mul(
+        goal_quat_w.unsqueeze(1).expand(-1, syms.shape[0], -1),
+        syms.unsqueeze(0).expand(quat_w.shape[0], -1, -1),
+    )
+    dots = torch.abs(torch.sum(quat_w.unsqueeze(1) * candidates, dim=-1))
     return 2.0 * torch.acos(torch.clamp(dots.max(dim=1).values, max=1.0))
+
+
+# TensorBoard:
+# - Indy-Wuji-Box-Transport: Episode_Reward/box_orientation
+# - Indy-Wuji-Box-Transport: Episode_Reward_Raw/box_orientation
+class ObjectOrientationProgressReward(ManagerTermBase):
+    """Goal 근처에서 활성화되는 정사각 프리즘 orientation best-so-far progress.
+
+    위치 오차와 orientation 오차를 분리하기 위한 운반 2단계 항이다. ``position_error``와
+    cage gate가 activation 조건을 처음 만족하면 env별 latch가 켜지고 reset 전까지 유지된다.
+    활성화 순간에는 기준 각도만 저장해 인위적인 첫 보상을 만들지 않는다.
+
+    ``r = gate * clamp((theta_best - theta_now) / angle_scale, 0, 1)``
+
+    에피소드의 최저 자세 오차를 갱신할 때만 양수를 지급한다. 자세 악화와 기존 최저 오차까지의
+    단순 복구는 0이므로 별도 penalty 없이도 왕복 진동으로 보상을 반복 수령할 수 없다. 각도는
+    command quaternion에 대한 정사각 단면 프리즘 대칭 최소 geodesic error를 사용한다.
+    """
+
+    def __init__(self, cfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        self._best_error = torch.zeros(env.num_envs, dtype=torch.float, device=env.device)
+        self._active = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+
+    @property
+    def active(self) -> torch.Tensor:
+        """Per-environment orientation-stage latch state."""
+        return self._active
+
+    def reset(self, env_ids: Sequence[int] | None = None) -> None:
+        if env_ids is None:
+            env_ids = slice(None)
+        self._best_error[env_ids] = 0.0
+        self._active[env_ids] = False
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        command_name: str,
+        asset_cfg: SceneEntityCfg,
+        object_cfg: SceneEntityCfg,
+        object_half_extent: tuple[float, float, float] = (0.03, 0.03, 0.03),
+        num_points: int = 3,
+        sphere_radius: float = 0.005,
+        depth_max: float = 0.005,
+        point_fractions: tuple[float, ...] | None = None,
+        activation_distance: float = 0.10,
+        activation_gate_threshold: float = 0.3,
+        angle_scale: float = 0.7853981633974483,
+    ) -> torch.Tensor:
+        obj: RigidObject = env.scene[object_cfg.name]
+        goal_w, goal_quat_w = _goal_pose_from_command(env, command_name)
+        position_error = torch.norm(goal_w - obj.data.root_pos_w, dim=1)
+        orientation_error = square_prism_ori_error(obj.data.root_quat_w, goal_quat_w)
+        gate = object_in_finger_cage(
+            env,
+            asset_cfg,
+            object_cfg,
+            object_half_extent,
+            num_points,
+            sphere_radius,
+            depth_max,
+            point_fractions,
+        )
+
+        activate = (position_error < activation_distance) & (gate > activation_gate_threshold)
+        newly_active = (~self._active) & activate
+        self._active |= activate
+        self._best_error = torch.where(newly_active, orientation_error, self._best_error)
+
+        scale = max(float(angle_scale), 1.0e-6)
+        progress = torch.clamp((self._best_error - orientation_error) / scale, min=0.0, max=1.0)
+        valid = self._active & (~newly_active)
+        reward = torch.where(valid, progress * gate, torch.zeros_like(progress))
+
+        self._best_error = torch.where(
+            self._active,
+            torch.minimum(self._best_error, orientation_error),
+            self._best_error,
+        )
+        return reward
 
 
 # TensorBoard:
@@ -617,11 +766,11 @@ class ObjectAtGoalHeld(ManagerTermBase):
         hold_steps: int = 15,
         ori_limit: float | None = None,
     ) -> torch.Tensor:
-        # ori_limit [rad]: orientation v1 (2026-07-18) — 물체 자세가 월드 정렬(스폰 자세)에서
-        # 대칭 최소각으로 ori_limit 이내일 것을 성공 조건에 추가. None이면 기존 위치 판정만
+        # ori_limit [rad]: 물체 자세가 command quaternion의 최근접 등가 대칭에서
+        # ori_limit 이내일 것을 성공 조건에 추가. None이면 기존 위치 판정만
         # (큐브 태스크 호환 — 정육면체에는 square_prism 대칭 헬퍼가 부적합하니 켜지 말 것).
         obj: RigidObject = env.scene[object_cfg.name]
-        goal_w = env.scene.env_origins + env.command_manager.get_command(command_name)
+        goal_w, goal_quat_w = _goal_pose_from_command(env, command_name)
         dist = torch.norm(goal_w - obj.data.root_pos_w, dim=1)
         gate = object_in_finger_cage(
             env, asset_cfg, object_cfg, object_half_extent, num_points, sphere_radius,
@@ -629,7 +778,7 @@ class ObjectAtGoalHeld(ManagerTermBase):
         )
         ok = (dist < goal_radius) & (gate > gate_threshold)
         if ori_limit is not None:
-            ok &= square_prism_ori_error(obj.data.root_quat_w) < ori_limit
+            ok &= square_prism_ori_error(obj.data.root_quat_w, goal_quat_w) < ori_limit
         self._count = torch.where(ok, self._count + 1, torch.zeros_like(self._count))
         return self._count >= hold_steps
 
@@ -872,11 +1021,8 @@ def finite_joint_vel_l2(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = Scen
 # - 현재 active cfg에는 연결되지 않음.
 # - 켜면 Episode_Reward/action_second_rate 로 기록됨.
 def action_second_rate_l2(env: ManagerBasedRLEnv) -> torch.Tensor:
-    # TODO: currently broken
-    return torch.sum(
-        torch.square(
-            (env.action_manager.action - env.action_manager.prev_action)
-            - (env.action_manager.prev_action - env.action_manager.prevprev_action)
-        ),
-        dim=1,
-    )
+    """Penalize the squared discrete second derivative of the action."""
+    action_manager = env.action_manager
+    second_difference = torch.add(action_manager.action, action_manager.prevprev_action)
+    second_difference.sub_(action_manager.prev_action, alpha=2.0)
+    return second_difference.square_().sum(dim=1)

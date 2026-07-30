@@ -144,7 +144,9 @@ INDY7_WUJI_RIGHT_CFG = FiniteArticulationCfg(
     class_type=FiniteArticulation,
     spawn=sim_utils.UsdFileCfg(
         # active: fidelity tier, arm collision simplified and hand collision restored from *_collision.STL convex hulls
-        usd_path=f"{os.path.dirname(os.path.abspath(__file__))}/model/usd/indy7_wuji_right/indy7_wuji_right_simplified.usd",
+        # The overlay also restores the five palm_link <-> finger*_link2
+        # structural exclusions present in the accompanying Wuji MuJoCo model.
+        usd_path=f"{os.path.dirname(os.path.abspath(__file__))}/model/usd/indy7_wuji_right/indy7_wuji_right_simplified_filtered.usda",
         # fallback: quick-start tier, arm + hand both simplified (cube colliders)
         # usd_path=f"{os.path.dirname(os.path.abspath(__file__))}/model/usd/indy7_wuji_right/indy7_wuji_right_all_simplified.usd",
         activate_contact_sensors=True,
