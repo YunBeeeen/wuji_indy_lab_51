@@ -7,7 +7,12 @@ from isaaclab.envs import ManagerBasedEnv
 from isaaclab.envs.mdp.commands import UniformPoseCommand
 from isaaclab.envs.mdp.commands.commands_cfg import UniformPoseCommandCfg
 from isaaclab.utils import configclass
-from isaaclab.utils.math import quat_from_euler_xyz, quat_unique
+from isaaclab.utils.math import (
+    quat_apply,
+    quat_apply_inverse,
+    quat_from_euler_xyz,
+    quat_unique,
+)
 from pynput.keyboard import Key
 
 from isaac_neuromeka.utils.helper import KeyboardListener
@@ -220,6 +225,152 @@ class UniformCubeGoalCommandCfg(CommandTermCfg):
                 size=(0.02, 0.18, 0.02),
                 visual_material=_sim_utils.PreviewSurfaceCfg(
                     diffuse_color=(0.0, 0.9, 0.3), opacity=0.35
+                ),
+            ),
+        },
+    )
+
+
+class FingerTipReachCommand(CommandTerm):
+    """진단용(2026-08-04): 손끝(body_name) 목표 위치를 리셋마다 **palm 로컬 프레임의 축별 절대범위**
+    (range_x/y/z)에서 랜덤 샘플 → world로 변환. 손끝 도달영역(palm-local 실측: +x 앞 0~0.07,
+    y 측면 ±, +z 손가락 0.07~0.20)에 맞춰 뽑아 도달불가 점을 줄인다. 손 root가 fixed라 palm 포즈가
+    상수여서 앵커 불필요. command는 (N,3) env-로컬 목표. resampling_time_range를 길게 두면 리셋에서만 리샘플.
+
+    "정책이 현재 PD로 손끝을 임의 목표점에 갖다놓을 수 있나"를 격리 검증하는 mini-reach 용도.
+    """
+
+    cfg: "FingerTipReachCommandCfg"
+
+    def __init__(self, cfg: "FingerTipReachCommandCfg", env):
+        super().__init__(cfg, env)
+        self.robot = env.scene[cfg.asset_name]
+        self._body_id = self.robot.find_bodies(cfg.body_name)[0][0]
+        self._palm_id = self.robot.find_bodies(cfg.palm_body_name)[0][0]
+        self.target_e = torch.zeros(self.num_envs, 3, device=self.device)
+        self._range_lo = torch.tensor(
+            [cfg.range_x[0], cfg.range_y[0], cfg.range_z[0]], device=self.device
+        )
+        self._range_hi = torch.tensor(
+            [cfg.range_x[1], cfg.range_y[1], cfg.range_z[1]], device=self.device
+        )
+        # Palm-frame target, stored at resample time.  This is exactly the
+        # number a MuJoCo or real-hand operator supplies, so validation runs and
+        # deploy share one value with no frame round-trip.
+        self.target_palm = torch.zeros(self.num_envs, 3, device=self.device)
+
+        # Diagnostic joints, resolved by NAME.  ``body_name`` is like
+        # "finger3_tip_link", so the joints are "finger3_joint1".."joint4".
+        # preserve_order keeps them in policy order, not articulation order.
+        finger_prefix = cfg.body_name.split("_", 1)[0]
+        self._finger_joint_names = [f"{finger_prefix}_joint{k}" for k in range(1, 5)]
+        try:
+            self._finger_joint_ids = self.robot.find_joints(
+                self._finger_joint_names, preserve_order=True
+            )[0]
+        except Exception:  # pragma: no cover - diagnostics must never block a run
+            self._finger_joint_ids = None
+
+        # Every metric is a per-env scalar and Isaac Lab logs its mean to
+        # TensorBoard automatically.  These are chosen to line up against the
+        # MuJoCo and real-hand logs, in the spec's comparison order:
+        # q -> action -> q_target -> fingertip -> error.
+        _zeros = lambda: torch.zeros(self.num_envs, device=self.device)
+        self.metrics["error_pos"] = _zeros()
+        for _axis in ("x", "y", "z"):
+            self.metrics[f"error_palm_{_axis}"] = _zeros()
+            self.metrics[f"target_palm_{_axis}"] = _zeros()
+            self.metrics[f"tip_palm_{_axis}"] = _zeros()
+        for _k in range(1, 5):
+            self.metrics[f"q{_k}"] = _zeros()
+        self.metrics["cmd_track_err"] = _zeros()
+        self.metrics["at_5mm"] = _zeros()
+        self.metrics["at_10mm"] = _zeros()
+
+    @property
+    def command(self) -> torch.Tensor:
+        return self.target_e
+
+    def _resample_command(self, env_ids: Sequence[int]):
+        palm_pos = self.robot.data.body_pos_w[env_ids, self._palm_id]
+        palm_quat = self.robot.data.body_quat_w[env_ids, self._palm_id]
+        u = torch.rand(len(env_ids), 3, device=self.device)
+        p_local = self._range_lo + u * (self._range_hi - self._range_lo)
+        target_w = palm_pos + quat_apply(palm_quat, p_local)
+        self.target_e[env_ids] = target_w - self._env.scene.env_origins[env_ids]
+        self.target_palm[env_ids] = p_local
+
+    def _update_command(self):
+        pass
+
+    def _update_metrics(self):
+        tip_w = self.robot.data.body_pos_w[:, self._body_id]
+        target_w = self._env.scene.env_origins + self.target_e
+        distance = torch.norm(target_w - tip_w, dim=1)
+        self.metrics["error_pos"] = distance
+        self.metrics["at_5mm"] = (distance < 0.005).float()
+        self.metrics["at_10mm"] = (distance < 0.010).float()
+
+        # Diagnostics only.  A metric must never be able to kill a 4096-env run,
+        # so everything reaching outside this term is guarded.
+        try:
+            palm_pos = self.robot.data.body_pos_w[:, self._palm_id]
+            palm_quat = self.robot.data.body_quat_w[:, self._palm_id]
+            tip_palm = quat_apply_inverse(palm_quat, tip_w - palm_pos)
+            error_palm = self.target_palm - tip_palm
+            for _index, _axis in enumerate(("x", "y", "z")):
+                self.metrics[f"tip_palm_{_axis}"] = tip_palm[:, _index]
+                self.metrics[f"target_palm_{_axis}"] = self.target_palm[:, _index]
+                self.metrics[f"error_palm_{_axis}"] = error_palm[:, _index]
+
+            if self._finger_joint_ids is not None:
+                q = self.robot.data.joint_pos[:, self._finger_joint_ids]
+                for _k in range(4):
+                    self.metrics[f"q{_k + 1}"] = q[:, _k]
+                # How far the PD lags its own command.  Isaac and MuJoCo can
+                # agree on the action yet disagree here when the actuator model
+                # differs, which separates "same policy" from "same plant".
+                _term = self._env.action_manager.get_term("hand_action")
+                _target = getattr(_term, "joint_pos_target", None)
+                if _target is not None and _target.shape[-1] == q.shape[-1]:
+                    self.metrics["cmd_track_err"] = torch.max(
+                        torch.abs(_target - q), dim=1
+                    ).values
+        except Exception:  # pragma: no cover
+            pass
+
+    def _set_debug_vis_impl(self, debug_vis: bool):
+        if debug_vis:
+            if not hasattr(self, "goal_visualizer"):
+                self.goal_visualizer = VisualizationMarkers(self.cfg.goal_marker_cfg)
+            self.goal_visualizer.set_visibility(True)
+        elif hasattr(self, "goal_visualizer"):
+            self.goal_visualizer.set_visibility(False)
+
+    def _debug_vis_callback(self, event):
+        target_w = self._env.scene.env_origins + self.target_e
+        self.goal_visualizer.visualize(translations=target_w)
+
+
+@configclass
+class FingerTipReachCommandCfg(CommandTermCfg):
+    class_type: type = FingerTipReachCommand
+    asset_name: str = "robot"
+    body_name: str = MISSING  # 추종/평가할 손끝 body (예: finger3_tip_link)
+    palm_body_name: str = "palm_link"  # 샘플링 기준 프레임(손바닥)
+    # palm-local 축별 절대범위[m]. +x=팜 법선(앞), y=측면, +z=손가락 길이. 검지 도달영역 실측 기반.
+    range_x: tuple[float, float] = (0.0, 0.07)
+    range_y: tuple[float, float] = (-0.02, 0.03)
+    range_z: tuple[float, float] = (0.07, 0.20)
+
+    # 목표점 시각화 마커(빨간 구슬). debug_vis=True일 때 손끝 목표 위치에 그림.
+    goal_marker_cfg: VisualizationMarkersCfg = VisualizationMarkersCfg(
+        prim_path="/Visuals/Command/finger_reach_goal",
+        markers={
+            "target": _sim_utils.SphereCfg(
+                radius=0.008,
+                visual_material=_sim_utils.PreviewSurfaceCfg(
+                    diffuse_color=(0.9, 0.1, 0.1)
                 ),
             ),
         },

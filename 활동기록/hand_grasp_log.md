@@ -28,6 +28,16 @@
 - **07-29**: 연속 OPEN/CLOSE + **gap geometry 교정**(Stick2-axis gap), current-state 잔차 A/B, 각속도 페널티 +
   palm-relative 속도, distal tip **lateral gate**, hand_grasp_object scene scaffold.
 - **07-30**: 아래 상세.
+- **07-31~08-04**: `hand_setting`(편 손→기능적 파지 **획득**) 진전 없음. 새 per-joint kp/kd 튜닝 도입.
+  진단 대장정(finger_reach 신설, grasp-reach probe, 07-31 격리 태스크 `hand_setting_0731`).
+- **08-05**: `hand_setting` **획득 첫 성공.** 원인=보상 σ 지름길(아래 교훈), **σ 조정으로 해결**
+  (pair `0.10/1.57→0.01/0.25`, thumb `0.02→0.06`, +success 30000). 상세 `ACTIVITY_2026-08-05.md`.
+- **08-09**: `hand_setting`의 q-reference→contact 전환을 obs 추가 없는 memoryless 2단계로 정리.
+  Stage 1은 `pair>=0.65 && thumb>=0.35`, Stage 2는 여기에 all-20 joint max error
+  `<=5°`를 추가한다. Stage 2에서만 contact mean/min을 켜고 강한 acquisition guide를 끈다.
+  **먼저 `stage2_ready`가 실제로 켜지는지 검증**한다. 전혀 켜지지 않거나 contact 형성 중
+  반복 해제되면, 다음 A/B는 임계값을 임의 완화하기보다 functional-contact 기반 전환을 검토한다.
+  상세 판정 지표는 `ACTIVITY_2026-08-09.md`.
 
 ## 2026-07-30 세션 상세
 1. **6-contact 붕괴 진단**(run 21-05-32): 수렴(~1500it, contact 5.969/6, reward 1227) 후 **policy 전체 붕괴**
@@ -54,6 +64,10 @@
 - **Stick2는 dynamic** — 정책이 실제 고정해야. reference rail 유지엔 pose deviation penalty + anchor gate.
 - 강화 항 **무한 누적 금지** — baseline 재현(exact) 후 단일변수로 실험.
 - 성공 기준선은 **통째 백업**(checkpoint/TB/policy/params/diff) 후 resume 안 하고 고정.
+- **헐거운 pose σ의 지름길**(08-05 hand_setting 획득의 핵심): pair σ가 너무 헐거우면(0.10/90°)
+  **리셋 스틱 자세가 이미 고득점** → two_stick gradient가 죽고 정책은 남은 **엄지 유클리드 거리**만
+  맞추려 함 → 방향 무관이라 **opposition 대신 스틱 밑으로 파고듦("비비기")**. pair σ를 `0.01/14°`로
+  조여 리셋 baseline↓ → 실제 정렬 강제 → 해결. dense pose σ는 "리셋에서 낮은 점수"가 되게 조일 것.
 
 ## 소스 포인터
 - `nrmk_isaaclab_wuji/worklog.md`: 2026-07-24~07-30 (검색 "hand_grasp", "hand_setting", "Stick2", "OPEN/CLOSE").

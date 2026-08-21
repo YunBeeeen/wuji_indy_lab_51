@@ -122,7 +122,7 @@ tensorboard --logdir logs/rsl_rl/indy_wuji_chopsticks_grasp --port 6007 --reload
 - cube grasp 로그를 볼 때는 logdir를 바꿈.
 
 ```bash
-tensorboard --logdir logs/rsl_rl/indy_wuji_cube_grasp --port 6006 --reload_interval 5
+tensorboard --logdir logs/rsl_rl/hand_setting --port 6006 --reload_interval 5
 ```
 
 ## GUI 학습 확인
@@ -239,12 +239,12 @@ python scripts/rsl_rl/play.py \
 cd ~/wuji_indy_lab_51/nrmk_isaaclab_wuji
 conda activate env_isaaclab
 python scripts/rsl_rl/train.py \
-  --task Indy-Wuji-Cube-Grasp \
+  --task hand_real \
   --headless \
   --num_envs 4096 \
   --max_iterations 50000 \
   --resume \
-  --load_run "$(basename "$(ls -td logs/rsl_rl/indy_wuji_cube_grasp/20* | head -n 1)")"
+  --load_run 2026-08-18_21-59-26
 ```
 
 ## 폐기된 Cube Grasp 분기
@@ -669,3 +669,55 @@ python scripts/rsl_rl/play.py \
 --load_run 2026-07-30_12-21-21 \
 --keyboard_hand_mode \
 --real-time
+
+
+
+
+
+# hand final play
+
+  python scripts/rsl_rl/play.py  --task hand_final_play  --num_envs 1    --manual_root   --checkpoint /home/lsc/wuji_indy_lab_51/nrmk_isaaclab_wuji/logs/rsl_rl/hand_final/2026-08-13_14-15-09/model_400.pt --plot_hand_contact_forces
+
+
+  최신 hand_final run의 최신 모델:
+
+  python scripts/rsl_rl/play.py \
+    --task hand_final_play \
+    --num_envs 1 \
+    --manual_root
+
+  특정 날짜 run의 최신 모델:
+
+  python scripts/rsl_rl/play.py \
+    --task hand_final_play \
+    --num_envs 1 \
+    --manual_root \
+    --load_run 2026-08-13_14-15-09
+
+  해당 run의 특정 모델:
+
+  python scripts/rsl_rl/play.py \
+    --task hand_final_play \
+    --num_envs 1 \
+    --manual_root \
+    --load_run 2026-08-13_14-15-09 \
+    --checkpoint model_400.pt
+
+
+
+# hand final train
+
+cd /home/lsc/wuji_indy_lab_51/nrmk_isaaclab_wuji
+python scripts/rsl_rl/train.py \
+  --task hand_final \
+  --headless \
+  --num_envs 4096 \
+  --max_iterations 50000 \
+  --init_checkpoint /home/lsc/wuji_indy_lab_51/nrmk_isaaclab_wuji/logs/rsl_rl/hand_real/2026-08-18_23-57-25/model_4500.pt \
+  'env.events.stick_disturbance.params.force_range_n=[0.01,0.3]'
+
+
+
+
+# hand real (1단계 학습은 오버라이드로)
+  python scripts/rsl_rl/train.py --task hand_real --headless  env.episode_length_s=5.0

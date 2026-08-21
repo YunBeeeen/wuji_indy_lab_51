@@ -119,9 +119,8 @@ class Indy7WujiChopsticksGraspEnvCfg(ChopsticksGraspEnvCfg):
         #   "현재 자세"로 목표를 채우고, 이벤트는 그보다 먼저 실행되므로 덮어써짐 — 무해해서 남겨 둠.
         # ──────────────────────────────────────────────────────────────────────────────
 
-        fingers = self.scene.robot.actuators["fingers"]
-        fingers.stiffness = {
-            "finger[1-5]_joint[1-2]": 2.0,
-            "finger[1-5]_joint[3-4]": 1.0,
-        }
-        fingers.damping = 0.05
+        # 2026-08-04: 손가락 stiffness/damping 오버라이드 제거(사용자). 이제 wuji.py의 WUJI_RIGHT_CFG가
+        #   per-joint 튜닝된 kp/kd(wuji_actuator_parameters.py)를 담으므로 그 값을 그대로 사용한다.
+        #   옛 평값(stiffness 2.0/1.0·damping 0.05)이 여기서 per-joint 튜닝을 덮어써 무효화하던 것을 제거 —
+        #   joint4 kd=0.0 등 튜닝이 이제 chopsticks에도 적용됨.
+        #   ⚠ grasp/indy_wuji·grasp/indy_wuji_box에는 아직 같은 오버라이드가 남아 있음(그 태스크는 미변경).

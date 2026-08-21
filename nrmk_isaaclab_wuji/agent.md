@@ -683,3 +683,27 @@ python scripts/debug/check_cube_contact_lift.py \
 - numeric probe의 모든 source diff 0, 66D actor/critic PPO 1-iteration smoke 통과. fresh run 필수.
 - 다음 판정은 index/thumb error 감소, balanced middle 참여, clearance 발생을 함께 봄. 실패 시 바로
   가중치를 바꾸지 말고 region geometry와 canonical grasp feasibility를 먼저 확인함.
+
+## 2026-08-18 ~ 08-19 — 실물 배포 개괄
+
+- 실물 factory limit이 벤더 description보다 전 관절 넓어 정규화 기준을 실물값으로 통일함.
+  USD 오버라이드 + `mujoco_deploy/policy_contract.py` + MuJoCo 관절 ROM 세 곳을 같이 바꿈.
+- `hand_real` sim-to-sim은 계약(관측/정규화/액션/기구학) 전부 일치하나 정책이 스틱을 놓침.
+  원인은 Isaac과 MuJoCo가 서로 다른 손 모델을 쓰는 것 — 공식 description에 충돌 메시가 없어
+  MuJoCo가 visual convex hull을 쓰고 손바닥 오목부가 메워짐. 중력 OFF에서도 사출되는 게 근거.
+- dt와 접촉 그룹을 두 번 오진함. 단일 표본으로 결론내지 말고 수렴 검사를 먼저 할 것.
+- Isaac 액추에이터 armature 누락(joint4 유효관성의 98.8%)을 발견. Isaac은 미변경으로 남김.
+- Finger Reach를 중지 4관절 15D/4D 진단 태스크로 정비. 타깃 박스를 실측 도달집합 기준
+  92.8%로 교체(기존 33.8%).
+- 실물 Wuji 배포 경로 신설. 90 Hz 명령 / 30 Hz 정책, teleport 없는 시작 자세 이동,
+  선형 복귀. 관절 매핑 J1~J4 전부 검증. MuJoCo 경로는 비트 단위 회귀 없음.
+- 첫 sim-to-real: 관절 4~8도 차이, 손끝은 오히려 실물이 4 mm 더 정확(여유자유도 흡수).
+  손끝 값은 FK 모델 출력이라 기구학 검증 전까지 측정으로 취급하지 말 것.
+- 미확인: 실제 전송 주기(큐잉 의심), 펌웨어 서보 게인(설정 API 없음), 링크 길이·엔코더 영점.
+- 시작 자세 이동을 선형 glide로 통일(복귀와 대칭). 고정 타깃+필터는 변위가 크면
+  초기 속도가 Δ/τ로 폭증한다 — 굽은 상태 1.68 rad에서 21 rad/s.
+- run 5 판독: 타이밍·추종은 이론과 일치. 문제는 `finger3_joint3`가 상한에 36.5%
+  눌러앉는 것이고, 격자 IK로 확인하니 **도달성 문제가 아니라 정책이 고른 자세**다.
+- 명령 여백 0.95 도입(중심±0.95×반범위). 도달 범위 손실 0, MuJoCo 지문 오차는
+  오히려 0.62 mm 개선. 계약 테이블은 안 건드리고 별도 테이블로 얹었다.
+- `hand_real`에는 그대로 못 옮긴다 — pregrasp idx 10/18이 0.95 상한을 넘는다.

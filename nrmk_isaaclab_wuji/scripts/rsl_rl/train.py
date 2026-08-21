@@ -54,6 +54,18 @@ parser.add_argument(
     default=False,
     help="resume checkpoint에서 actor만 불러오고 critic/optimizer/iteration은 새 run으로 초기화.",
 )
+parser.add_argument(
+    "--init_checkpoint",
+    type=str,
+    default=None,
+    help=(
+        "다른 experiment의 체크포인트 .pt 경로를 명시적으로 지정해 fine-tuning 시작."
+        " --resume/--load_run 은 logs/rsl_rl/<현재 experiment_name>/ 안에서만 찾기 때문에"
+        " (train.py:168, get_checkpoint_path) experiment_name 이 다른 런에서 이어받을 수 없다."
+        " 예: hand_move 정책으로 hand_object 를 fine-tuning 하는 경우."
+        " 'latest' 를 암묵적으로 고르지 않고 지정한 파일만 사용한다."
+    ),
+)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -128,6 +140,17 @@ import isaac_neuromeka.tasks  # noqa: F401
 @hydra_task_config(args_cli.task, args_cli.agent)
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlBaseRunnerCfg):
     """Train with RSL-RL agent."""
+    # 수동 조작 전용 씬(hand_play)은 학습 대상이 아니다.  그 씬은 캘리브레이션된 목표
+    # 자세가 테이블 상판 아래라 스크립트 궤적이 가구를 통과하고, 그 상태로 몇 시간을
+    # 돌린 뒤에야 이상함을 눈치채게 된다.  플래그가 없는 기존 태스크는 전부 무영향.
+    if getattr(env_cfg, "require_manual_root", False):
+        raise SystemExit(
+            f"[ERROR] --task {args_cli.task} 는 수동 play 전용이라 학습할 수 없습니다.\n"
+            "        스크립트 궤적의 목표 자세(팜 z=0.365)가 테이블 상판(0.404)"
+            " 아래라 손이 가구를 통과합니다.\n"
+            "        학습은 --task hand_object 로 하세요."
+        )
+
     # override configurations with non-hydra CLI arguments
     agent_cfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
     agent_cfg = handle_deprecated_rsl_rl_cfg(agent_cfg, installed_version)
@@ -196,7 +219,21 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         env = multi_agent_to_single_agent(env)
 
     # save resume path before creating a new log_dir
-    if agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation":
+    if args_cli.init_checkpoint is not None:
+        # 명시 경로 fine-tuning. get_checkpoint_path 는 현재 experiment_name 폴더
+        # 안에서만 찾으므로 다른 태스크의 체크포인트는 이 경로로만 받을 수 있다.
+        resume_path = os.path.abspath(args_cli.init_checkpoint)
+        if not os.path.isfile(resume_path):
+            raise FileNotFoundError(
+                f"--init_checkpoint 파일이 없음: {resume_path}"
+            )
+        if agent_cfg.resume:
+            raise ValueError(
+                "--init_checkpoint 와 --resume 은 같이 쓸 수 없음."
+                " 전자는 다른 experiment 에서 가중치만 받아오는 것이고,"
+                " 후자는 같은 experiment 의 런을 이어가는 것이라 대상이 다름."
+            )
+    elif agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation":
         resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
 
     # wrap for video recording
@@ -224,7 +261,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # write git state to logs
     runner.add_git_repo_to_log(__file__)
     # load the checkpoint
-    if agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation":
+    if (
+        args_cli.init_checkpoint is not None
+        or agent_cfg.resume
+        or agent_cfg.algorithm.class_name == "Distillation"
+    ):
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
         # load previously trained model
         load_cfg = None
@@ -236,9 +277,39 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 "iteration": False,
                 "rnd": False,
             }
+        elif args_cli.init_checkpoint is not None:
+            # 다른 태스크에서 넘어오는 fine-tuning: actor/critic 가중치는 받되
+            # optimizer state 와 iteration 은 새로 시작한다. 보상 구성이 달라져서
+            # 옛 Adam moment 와 value 스케일이 새 목적함수와 맞지 않고,
+            # iteration 을 이어받으면 로그의 x축이 새 런과 어긋난다.
+            load_cfg = {
+                "actor": True,
+                "critic": True,
+                "optimizer": False,
+                "iteration": False,
+                "rnd": False,
+            }
         runner.load(resume_path, load_cfg=load_cfg)
         if args_cli.load_actor_only:
             print("[INFO]: Loaded actor only; critic, optimizer, and iteration start fresh.")
+        elif args_cli.init_checkpoint is not None:
+            print(
+                "[INFO]: Fine-tuning from an explicit checkpoint."
+                " Loaded actor and critic weights; optimizer state and iteration"
+                " counter start fresh."
+            )
+        # 실제로 로드됐음을 shape 로 확인해 남긴다. load_state_dict 가 strict=True 라
+        # obs/action 차원이 다르면 위에서 이미 예외가 났을 것이고, 여기까지 왔다면
+        # 두 태스크의 policy interface 가 동일하다는 뜻이다.
+        try:
+            actor_params = list(runner.alg.actor.parameters())
+            print(
+                "[INFO]: policy interface verified -"
+                f" actor input {actor_params[0].shape[1]},"
+                f" actor output {actor_params[-1].shape[0]}"
+            )
+        except Exception as exc:  # noqa: BLE001 - 로그용, 학습을 막지 않는다
+            print(f"[WARN]: could not report policy shapes: {type(exc).__name__}: {exc}")
     if args_cli.reset_policy_std is not None:
         reset_std = float(args_cli.reset_policy_std)
         if reset_std <= 0.0:

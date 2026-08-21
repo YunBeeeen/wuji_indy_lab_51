@@ -1171,3 +1171,224 @@ python scripts/rsl_rl/train.py \
   event 파일에서 32개 metric × 4 family = scalar tag 128개를 확인함.
 - 실행 중이던 run에는 동적 반영되지 않으므로 프로세스 재시작이 필요함. obs/action/reward/PPO는
   불변이라 최신 hand_setting checkpoint resume는 호환됨.
+
+## 2026-07-30 — hand_setting contact-only A/B
+
+- `hand_setting/2026-07-30_17-31-40`은 333 iter에서 mean reward `144.7`까지
+  올랐지만 final functional contact가 약 `1/6`이고 full-contact/setting-valid/success가
+  전 구간 0이었음. index, middle, ring의 exact pair force도 0이었음.
+- reference/region shaping을 먹는 local optimum을 분리하기 위해 새 reward term 없이
+  기존 joint/Stick references, four shaft regions, setting completion/stability를
+  weight `0`으로 park함.
+- active dense shaping은 기존 six per-contact score와 functional-contact hard min뿐임.
+  action-rate와 strict final success validator는 유지함.
+- reward 변경이므로 이전 checkpoint resume 없이 fresh run으로 실행함.
+
+## 2026-07-30 — hand_setting missing-tip region 최소 복원
+
+- contact-only run `18-14-08`은 744 iter에도 episode max contact count가
+  `3/6`이고 functional-contact min/full-contact/success가 0이었음.
+- thumb-distal/palm/thumb-mid 세 접촉만 유지됐으며 index/middle/ring의 최대
+  force도 `0.0005/0.0009/0 N`이라 pre-contact 방향 신호 부재로 판정함.
+- 새 term 없이 기존 region을 재사용함. thumb region은 `0`, 빠진
+  index/middle/ring만 weight `0.5`씩 활성화함.
+- references와 completion/stability는 계속 `0`; contact 계열과 strict success는
+  유지함. 다음 비교는 fresh run임.
+
+## 2026-07-30 — hand_setting Stick2-first state gate
+
+- GUI에서 엄지 pivot이 먼저 닫혀 Stick2의 valley 진입을 막는 ordering failure를 확인함.
+- hidden phase 없이 `stick2_seated` 상태 gate를 추가함. Stick2가 final palm pose
+  `15 mm/20°` 이내이고 palm/Stick2, thumb-mid/Stick2가 모두 `>=0.02 N`일 때만 1임.
+- gate 전에는 Stick2 pose reward `12`와 두 anchor contact만 활성화함.
+  gate 후에 thumb-distal/index/middle/ring contact, 세 missing-tip shaft region
+  `0.5`, six-contact hard min `20`을 활성화함. gate가 풀리면 후단 보상도 즉시 0임.
+- 새 reward term, command, phase observation은 추가하지 않았고 reward 수 18,
+  obs/action `101D/20D`, strict success/drop termination은 유지함.
+- TensorBoard에 `stick2_seated`를 추가해 33 metric × 4 family가 됨.
+- smoke `hand_setting/2026-07-30_21-44-34`에서 24 policy step을 통과했고
+  reset gate가 0일 때 후단 shaping이 0인 것을 확인함.
+- objective 변경이므로 이전 hand-setting run resume 없이 fresh run으로 시작함.
+
+## 2026-07-30 — hand_setting geometry-first valley gate
+
+- force-gated run `21-50-01`은 389 iter에도 gate/pose-valid 0, Stick2
+  `45 mm/74°`, final contact `1/6`이었음. 지속된 것은 palm–Stick2 하나였음.
+- reciprocal support의 결과인 `0.02 N`을 선행 gate로 둔 순환 조건을 폐기함.
+- `pose_005` Stick2 local `y=-60 mm` centerline point error `<=5 mm`와 directed
+  long-axis error `<=10°`만으로 `stick2_in_valley`를 계산함.
+- gate 전에는 centerline/axis tracking과 ring region/contact가 Stick2를 이동시킴.
+  gate 후 다른 다섯 contact, index/middle region, contact-min이 동시에 켜짐.
+- `0.02 N`은 final 6-contact success와 diagnostic `stick2_seated`에만 사용함.
+- TensorBoard는 36 metric × 4 family = 144 tag이며 smoke
+  `22-45-33`에서 24 step과 초기 gating을 확인함.
+- 이전 hand-setting checkpoint resume 없이 fresh run으로 비교함.
+
+## 2026-07-31 — hand_setting force-validated valley / thumb action probe
+
+- `22-59-53`은 4784 iter에도 in-valley 0, best valley error
+  `26.1 mm/45.6°`로 geometry-only ladder가 실패함.
+- dense point/axis score를 hard-min으로 바꾸고, loose `20 mm/30°`
+  corridor에서만 palm/thumb-middle force-min을 보상함. strict gate는
+  `10 mm/15° + 두 anchor 0.02 N`.
+- TensorBoard에 valley geometry/support와 thumb joint2
+  position/target/action을 추가함.
+- scripted probe `09-55-47`에서 joint2는 scale `0.1`로 정상 왕복했지만
+  Stick2 valley error/anchor force는 개선되지 않았음. action scale이 아니라
+  `joint1→joint2→joint1 재신전`의 순서가 다음 병목임.
+- 상세 수치와 실행 경로는 `ACTIVITY_2026-07-31.md`.
+
+## 2026-07-31 — hand_setting valley-anchor-only A/B
+
+- Stick2가 중력으로 palm에 닿은 뒤 Stick1 pivot 보상을 수행하는 간섭을
+  제거함.
+- nonzero reward를 `stick2_valley_approach=12`,
+  `valley_anchor_support=12` 두 항으로 제한함.
+- Stick1/ring/final-contact/success/action-rate reward는 모두 0으로 park하고
+  metric term은 보존함.
+- smoke `hand_setting/2026-07-31_10-05-54`에서 24 step을 통과했으며
+  기존 checkpoint resume 없이 fresh run으로 비교함.
+
+## 2026-07-31 — hand_setting finite-shaft valley
+
+- current/reference Stick2의 local `-60 mm` marker를 직접 맞추던 조건을
+  폐기함.
+- `pose_005` marker는 palm-frame valley target을 복원할 때만 쓰고, 현재
+  18 cm finite shaft segment에서 target까지의 최단거리를 reward/gate/metric
+  공통 정의로 사용함. 장축 슬라이딩은 허용하고 segment 밖 false positive는
+  end clamp로 차단함.
+- metric은 `stick2_valley_shaft_distance`로 변경했으며 final smoke
+  `hand_setting/2026-07-31_10-32-23`이 24 step 통과함.
+
+## 2026-08-03 — hand_setting Joint4 scale A/B와 진단
+
+- `00-13-19`의 전체 residual scale `0.1`에서 다섯 Joint4만 `0.3`, Joint1~3은
+  `0.1`로 둔 fresh run `09-37-49`를 시작함. 저장 cfg 기준 reward/obs/action/PPO는
+  불변이며 `10-04-47`은 `model_200.pt`부터 이어진 동일 실험임.
+- 모든 손가락 Joint4에 policy action, PD target, actual position, tracking error,
+  `pose_005` reference error TensorBoard metric을 추가함. 진단만 추가되어 resume 호환됨.
+- active Stage-1은 pair score `>=0.65`, thumb pivot score `>=0.35`에서 열림.
+  all-20 q prior는 weight `2`, Index/Middle/Ring 12-joint missing guide는 weight `6`이며
+  `6*(1-min_i clamp(F_i/0.02N,0,1))`로 6-contact 완성 때만 사라짐.
+- `10-04-47` iteration `1496`: Stage-1 평균/final `0.639/0.874`, contact 평균/final
+  `2.675/2.743`, max `2.996/6`. Index Joint4는 `+0.394 rad`까지 움직여 개선됐지만
+  Middle/Ring Joint4 actual은 거의 0이고 max contact는 3에서 정체함. 따라서 scale 확대는
+  일부 dead zone만 개선했고 6-contact 병목은 아직 미해결임.
+
+## 2026-08-10 — hand_move 원복, hand_setting 접근 보완, play 접촉력 진단
+
+- `hand_move`의 고정 `pose_005` reference residual A/B는 접촉은 유지했지만 OPEN error가
+  약 `16 mm` 남아 active action을 `q_target=q_current+0.1*action`으로 복원함.
+  고정-reference 구현은 주석으로 보존하고 action/obs `20D/103D`는 유지함.
+- hand_move 파지 안정성 기준은
+  `2026-08-08_00-55-42(3)/model_3450.pt`. hand_object는 사용자의 play 판단상
+  `2026-08-08_20-39-52(성공)/model_300.pt`가 파지 자세 보존에 가장 좋고,
+  `2026-08-09_15-26-52/model_1350.pt`는 cube hold 수치는 높지만 skew를 양보한 모델임.
+- `hand_setting` missing-16 best-so-far에서 새끼 4관절의 progress credit을 `0.25`로 낮춰
+  약지 접근 경로를 먼저 확보함. 새끼는 all-20 prior와 Stage-2 5-degree gate에는 남아 있음.
+- Stage-1 one-way unlock 뒤 index/middle→Stick1, ring→Stick2 surface distance를 보는
+  live semantic approach reward(weight 2, range 80 mm)를 추가함. obs/action은 `101D/20D`,
+  Stage-2 contact reward는 계속 parked 상태임.
+- play에서는 `functional_contact_lost`만 비활성화해 복구 동작을 관찰하고 다른 물리 종료는
+  유지함. `hand_play`는 OPEN 시작, 300 s episode, stick disturbance OFF임.
+- 전 손 링크 net contact-force를 viewport 또는 별도 PySide6+pyqtgraph subprocess로
+  표시하는 진단을 추가함. 외부 그래프 IPC는 bounded/non-blocking이며 user 측 reset 파지
+  실측은 palm 약 3 N, thumb-mid 약 2.5 N, 나머지 링크 대부분 0~1 N이었음.
+
+## 2026-08-10 — `hand_real` 105D sim-to-real observation 환경
+
+- `hand_move`를 상속하는 별도 Gym task/experiment `hand_real`을 등록함. dynamics, reward,
+  termination, disturbance와 20D current-joint residual action은 그대로이고 observation만 변경함.
+- policy input은 joint previous/current 40 + current fingertip 15 + 두 Stick previous/current
+  palm pose 28 + last executed action 20 + OPEN/CLOSE mode 2 = `105D`임.
+- actor observation에서 joint velocity와 Stick linear/angular velocity를 제거함. 두 sample
+  history로 motion을 추론하며 history order는 oldest-to-newest임.
+- Stick quaternion은 `w>=0` canonical `wxyz`; reset에서는 history 두 칸을 같은 sample로 채움.
+- last action은 post-step state를 실제로 만든 `action_manager.action`이고 한 step 더 오래된
+  `prev_action`은 사용하지 않음.
+- 실물 측은 encoder FK fingertip, vision palm-frame Stick pose, 동일 joint ordering/limit
+  normalization과 고정 30 Hz policy cadence를 제공해야 함.
+- 103D `hand_move` checkpoint는 105D `hand_real`에 load하지 않고 fresh 학습함.
+- `py_compile`, `git diff --check`, 구성/차원 정적 대조를 통과함. 사용자 실행 전용 원칙에
+  따라 simulator runtime 확인은 하지 않았으며 다음 사용자 run에서 105D/20D를 확인함.
+- 상세 설계와 다음 검증 항목은 `ACTIVITY_2026-08-10.md`에 기록함.
+
+## 2026-08-10 — `hand_real` PD gain과 `hand_setting` contact 진행 gate
+
+- `hand_real`에만 tuner 실측 20관절 Kp/Kd를 적용했고 effort limit과 다른 hand task는
+  유지함. `hand_setting/2026-08-10_18-30-36`은 Stage-1은 안정적이지만 all-joint 최대
+  오차가 strict 5°보다 커 Stage-2가 0이었음.
+- strict Stage-2는 유지하면서 contact mean/min(`5/20`, `0.10 N`)을
+  `stage1_ready*clip((0.80-q_RMSE)/(0.80-0.0873),0,1)`로 점진 활성화하고
+  `stage2_contact_progress` metric을 추가함. between-sticks 조건은 아직 미적용임.
+
+## 2026-08-13 — `hand_real` Stick1 5 mm A/B와 접촉 붕괴 판독
+
+- Stick1 reference/reset을 local `+y`로 5 mm 이동하고, 같은 기하 변경에 종속된 pivot
+  local offset과 axial target도 함께 갱신함. 단일 상수를 `0.0`으로 바꾸면 원복됨.
+- 동일 초기-stage baseline `2026-08-12_10-16-57`과 fresh
+  `2026-08-13_17-54-50`의 저장 cfg를 대조한 결과, episode 5 s·회전 고정·외란 OFF·PPO는
+  동일하고 실험 차이는 이 5 mm 기하뿐임.
+- 새 run은 iter 900에서 contact `6/6`, full-contact `1.0`까지 성공했으나 950 이후
+  geometry가 급락했고, 이어진 `19-38-46`에서 Ring 접촉부터 Index/Middle 접촉까지 잃어
+  iter 1650에는 약 `3.19/6`으로 붕괴함.
+- 따라서 5 mm task가 불가능한 것이 아니라 추가 PPO 학습 중 6접촉 해를 잃은 것으로
+  판정하며 현재 보존 후보는 `17-54-50/model_900.pt`임. 상세는
+  `ACTIVITY_2026-08-13.md` 참고.
+
+## 2026-08-14 — fixed-base Wuji MuJoCo policy plumbing
+
+- 현재 source와 설치 Isaac Lab/RSL-RL을 추적해 `hand_real`/`hand_final` actor 계약을
+  101D observation, 20D action, 30 Hz policy/120 Hz physics로 확정하고
+  `mujoco_deploy/ISAAC_POLICY_CONTRACT.md`에 line 근거와 함께 기록함.
+- 기존 `right.xml`의 fixed palm·20 hinge·20 position actuator를 사용하고, canonical physical
+  joint name으로 qpos/dof/actuator 양방향 map을 엄격 생성함. Indy/root controller/stick/cube/
+  camera는 포함하지 않음.
+- backend-neutral observation/action/ONNX adapter와 MuJoCo backend/CLI를 분리함. Stick 관측은
+  현재 pregrasp reference의 frozen synthetic fixture이며 task 성공 검증이 아님을 명시함.
+- 기존 `wuji_mujoco` env에서 6 unit/integration test, 20관절 단독 위치 명령, 고정형
+  ONNX `101→20`, OPEN 10 s/CLOSE 2 s 30/120 Hz closed loop와 passive viewer를 통과함.
+
+## 2026-08-16 — `hand_real` 105D quaternion 관측과 action scale
+
+- Stick 관측을 palm-frame `xyz+wxyz` previous/current로 복구해 actor는 다시 `105D`다.
+  사각 스틱의 local-Y 90° 회전 4개 중 reference-nearest quaternion을 고르고 `w>=0`으로
+  canonicalize한다. 정책은 roll/contact 상태를 볼 수 있지만 reward·success는 계속 장축
+  `directed_axis`만 평가해 특정 shaft roll을 강제하지 않는다.
+- `hand_real` 계열 current-joint residual scale은 Joint1/2 `0.10`, Joint3 `0.20`, Joint4
+  `0.15`로 확정했다. Joint4는 0.15 rad PD 튜닝 step과 맞췄고 Kp/Kd는 사용자가 별도로
+  조정했다. `hand_move` all-joint `0.1`은 불변이다.
+- OPEN/CLOSE 횟수는 action-scale A/B 동안 기존값을 유지한다. 기존 101D ONNX/MuJoCo
+  adapter는 새 105D 모델과 비호환이므로 배포 전에 갱신해야 한다.
+- Stick Cuboid root는 180 mm 길이의 geometric center이며 local tip/tail은 Y축 기준
+  `+90/-90 mm`; 5 mm Stick1 axial A/B 상수는 현재 `0.0`으로 원복돼 있다.
+- 상세는 `ACTIVITY_2026-08-16.md` 참고.
+
+## 2026-08-17 — hand_real curriculum, MuJoCo deploy, ArUco Stick1
+
+- `hand_real` active contract를 105D quaternion observation, Joint1/2 `0.1`, Joint3 `0.2`,
+  Joint4 `0.15` current-joint residual로 확정했다. 현재 약한 외란 run은 1000에서 가장
+  균형적이었고 3300 이후 CLOSE/final-mode는 회복했지만 OPEN gap 약 10 mm가 남았다.
+- 과거 8월 12일 curriculum과 current TensorBoard를 같은 iteration으로 대조했다. 사용자는
+  3800pt부터 `0.3~1.2 N` strong-disturbance branch를 `--init_checkpoint`로 시작할 예정이다.
+- `mujoco_deploy`를 공식 fixed-base Wuji model, strict name mapping, backend-neutral 105D
+  observation/action runner, 30/120 Hz scheduler, dynamic sticks 및 D435/ArUco provider까지
+  확장했다. Real backend는 hardware contract 검증 전까지 비활성이다.
+- FoundationPose에서 Stick1 ID0/ID1 pair calibration과 marker별 Stick pose agreement 도구를
+  만들었다. canonical Stick은 `+Y=tail→tip`, `+Z=ID0 outward`; ID1 transform은
+  `inv(T_M0_M1)@T_M0_S`로 자동 계산한다. pair inlier residual은 평균
+  `2.47 mm/1.92°`, pose agreement median은 `4.84 mm/1.89°`이며 위치 long-tail은 후속 과제다.
+- 상세 수치·파일·CLI·남은 검증은 `ACTIVITY_2026-08-17.md`에 기록했다.
+
+### 후속 — iter 3800 disturbance true-resume A/B
+
+- 공통 `2026-08-16_21-14-45/model_3800.pt`에서 optimizer까지 이어받아
+  `0.3~1.2 N`(`2026-08-17_02-50-15`)과 `0.1~0.6 N`
+  (`2026-08-17_11-04-35`)을 비교 중이다.
+- strong은 6300 부근 recovery 0까지 붕괴했으나 8200에서 contact/final `5.90/5.76`,
+  recovery `97.7%`로 되살아났다. latest 9009도 `5.75/5.63`, `91.4%`를 유지하지만
+  OPEN/CLOSE가 `11.95/9.45 mm`라 기하는 아직 완전 복구가 아니다.
+- medium은 4800에서 recovery `5.7%`까지 무너졌다가 latest 6010에서 contact/final
+  `5.90/5.28`, recovery `99.0%`, CLOSE/lateral `2.69/3.07 mm`로 복구했다. OPEN은
+  `15.50 mm`라 CLOSE 편향이 남는다.
+- Claude용 현재 상태와 MuJoCo/ArUco 완료 범위는 `CLAUDE_HANDOFF_2026-08-17.md`에 통합했다.

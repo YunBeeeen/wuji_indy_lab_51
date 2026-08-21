@@ -8,10 +8,30 @@ from isaac_neuromeka.assets.articulation import (
     FiniteArticulation,
     FiniteArticulationCfg,
 )
+from isaac_neuromeka.assets.wuji_actuator_parameters import (
+    WUJI_RIGHT_JOINT_NAMES,
+    WUJI_RIGHT_TUNED_DAMPING,
+    WUJI_RIGHT_TUNED_STIFFNESS,
+    WUJI_RIGHT_URDF_EFFORT_LIMITS,
+    resolve_wuji_right_tuned_parameter,
+)
 
 ##
 # Configuration
 ##
+
+_INDY_WUJI_DEFAULT_STIFFNESS = {
+    joint_name: (
+        20.0
+        if joint_name.startswith(("finger4_", "finger5_"))
+        else 2.0 if joint_name.endswith(("joint1", "joint2")) else 1.0
+    )
+    for joint_name in WUJI_RIGHT_JOINT_NAMES
+}
+_INDY_WUJI_DEFAULT_DAMPING = {
+    joint_name: (0.5 if joint_name.startswith(("finger4_", "finger5_")) else 0.05)
+    for joint_name in WUJI_RIGHT_JOINT_NAMES
+}
 
 INDY7_CFG = FiniteArticulationCfg(
     class_type=FiniteArticulation,
@@ -204,10 +224,8 @@ INDY7_WUJI_RIGHT_CFG = FiniteArticulationCfg(
             stiffness=100.0,
             damping=20.0,
         ),
-        # wuji hand — 제조사 값 기준 (2026-07-14 검증)
-        # effort: URDF 스펙 0.2~1.0 N·m의 중간값 0.6. 이 값으로 0.30kg 하중 유지가 확인됨.
-        #   단, 그 "4/4 들기"는 palm-up 자세에서 새끼/손바닥 받침 hold였음 (GUI로 확인 —
-        #   엄지·중지는 닿지도 않음). 엄지+중지 집게는 미검증. "힘은 충분"의 근거로만 쓸 것
+        # wuji hand
+        # effort: Wuji Technology right-hand URDF의 20개 관절별 한계를 그대로 사용함.
         # kp/kd: 제조사 right.xml은 kp 2/2/1/0.8, kd 0.05. 기존 20/0.5는 그 10~25배라
         #   오차 1.7°면 토크 포화 -> bang-bang 떨림 + 큐브 후려침. 제조사 값이 성공 창도 넓음
         #   (오므림 0.32~0.60 대부분 4/4 vs 기존은 0.40~0.50만). joint3/4는 1.0으로 통일
@@ -218,17 +236,14 @@ INDY7_WUJI_RIGHT_CFG = FiniteArticulationCfg(
         #   제조사 값으로 override함 (indy_wuji/env_cfg.py 참고)
         "fingers": ImplicitActuatorCfg(
             joint_names_expr=["finger[1-5]_joint[1-4]"],
-            effort_limit=0.6,
+            effort_limit_sim=WUJI_RIGHT_URDF_EFFORT_LIMITS,
             velocity_limit=12.0,
-            stiffness={
-                "finger[1-3]_joint[1-2]": 2.0,
-                "finger[1-3]_joint[3-4]": 1.0,
-                "finger[4-5]_joint[1-4]": 20.0,
-            },
-            damping={
-                "finger[1-3]_joint[1-4]": 0.05,
-                "finger[4-5]_joint[1-4]": 0.5,
-            },
+            stiffness=resolve_wuji_right_tuned_parameter(
+                WUJI_RIGHT_TUNED_STIFFNESS, _INDY_WUJI_DEFAULT_STIFFNESS
+            ),
+            damping=resolve_wuji_right_tuned_parameter(
+                WUJI_RIGHT_TUNED_DAMPING, _INDY_WUJI_DEFAULT_DAMPING
+            ),
             friction=0.01,
         ),
     },

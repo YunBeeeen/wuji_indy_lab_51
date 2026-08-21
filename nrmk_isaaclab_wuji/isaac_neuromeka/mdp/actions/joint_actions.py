@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
@@ -160,7 +161,7 @@ class CustomResidualJointPositionAction(JointAction):
 
     예제와 동일하게 `JointAction`을 직접 상속하고, 목표를 `_processed_actions`가 아니라 별도
     `joint_pos_target` 버퍼에 두며, `process_actions`에서 목표를 만들고 `apply_actions`는
-    그 버퍼를 쓰기만 한다. 예제와 다른 곳은 아래 셋뿐이고 전부 예제 그대로 두면 이 태스크에서
+    그 버퍼를 쓰기만 한다. 예제와 다른 곳은 아래 넷뿐이고 전부 예제 그대로 두면 이 태스크에서
     깨지거나 잘못 도는 부분이다.
 
     1. `joint_pos_target` 폭을 `num_joints`(26)가 아니라 **action_dim**(현재 18)으로 잡음.
@@ -172,6 +173,9 @@ class CustomResidualJointPositionAction(JointAction):
     3. `clamp_to_limits` 옵션 추가(기본 True) — 예제에는 없음. 잔차는 기준점이 실측 관절각이라
        목표가 limit을 넘어봐야 최대 `scale`이지만, 그만큼 관절 스토퍼를 계속 미는 토크
        (≈ kp × scale)가 남는다. clamp하면 그게 사라진다. 예제 그대로 가려면 False로 둘 것.
+    4. `joint_position_lower_overrides` 옵션 추가(기본 None) — 선택한 관절의
+       PD target에 task-local 하한을 더한다. raw/processed action의 부호는 바꾸지
+       않으므로 굽힌 관절을 다시 펼 수 있다.
 
     ⚠ 절대형(`MimicJointPositionAction`)과 scale의 의미가 다르다.
        절대형: 기본자세로부터의 변위 상한 / 잔차형: **스텝당 증분**. implicit PD 기준 대략
@@ -203,6 +207,42 @@ class CustomResidualJointPositionAction(JointAction):
         else:
             self._limit_lo = None
             self._limit_hi = None
+
+        lower_overrides = cfg.joint_position_lower_overrides or {}
+        if lower_overrides:
+            unknown_joints = sorted(set(lower_overrides) - set(self._joint_names))
+            if unknown_joints:
+                raise ValueError(
+                    "CustomResidualJointPositionAction lower-limit overrides contain "
+                    f"joints outside this action term: {unknown_joints}. "
+                    f"Resolved joints: {self._joint_names}"
+                )
+
+            # If full articulation-limit clamping is disabled, start from
+            # unbounded limits and apply only the explicitly requested floors.
+            if self._limit_lo is None:
+                self._limit_lo = torch.full_like(self._raw_actions, -torch.inf)
+                self._limit_hi = torch.full_like(self._raw_actions, torch.inf)
+
+            for joint_name, configured_lower in lower_overrides.items():
+                lower = float(configured_lower)
+                if not math.isfinite(lower):
+                    raise ValueError(
+                        "CustomResidualJointPositionAction lower limit must be finite: "
+                        f"{joint_name}={configured_lower}"
+                    )
+                action_index = self._joint_names.index(joint_name)
+                if torch.any(lower > self._limit_hi[:, action_index]):
+                    raise ValueError(
+                        "CustomResidualJointPositionAction lower limit exceeds the "
+                        f"upper limit for {joint_name}: lower={lower}"
+                    )
+                # Do not relax a stricter articulation limit. This option only
+                # narrows the allowed target range.
+                self._limit_lo[:, action_index] = torch.maximum(
+                    self._limit_lo[:, action_index],
+                    torch.tensor(lower, device=self.device, dtype=self._limit_lo.dtype),
+                )
 
     def process_actions(self, actions: torch.Tensor):
         self._raw_actions[:] = actions

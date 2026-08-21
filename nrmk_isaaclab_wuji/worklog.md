@@ -3981,3 +3981,444 @@ palm_normal_b (0.19,0.28,0.94) -> (1,0,0)   rewards.py + managers.py
   TensorBoard event 파일에서 총 128개 `Metrics/hand_setting*` scalar tag를 확인함.
 - 이미 실행 중인 학습에는 변경된 manager code가 반영되지 않으므로 프로세스 재시작이 필요함.
   obs/action/reward/PPO는 불변이라 최신 hand_setting checkpoint resume는 호환됨.
+
+## 2026-07-30 — hand_setting contact-only shaping A/B
+
+- run `logs/rsl_rl/hand_setting/2026-07-30_17-31-40`은 333 iter에서 mean reward
+  `144.7`로 포화했지만 functional contact 약 `1/6`, full-contact/pose-valid/
+  setting-valid/success `0`이었음. index/middle/ring contact force도 0이었음.
+- easy joint/object reference와 broad shaft region shaping의 local optimum으로 판정함.
+- `hand_setting_env_cfg.py`에서 기존 term을 삭제하지 않고 joint reference,
+  Stick1/2 reference, four region proximity, setting completion/stability weight를
+  `0`으로 변경함.
+- six independent contact terms(weight `5/6`), hard contact-min `20`,
+  action-rate와 original strict success validator는 유지함. 새 reward/subphase는 없음.
+- objective가 변경되어 `17-31-40` resume는 금지하고 다음 학습은 fresh run으로 시작함.
+
+## 2026-07-30 — hand_setting missing-tip approach shaping
+
+- contact-only run `logs/rsl_rl/hand_setting/2026-07-30_18-14-08`은 744 iter,
+  약 89분에도 episode max contact `3/6`, hard min/full-contact/success `0`이었음.
+- 유지 contact는 thumb-distal, palm, thumb-mid였고 index/middle/ring 최대 force는
+  `0.0005/0.0009/0 N`에 불과했음.
+- 기존 `_region_term`에 weight 인자를 노출하고 thumb는 `0`,
+  index/middle/ring만 `0.5`로 설정함. 새 reward term은 추가하지 않음.
+- joint/Stick reference와 setting completion/stability는 계속 `0`; contact terms,
+  hard min, strict success, action-rate는 유지함. 다음 run은 fresh로 시작함.
+
+## 2026-07-30 — hand_setting Stick2-first state gate
+
+- GUI replay에서 thumb-side pivot이 Stick2보다 먼저 닫혀 valley 입구를 막는 순서
+  failure를 확인함.
+- `mdp.py`에 `stick2_seated_gate`,
+  `seated_gated_contact_group_strength`,
+  `seated_gated_body_box_shaft_region_proximity`를 추가함.
+- gate는 Stick2 palm pose `<=15 mm/20°`와 palm/Stick2,
+  thumb-mid/Stick2 contact `>=0.02 N` 두 개를 모두 요구함.
+- gate 전에는 Stick2 reference pose `12`와 두 anchor contact만 보상함.
+  gate 후에만 나머지 four contact, missing index/middle/ring region `0.5`,
+  functional-contact min `20`이 켜지며 gate 이탈 시 즉시 0으로 돌아감.
+- 새 reward term/FSM/command/observation은 없고 reward 18개,
+  obs/action `101D/20D`, strict success/termination을 유지함.
+- `CustomRewardManager`에 `stick2_seated`를 추가해 hand-setting metric은
+  33개 × 4 family = 132개가 됨.
+- smoke `logs/rsl_rl/hand_setting/2026-07-30_21-44-34`가 1 env/1 iter,
+  24 policy step을 통과했으며 reset에서 gate와 downstream reward가 0임을 확인함.
+- objective 변경으로 기존 checkpoint resume는 금지하고 fresh run으로 비교함.
+
+## 2026-07-30 — hand_setting force-gate correction
+
+- run `logs/rsl_rl/hand_setting/2026-07-30_21-50-01`은 389 iter에도
+  `stick2_seated=0`, Stick2 pose-valid `0`, final contact `1/6`이었음.
+  final Stick2 error는 약 `45 mm/74°`이고 지속 접촉은 palm–Stick2였음.
+- palm/thumb-mid `0.02 N`을 downstream reward의 선행 조건으로 둔 순환 gate를
+  active cfg에서 제거함.
+- `mdp.py`에 handle-side centerline point와 directed long axis를 비교하는
+  `stick2_valley_geometry`, `stick2_in_valley_gate`,
+  `valley_gated_*` terms, `StickValleyCenterlineTracking`을 추가함.
+- valley point는 Stick2 local `y=-60 mm`; `5 mm/10°` corridor에 들어오면
+  force 없이 gate가 열림. gate 전 ring region/contact와 centerline tracking,
+  gate 후 나머지 다섯 contact/index-middle region/contact-min이 활성임.
+- contact `0.02 N`은 strict success와 diagnostic seated 판정에만 사용함.
+- manager metric에 valley point/axis error와 in-valley를 추가해
+  36 × 4 = 144 scalar tag를 event 파일에서 확인함.
+- smoke `logs/rsl_rl/hand_setting/2026-07-30_22-45-33`은 24 step을 통과했고
+  reset에서 gated reward 0, ungated ring region nonzero를 확인함.
+- reward 변경이므로 이전 checkpoint resume 없이 fresh run으로 시작함.
+
+## 2026-07-31 — hand_setting valley force validation / thumb probe
+
+- geometry-only run `22-59-53`은 4784 iter에도 in-valley 0이었고 best
+  point/axis error는 약 `26.1 mm/45.6°`였음.
+- active valley approach는 point/axis score hard-min, loose
+  `20 mm/30°` 안의 palm/thumb-middle force-min, strict
+  `10 mm/15° + 0.02 N×2` gate로 구성함.
+- manager에 geometry/support gate와 thumb joint2
+  position/target/action metric을 추가함.
+- `scripts/debug/hand_setting_thumb_action_probe.py`로 다른 19 action을
+  0으로 두고 joint2만 sweep함. `scale=0.1`에서 실제 joint가
+  `-0.1659→+0.458 rad`까지 움직였으나 Stick2 valley error는 약
+  `46.4 mm/68.7°`로 불변. 다음은 thumb joint1/joint2 staged sequence를
+  검증함.
+
+## 2026-07-31 — hand_setting valley-anchor-only reward
+
+- active weight는 `stick2_valley_approach=12`와
+  `valley_anchor_support=12`뿐임.
+- Stick1/index/middle/ring/final six-contact/success/action-rate는 weight
+  `0`으로 park해 Stick2가 palm에 스치자마자 Stick1 pivot으로 넘어가는
+  reward 간섭을 제거함.
+- reset은 loose support corridor 밖이므로 geometry 접근 항은 유지하고,
+  anchor support는 `20 mm/30°` 안에서만 양측 force-min을 지급함.
+- smoke `logs/rsl_rl/hand_setting/2026-07-31_10-05-54`가 24 step 통과함.
+
+## 2026-07-31 — hand_setting finite-shaft valley distance
+
+- exact local `-60 mm` station matching을 제거하고 saved-pose valley
+  target과 current 180 mm finite shaft segment 사이 최단거리로 교체함.
+- 장축 방향 sliding은 free이며, closest station은 `[-0.09, +0.09] m`로
+  clamp해 실제 stick 구간이 valley를 덮어야 함.
+- reward/gate/manager metric/probe가 같은 계산을 사용함. TensorBoard
+  metric은 `stick2_valley_shaft_distance`.
+- final smoke `logs/rsl_rl/hand_setting/2026-07-31_10-32-23`: 24 step 통과,
+  action/obs `20/101`, nonzero reward는 valley 두 항뿐임.
+
+## 2026-07-31 — hand_setting spawn feasibility reset
+
+- 두 stick을 `hand_setting`에서만 world `+x`/palm `+z`로 `20 mm`
+  이동함. reset world position은 Stick1/2
+  `(0.075,0,0.5195)` / `(0.055,0,0.5195) m`; pair separation과
+  orientation은 유지함.
+- open hand는 `finger1_joint2=-0.1659 rad`, 나머지 관절 `0`이며
+  state=target이라 preload가 없음.
+- 1-env 5초 zero-action probe: 초기 6 contact force 전부 `0 N`;
+  최종 Stick1/2 palm position 약
+  `(4.69,0.05,83.97)` / `(11.80,-0.02,55.80) mm`;
+  최저 world z `0.5046/0.5118 m`; Stick2 palm force `0.095 N`,
+  thumb-mid force `0 N`. 두 stick 모두 drop threshold 위에 남음.
+- shared `hand_grasp`와 valley reward 정의는 변경하지 않음. reset 변경이므로
+  다음 hand_setting 학습은 fresh run으로 시작함.
+
+## 2026-07-31 — hand_setting Stick2 reference-only A/B
+
+- active reward를 `pose_005` Stick2 palm-relative full-pose tracking
+  하나로 단순화함: weight `12`, position/orientation sigma
+  `0.10 m/90°`.
+- anchor support와 모든 joint/Stick1/contact/region/final reward는
+  cfg에서 주석 처리해 Reward Manager에서 제외함. 복구용 정의와
+  finite-shaft `-60 mm` 코드는 주석/함수로 보존함.
+- `stick2_in_valley`는 reference pose `<=15 mm/20°`와
+  palm/thumb-link2 force `>=0.02 N×2`; loose support-ready는
+  `30 mm/30°`임.
+- TensorBoard valley metric은 `stick2_valley_pose_valid`,
+  `stick2_in_valley`를 유지함. 비활성 reward cfg에 종속되던 region score와
+  loose support-ready tag는 제거하고 force/pose/shaft-valid metric은 유지함.
+- smoke `logs/rsl_rl/hand_setting/2026-07-31_11-59-59`: 1 env,
+  1 iter/24 step, obs/action `101/20`, active reward 1개 통과.
+- objective 변경이므로 이전 checkpoint resume 없이 fresh run으로 시작함.
+
+## 2026-07-31 — hand_setting paired-reference + thumb-pivot A/B
+
+- active reward를 `two_stick_reference_min=12`와
+  `reference_thumb_pivot_min=8` 두 개로 교체함.
+- 첫 항은 `pose_005` 기준 Stick1/2 palm-relative full-pose score 중
+  낮은 값을 반환해 한 stick만 맞추는 파밍을 막음.
+- 둘째 항은 pair score와 `finger1_link3`의 Stick1 local
+  `y=-60 mm` pivot-station 접근 score 중 낮은 값을 반환함.
+  scale은 pose position/orientation `0.10 m/90°`, thumb approach
+  `20 mm`임.
+- drop penalty는 추가하지 않고 기존 Stick1/2 drop 즉시 종료만 유지함.
+  모든 active reward가 양수라 낙하는 남은 누적 보상을 상실하게 됨.
+- 나머지 reward는 계속 미등록 주석 상태이며, 변경 후 `py_compile`,
+  active-term 정적 검색, `git diff --check`만 수행함. 다음 학습은 fresh run.
+- task reset 코드는 inherited scene spawn에 offset을 더하는 대신 검증된
+  Stick1/2 absolute world position `(0.075,0,0.5195)` /
+  `(0.055,0,0.5195)`를 직접 사용하도록 단순화함. 실제 배치는 동일함.
+- `Metrics/hand_setting{,_final,_min,_max}`에
+  `thumb_pivot_distance`(m), `thumb_pivot_score`(0~1)를 추가함.
+  active reward와 같은 거리 helper를 공유함.
+- `pair_score>=0.50 && thumb_pivot_score>=0.35`인 memoryless Stage-1
+  gate를 추가함. gate 뒤 active reward는 joint reference max `8`
+  (sigma `0.80`, six-contact progress에 따라 `2`까지 감쇠),
+  functional contact mean `5`, min `20`임.
+- `hand_grasp`와 맞춰 region reward는 켜지 않았고, 열린 손의 sparse contact
+  문제만 mean과 broad q-reference로 연결함. strict success reward
+  `30000`도 복구함. metric에는 `stage1_pair_score`, `stage1_ready` 추가.
+
+## 2026-07-31 — hand_setting Stage-1 joint guide 8→2 감쇠
+
+- `15-03-31`은 Stage-1 gate가 평균 `0.92`까지 열렸지만 q-reference raw가
+  약 `0.25`, functional contact가 평균 `2.75/6`, min은 계속 `0`에
+  머물러 열린 index/middle/ring을 final pose로 보내는 guide가 부족했음.
+- Stage-1 q-reference의 config weight를 `2→8`로 올림. 다만
+  `m=min_i(clamp(F_i/0.02,0,1))`을 사용해 실제 effective weight를
+  `8*(1-0.75m)`으로 계산하므로 여섯 접촉 전에는 `8`, 모두 threshold에
+  도달하면 기존 hand_grasp weak prior와 같은 `2`가 됨.
+- 이 감쇠는 history/FSM 없이 현재 force만 사용하며, 접촉을 잃으면
+  q-reference guide가 자동으로 복구됨. `py_compile`과
+  `git diff --check`만 수행했고 다음 비교는 fresh run으로 시작함.
+
+> 08-01~08-03 상세는 `ACTIVITY_2026-08-0{1,2,3}.md` 참조. 아래는 08-04·08-05 요지.
+
+## 2026-08-04 — chopsticks 빈손-뒤집기 해킹 수정 (lift_gate 복원)
+
+- overnight run `23-52-23`이 파지 없이 팜만 뒤집는 해킹(`palm_up_cos` 0.98인데
+  `cage_inside` 0, `palm_dist` 0.31m). 원인: 08-03에 `palm_up`을 cage에서 떼며
+  `progress×goal_gate`만 남겼는데, 목표가 스틱 테이블 높이와 가까워 테이블에서도
+  `goal_gate`가 정확히 0이 아니라 ~0.033 잔여 → 큰 weight가 증폭함.
+- 수정: `palm_up`·`stick_in_palm`에 `lift_gate` 복원(cage는 계속 뺌). `lift_gate`는
+  clearance 기반이라 테이블에서 정확히 0 → hack 차단 확실. fresh run. 상세 `ACTIVITY_2026-08-04.md`.
+
+## 2026-08-04 — hand_setting per-joint kp/kd 튜닝 + 획득 재시도 (진전 없음)
+
+- wuji.py fingers를 옛 평값(stiffness 2.0/1.0, damping 0.05, effort 0.6)에서 per-joint
+  튜닝으로 교체(엄지 joint2 kp 2.0→2.7 UP, joint3 0.75, 비엄지 joint2 0.7, damping joint4
+  0.0, effort URDF값). `hand_grasp`는 새 kp/kd로 재학습해도 잘 됨(`17-30-01`).
+- 그러나 `hand_setting`(편 손→기능적 파지 획득)은 새 kp/kd로 **진전 없음** — 스틱을 REF로
+  못 올리고 freeze. 이 미제가 08-05 진단으로 이어짐.
+
+## 2026-08-05 — hand_setting 획득 진단 대장정 → σ 조정으로 첫 성공
+
+- 유일한 차이로 보였던 kp/kd를 의심하며 진단. **진단 도구 신설**: `finger_reach` task
+  (손끝 랜덤 목표 추종 — 제어 격리, 정상 확인), `hand_setting_grasp_reach_probe.py`(정책
+  잔차 액션으로 PREGRASP 구동 — 자세 achievable 확정), `hand_setting_0731` task(07-31 env를
+  저장 diff에서 그대로 복원 + 현재 kp/kd, 격리용).
+- **진짜 원인 = 보상 σ**(kp/kd 아님): 기존 σ(pos 0.10/ori 1.57=90°)가 너무 헐거워 스폰
+  스틱 자세가 이미 pair_score 높음 → 정책은 thumb_pivot만 맞추면 됐고, thumb_pivot이
+  유클리드 거리만 봐 엄지가 opposition(위) 대신 스틱 밑으로 파고듦("비비기").
+- **해결**: pair σ를 `pos 0.01/ori 0.25(~14°)`로 조이고 `thumb_sigma 0.02→0.06`, `success`
+  reward weight 30000 one-shot 추가 → **획득 첫 성공.** kp/kd는 튜닝값 그대로 유지.
+- 상세 `ACTIVITY_2026-08-05.md`. 도구 함정은 root `CLAUDE.md`/`AGENTS.md`.
+
+## 2026-08-06 — hand_object 학습환경 신설 + tip gap σ 2단 분리
+
+- **hand_object 신설**: `hand_move` 정책을 fine-tuning해 두 젓가락으로 1cm 큐브를 실제
+  접촉력으로 집고, 받치던 기둥이 내려가도 안 떨어뜨리게 하는 태스크. obs 103D / action 20D를
+  `hand_move`와 동일하게 유지(체크포인트가 shape 변경 없이 로드). 큐브·접촉력은 actor가 못 보고
+  보상·종료·메트릭에만 쓴다 — "기존 proprioceptive 상태만으로 안 보이는 물체를 잡고 있을 수
+  있나"를 묻는 실험이라 의도적.
+- 스틱마다 ContactSensor를 두고 각각 **Cube만 필터**, closing axis 투영으로 스틱별 압착력을
+  구해 **`min(score1, score2)`** 로 bilateral 보상. 한쪽만 세게 눌러도 만점이 나오면 안 되므로
+  mean/sum이 아니라 min. 힘 부호는 추정하지 않고 isaacsim 테스트에서 유도(`force_matrix_w` =
+  필터가 센서에 가하는 힘).
+- **yaw/큐브/기둥 위치 3값은 측정 전이라 `None`으로 비워두고 fail-fast.** 임의값으로 채우면
+  아무도 검증 안 한 기하로 학습이 돌아가므로. 측정용 calibration 키(`A/D` yaw, `P` 출력,
+  `V` 기둥 하강)를 기존 키보드 인프라에 붙였다. 학습 2개가 도는 중이라 Isaac Sim 실행 금지 →
+  **런타임 검증·calibration 모두 미완**, 정적 검증만 통과.
+- **tip gap σ 2단 분리**: `open/close_tip_gap.sigma`(캡처)는 5mm로 두고
+  `mode_grasp_stability.gap_sigma`만 5mm→1mm(수렴)로 조임 — 항을 추가하지 않고 coarse/fine 분리.
+  마지막 1mm 구간 보상 차이가 6.2배가 된다. 다만 리셋 구간 gap 압력의 55~71%가 사라지므로
+  캡처가 죽는지 확인 필요(신설 메트릭으로 보임).
+- **OPEN/CLOSE tip gap error 메트릭 분리** — 기존 `tip_gap_error`는 두 모드가 섞여 어느 쪽이
+  안 되는지 알 수 없었다. one-hot 마스킹 누적 후 그 모드가 켜져 있던 시간으로 나눠 조건부 평균.
+- **참고**: `success`(예산의 85%)가 `tip_gap_error_limit=0.0005`(±0.5mm)와
+  `angular_speed_limit=3.0`(실측 93% 초과)에 막혀 계속 0. σ를 조여도 여기 못 닿으면 그대로 0.
+  **미조치**.
+- **런타임 검증 통과**(학습 중단 후): `scripts/debug/hand_object_probe.py` 신설, 검사 20개 전부
+  통과. hand_move 체크포인트가 actor `103→128→128→20` 으로 로드돼 **fine-tuning 호환 확정**,
+  힘 부호 규약도 **실측 확인**(양방향 압착 642회 전부 양수, 음수 0).
+- **보정 완료**: 손 스폰과 큐브가 둘 다 고정이므로 보정 대상은 "손이 날아갈 목표 root pose"
+  하나뿐이고 큐브는 그 자세의 tip 중점으로 따라온다. GUI 에서 키보드로 손을 몰아 자세를
+  잡고 `P` 로 읽었다. 목표 pose (0.0780, −0.0470, 0.3700) / euler (+5.35°, +19.89°, −59.19°),
+  큐브 (0.1468, 0.0865, 0.4114).
+- **설계 정정**: 처음엔 yaw 하나만 보정하고 root 위치는 스폰 고정으로 만들었는데, 그러면 tip 이
+  팜 주위로 호만 그려 12cm 떨어진 큐브에 도달하지 못한다. 사용자 지적으로 **이동+회전**으로
+  바꿈. 액션에 `position_command_name` 을 신설했고 미설정이 기본이라 `hand_move` 는 무영향.
+- **이동을 2단계로**: 한 직선으로 가면 대각선 접근 중에 계속 회전해 tip 이 큐브 자리를 옆으로
+  쓸고 지나간다. 스폰 높이에서 방향·x,y 를 맞춘 뒤(1단계) 순수 수직 하강(2단계). 경유점은
+  목표의 z 만 스폰 z 로 바꾼 값이라 계산으로 나오고, 덕분에 2단계가 수직인 게 구조적으로 보장.
+- **커리큘럼**: 큐브 보상 3개는 cfg 기본 ON(100/50/200). 1단계는 CLI 로 0 을 줘서 끈다 —
+  weight 0 이면 리워드 매니저가 항을 아예 건너뛰고, 메트릭은 센서에서 직접 계산해 그때도 찍힌다.
+- **예산 점검에서 걸린 것**: `bilateral_cube_force` 450 점은 젓가락 파지 유지에 게이트가 없다.
+  "젓가락 흘리고 큐브만 짓누르기" 손익이 450 vs 490 이라 여유가 8% 뿐. 일단 100 으로 시작하고
+  `functional_contact_count` 가 5.5 아래로 떨어지면 50 으로 낮추기로 함.
+- 상세 `ACTIVITY_2026-08-06.md`, 태스크 큐레이션 `hand_object_log.md`. 도구 함정은 root `CLAUDE.md`.
+
+## 2026-08-07 — hand_object 최초 파지 성공 / hand_move 3단 커리큘럼 / lateral 보상 신설
+
+- **`hand_object` 가 처음으로 큐브를 잡고 버텼다.** `holding` 0.000 → **0.4375**,
+  에피소드의 **48.6%** 가 9초를 완주. 지금까지 큐브 보상 3종이 전부 정확히 0 이었던
+  원인은 보상도 기하도 아니라 **상속받은 종료 조건** 이었다.
+- `HandObjectTerminationsCfg` 가 `hand_move` 의 `stick2_dropped`(`minimum_height=0.40`)
+  를 그대로 물려받았다. `hand_move` 는 손이 스폰 높이에 머무르니 맞는 값이지만
+  `hand_object` 는 큐브를 잡으러 **일부러 z=0.365 까지 내려간다.** 하강이 끝나는
+  **정확히 2.00초** 에 스틱 루트가 0.40 을 지나 전 에피소드가 오판 종료됐고, CLOSE 가
+  2.5초 시작이라 **압착을 한 번도 시도해보지 못했다.** 0.20 으로 오버라이드해서 해결
+  (`hand_move` 는 0.40 유지). 앞서 내가 "큐브가 두 팁 사이에 없다, 기하 보정을 다시
+  하라" 고 한 진단은 **오진이었고 철회**한다.
+- **조건 트리거(파지하면 기둥 제거)가 설계대로 동작함이 처음 확인됐다.**
+  `retract_by_grasp` 0.91 — 90.9% 가 파지 조건으로 발동하고 데드라인은 9% 뿐.
+  발동 시각 3.50초로 데드라인(5.5초)보다 2초 빠르다. CLOSE 시작 후 1초 만에 조건 충족.
+- **`hand_move` 를 3단 커리큘럼으로 재구성**(사용자): 파지자세(5초, 회전 0, 개폐 없음)
+  → open/close(15초, 회전 0) → 랜덤 위치. 1단계 완료, `functional_contact_count` 5.98/6.
+- 2단계에서 **정책이 파지를 포기하면서까지 끝까지 벌리는** 증상. 보상 실적으로 설명됨 —
+  파지 계열이 이미 79% 를 벌고 있어 **비율 문제가 아니다.** 정책이 보는 건 잔여 여지고,
+  OPEN 완성 여지 +99.5 vs 파지 전량 −12.0 이라 버리는 게 +87.5 이득이다. 가중치로
+  뒤집으려면 w20→w166 이 필요해 비현실적. `OPEN_TIP_GAP` 0.020→0.017 로 대응(사용자).
+  `functional_contact_min` 이 12점밖에 못 버는 건 **min 구조** 탓 — 여섯 접촉력 평균은
+  전부 포화를 넘는데(0.47~2.12 N) 벌리는 순간 `index_tip_stick1`/`ring_tip_stick2` 가
+  떨어져 그 스텝이 0 이 된다(`full_contact` 0.62). 선행 지표는 `full_contact`.
+- **`stick_axis_lateral` 보상 항 신설.** 3D 에서 두 직선이 만나려면 위치와 방향이 둘 다
+  맞아야 하는데, 기존 `tip_lateral_error` 는 **팁 점의 위치**만 재고 스틱 **축의 방향**은
+  아무도 안 봤다(`_tip_geometry_from_palm_poses` 가 stick1 샤프트 축을 계산조차 안 함).
+  실측 skew 가 min 2.50° 로 한 번도 0 근처에 안 가는 **상시 편향**이었고 OPEN/CLOSE 가
+  같아 모드 게이트 없이 상시로 걸었다. 기존 지수에 얹지 않고 별도 덧셈 항 — 한 지수에
+  넣으면 skew 가 나쁠 때 gap gradient 까지 깎인다. 면내각(개폐 자유도)에 gradient 가
+  0 임을 수치로 검증. 효과: skew min 2.50° → 0.05°.
+- **진단 메트릭 11종 추가**(세 태스크 공용): lateral/axial 의 CLOSE 게이트 버전,
+  축 각도의 면내/면외 분해, 리셋 시점 latch 값, 단면 roll. roll 은 두 스틱의 **상대**
+  방위는 정렬(4.0°)돼 있으나 **둘 다 면-정면에서 20.6° 돌아간 채 전 구간을 헤맨다** —
+  균등분포 평균에 근접해 사실상 무제약. 부작용으로 `support` 가 28.8% 커져
+  `close_tip_gap_error` 의 일부가 계측 착시다.
+- **보류(근거만 기록)**: `force_saturation` 0.05→0.10~0.15(실측 max 0.2161 N 로 상시
+  초과, 신호가 0/1 로 거칠어짐), `reference_distance_sigma` 0.01→0.03(`cube_hold` 600점
+  경로가 stability 인자에서 막힘, `cube_distance_to_stick2_tip` min 13.1mm 로 σ 밖).
+- 상세 `ACTIVITY_2026-08-07.md`, 태스크 큐레이션 `hand_object_log.md`. 도구 함정은 root `CLAUDE.md`.
+- **(같은 날 후속) `cube_hold` 가 0 이던 진짜 원인은 각속도 항이었다.** 게이트 없는
+  `cube_distance`/`*_speed_rel` 은 접근·회전 구간을 포함해 오염돼 있었다. `holding` 으로
+  게이트한 `hold_distance`/`hold_linear_speed`/`hold_angular_speed` 를 신설해 재보니
+  거리는 93.3mm → **8.07mm**(11배 오염, 기하 예측 6~7mm 에 근접해 **팁에 제대로 물려 있음**),
+  선속도는 절반으로 줄었는데, **각속도만 10.25 → 10.43 으로 그대로**였다. stability 지수
+  12.04 중 **10.43 이 각속도** — 전체의 87% 다.
+- 그 10.43 rad/s 는 회전이 아니라 **솔버 노이즈**로 보인다. 큐브가 5mm/3g 이라
+  `I = 1.25e-8 kg·m²` 이고, 0.07N 이 2.5mm 편심이면 물리 스텝 한 번에 117 rad/s 가 나온다.
+  게다가 지표가 `norm(ω차)` 이라 **알짜 회전 0 인 진동도 평균 10 으로 찍힌다.**
+  `hold_distance` 편차가 0.5mm 뿐인 것도 "단단히 물려 안 움직인다"를 가리킨다.
+  → `cube_hold` 와 `cube_relative_stability` **둘 다**에서 각속도 항 제거(사용자 판단).
+  **곱셈 항에 정책이 못 줄이는 양을 넣으면 σ 오설정보다 나쁘다** — 다른 게 아무리 좋아져도
+  목표가 0 에 붙는다. weight·거리 기준점·σ 는 전부 그대로 두었고, 예상 효과는
+  `cube_hold` 0.084 → 139 점, `cube_relative_stability` 0.021 → 39 점.
+- **내 진단 3건이 틀려서 정정했다**: ① "13.1mm 라 샤프트 안쪽에서 물고 있다"(실제 8.07mm,
+  팁에 제대로 물림) ② "각속도 9.98 은 접근 구간 오염일 것"(게이트해도 10.43) ③ "선속도
+  하나에 이미 막힌다"(게이트하면 0.80, 안 막힘). 특히 ③ 은 **내가 스스로 오염됐다고
+  지적한 값으로 결론을 낸 것**이었고 사용자가 지적해 바로잡았다.
+- 거리 기준점 0 → 6mm 는 보류. `exp(-d/σ)` 가 d=0 에서 최대라 "이상적 거리 0"을 요구하는데
+  스틱 반두께 3.5 + 큐브 반폭 2.5 = **6.0mm 가 물리적 하한**이라 완벽한 파지도 천장이 0.55 다.
+  다만 효과가 일률적으로 1.822배뿐이라 각속도를 안 고치면 무의미했다. 기준값은 실측 8.07 이
+  아니라 **기하 이상값 6.0** 을 써야 한다 — 8.07 로 맞추면 현재 자세를 정답으로 고정해
+  gradient 가 0 이 되고, 6.0 이면 남는 23% 여지가 roll 정렬 압력으로 작용한다.
+
+## 2026-08-08 — 외란이 파지를 강화한다는 것을 실증
+
+- **결론부터: 사수님 제안(외란 학습)이 맞았고 내 반대가 틀렸다.** 보상 설정이 완전히
+  동일하고 외란만 다른 세 런에서 `full_contact` 0.335 → 0.996 / 0.948,
+  `min_functional_force` 0.107 → 0.264 → 0.449 N. **외란 세기에 대한 용량-반응**이
+  나와서 인과로 볼 근거가 생겼다. `stick1_pivot_error` 도 10.35 → 6.86 → 3.83 mm 로 단조.
+- iteration 교란도 배제된다. 외란 없이 it 4983 까지 돌린 런이 `full_contact` 0.583 이
+  천장인데, 외란 쪽은 더 적은 iteration 에서 0.95 를 넘는다.
+- **메커니즘**: `functional_contact_min` 이 min 게이트라 접촉 하나만 끊겨도 20 weight 가
+  통째로 0 이다. 외란이 그 사건을 자주 만드니 **여유를 크게 두는 게 이득**이 된다.
+  내가 "min 절벽이 복원을 막는다" 고 걱정한 구조가, 외란과 결합하면 강한 **예방 압력**
+  으로 작동한다. `force_scale` 이 0.10 이라 보상은 0.10N 넘으면 더 쥐라고 안 하는데,
+  실측 0.449N 은 **보상이 아니라 위험 회피가 만든 여유**다.
+- 08-06 "성공-커리큘럼" 체크포인트(it 4983)와 현재(it 6803) 비교: `mean_reward` 1.86배,
+  `full_contact` 0.583→0.936, `stick1_pivot_error` 10.15→4.38mm, `open_tip_gap` 7배.
+  다만 **Stick2 는 나빠졌다**(위치 2.20→3.96mm, 자세 3.98→6.92deg) — Stick1 을 잘 붙드는
+  대신 레일을 양보한 거래로 보이고, Stick2 가 압착축 기준이라 hand_object 에서 봐야 한다.
+- **`hand_object` 는 붕괴해서 중단.** 구 보상 체크포인트를 새 보상에 넣은 것이 원인으로
+  보인다. it 2231 에 `cube_hold` 3.43(각속도 제거의 성과, 이전 0.084)까지 갔다가 무너져
+  it 4113~4116 이 평평해졌다. 죽은 건 **손끝 셋**(index/middle/ring)이고 손바닥·엄지는
+  오히려 세졌다 — 엄지 joint2 가 다른 손가락의 토크 2.34배·강성 3.9배라 "Stick2 를
+  손바닥에 대고 엄지로 누르기" 가 제일 싼 자세다. 보상이 안 나올 때 물러설 곳이 거기다.
+- **내가 이 세션에서 틀린 것 넷** (전부 정정):
+  ① `Episode_Reward` 를 합계로 읽어 예산을 15배 부풀림 (실제는 `sum / episode_length_s`).
+     이 때문에 "파지가 4% 만 번다"(실제 60%), "파지 버리는 게 +87.5 이득"(실제 −5.7 손해)
+     두 결론이 뒤집혔다.
+  ② `full_contact` 저점 하나(it 454)를 보고 "단조 발산" 이라 오진. 실제로는 0.03~0.98 로
+     진동하며, 능력도 복원력도 있고 **유지를 못 하는 것**이 문제였다.
+  ③ hand_object 와 hand_move 가 같은 체크포인트 계보라고 잘못 알았다. 공통점은 보상 설정.
+  ④ "이미 깨진 상태를 충분히 겪으니 외란 불필요" — 실증으로 반박됨.
+- **미적용**: 외란 적용점을 팁으로(`positions=(0,0.09,0)`, 무게중심이라 지금은 효과가
+  약하고 "테이블 충돌" 시나리오와도 안 맞음), 외란 힘 1.0~3.0 상향,
+  `force_scale` 0.10→0.8(0.45 이하는 실측 0.449N 때문에 전부 no-op, 그리고 OPEN 과 충돌 +
+  시뮬 말단 토크가 실기의 1.3~3.4배라 전이 위험).
+- 상세 `ACTIVITY_2026-08-08.md`. 08-07 일지에 §7(lateral 독립항·clamp), §8(Episode_Reward
+  정정) 추가. 도구 함정은 root `CLAUDE.md`.
+
+## 2026-08-14 — hand_real/hand_final MuJoCo deploy 1단계
+
+- root `mujoco_deploy/`에 fixed-base Wuji-only policy plumbing 환경을 추가함. 현재 source의
+  101D actor slice, post-wrapper action clip, `q+0.1a`, joint clamp/Joint4 target floor,
+  30 Hz/120 Hz timing을 설치 package 구현까지 추적해 고정함.
+- 기존 `right.xml` position actuator를 원본 수정 없이 사용하며 모든 qpos/dof/actuator를
+  20개 physical joint name으로 검증함. frozen Stick reference이므로 task behavior가 아니라
+  observation/ONNX/action/position-target interface만 검증함.
+- `wuji_mujoco`에서 model/mapping/20관절 command/ONNX/OPEN·CLOSE closed loop 및 viewer PASS.
+  실행·한계·source 근거는 `mujoco_deploy/README.md`와 `ISAAC_POLICY_CONTRACT.md` 참고.
+
+## 2026-08-17 — hand_real disturbance A/B + MuJoCo/ArUco 인계
+
+- active `hand_real`은 105D quaternion-history observation, Joint1/2 `0.10`, Joint3 `0.20`,
+  Joint4 `0.15` current-joint residual action이다. official URDF effort limit과 task-local
+  20-joint Kp/Kd를 사용하고 Stick1 5 mm axial offset은 `0.0`으로 원복돼 있다.
+- 약한 외란 source `2026-08-16_21-14-45/model_3800.pt`에서 optimizer까지 이어받은
+  true-resume 두 개를 비교 중이다.
+  - `0.3~1.2 N`: `2026-08-17_02-50-15`; recovery 0까지 붕괴했다가 latest 9009에서
+    contact/final `5.75/5.63`, recovery `91.4%`로 복구. OPEN/CLOSE `11.95/9.45 mm`라
+    기하는 아직 source 수준이 아니다.
+  - `0.1~0.6 N`: `2026-08-17_11-04-35`; latest 6010에서 contact/final `5.90/5.28`,
+    recovery `99.0%`, CLOSE/lateral `2.69/3.07 mm`. OPEN `15.50 mm`라 CLOSE 편향이다.
+- MuJoCo는 official fixed-base Wuji right hand, strict name mapping, common 105D adapter,
+  Isaac-equivalent action decode, 30/120 Hz scheduler, dynamic sticks와 D435/ArUco provider까지
+  구성했다. Real backend는 SDK/encoder/controller contract 확인 전 안전 차단 상태다.
+- ArUco Stick1은 `+Y=tail->tip`, `+Z=ID0 outward`로 정의하고 ID1 offset을
+  `inv(T_M0_M1)@T_M0_S`로 자동 계산한다. 두 marker pose agreement median은
+  `4.84 mm/1.89 deg`이나 position p90 `21.78 mm` long-tail이 남는다.
+- Claude가 이어받을 최신 수치·파일·CLI·우선순위는 root
+  `CLAUDE_HANDOFF_2026-08-17.md`, 상세 실험 기록은 root `ACTIVITY_2026-08-17.md` 참고.
+
+## 2026-08-18 ~ 08-19 — 실물 한계 채택, Finger Reach, 실제 Wuji 배포
+
+- **실물 SDK로 읽은 관절 한계가 벤더 description보다 20/20 전부 넓다.** 정규화는
+  `2(q−center)/(upper−lower)` 아핀이라 포함관계로 넘어갈 수 없고, 좁은 표를 쓰면 실물이
+  한계 근처일 때 `|q_norm| > 1`이 나온다(최악 `finger3_joint2` 전범위의 8%). USD 오버라이드와
+  `mujoco_deploy/policy_contract.py`를 실물값으로 통일하고 MuJoCo 관절 ROM도 확장했다.
+  2026-08-17에 낮췄던 pregrasp `finger3/5_joint3`(1.5512/1.5490)는 1.6272로 복원했다.
+- **`hand_real` sim-to-sim은 계약은 맞고 물리가 갈린다.** 리셋 관측은 Isaac과 비트 단위로
+  일치하는데 정책을 돌리면 젓가락을 놓친다. dt 수렴 검사와 접촉/마찰 실험을 거쳐 원인은
+  **두 시뮬레이터가 서로 다른 손 모델을 쓴다**로 좁혀졌다 — 공식 description에 충돌 메시가
+  없어 MuJoCo가 visual convex hull을 쓰고, 손바닥 hull이 오목부를 메워 리셋에서
+  `palm↔stick2 −3.94 mm` 관통이 생긴다. 중력을 꺼도 스틱이 1.5 m 밖으로 사출된다.
+- **Isaac 액추에이터에 armature가 없다**(`armature: None`). 벤더 MJCF는 0.0002/0.0005이고
+  이는 joint4 유효관성의 98.8%다. PhysX 암묵적 적분기가 그 결과 고주파를 눌러 "잘 도는 것처럼"
+  보였다. MuJoCo 기본 게인은 벤더 MJCF 동정값으로 정했고 Isaac 쪽은 재학습이 걸려 건드리지 않았다.
+- **Finger Reach를 중지 4관절 전용으로 정비**했다(15D 관측 / 4D 액션). 액션이 20D였고,
+  관측이 world-frame 오차였고, 스틱 두 개가 같은 위치에 파킹돼 상호관통했고, 커맨드가
+  에피소드 중간에 리샘플됐다. 타깃 박스는 기존 범위가 33.8%만 도달 가능해 실물 한계 기준
+  도달집합을 계산해 92.8% 박스로 교체했다.
+- **실제 Wuji Hand에 정책을 올렸다.** `wujihandpy` 기반 `real_wuji.py` /
+  `real_wuji_scheduler.py` / `run_finger_reach_real.py` 신설. 90 Hz 명령 + 30 Hz 정책,
+  teleport 없는 시작 자세 이동, 선형 복귀, 단계별 진단 모드. 공유 계약
+  (`finger_reach.py`, `policy_contract.py`, `onnx_policy.py`)은 두 백엔드가 그대로 쓴다.
+  MuJoCo 경로는 매 변경마다 CSV 최대차 `0.000e+00`으로 회귀 없음을 확인했다.
+- **관절 매핑 확정**: `--test-middle-joint 1~4` 네 개 다 MATCHES, 크로스토크 0.008 rad 이하.
+  타이밍은 8201틱 중 늦은 틱 1개, 40초 주행 누적 드리프트 +0.0001 s.
+- **첫 sim-to-real 비교**: 관절은 4~8도 벌어지는데(J1 7.73°, J2 0.56°) 손끝은 실물 4.64 mm vs
+  MuJoCo 8.68 mm로 **실물이 더 정확하다.** 중지가 4 DOF로 3D 목표를 쫓아 여유자유도가 1개이고
+  두 플랜트가 다른 널 스페이스 가지에 앉은 것이다. 타깃당 5초→10초로 늘려도 차이가 그대로라
+  LowPass 지연이 아니라 정상상태 차이다. 단 손끝 값은 URDF FK 출력이지 측정이 아니다.
+- 상세는 root `ACTIVITY_2026-08-18.md`, `ACTIVITY_2026-08-19.md`. CLI는
+  `mujoco_deploy/CLI.md`. 실물 SDK 함정은 root `CLAUDE.md`의 "실물 Wuji Hand (wujihandpy)" 절.
+
+### 2026-08-19 (오후) — 시작 자세 선형 이동, 명령 여백 0.95
+
+- **시작 자세 이동도 선형으로**. 복귀만 선형이고 나가는 이동은 고정 타깃+필터(지수형)라
+  손가락이 굽은 채(1.68 rad) 시작하면 초기 속도가 21 rad/s였다. `glide_to_pose`로 바꿔
+  0.56 rad/s. 실측 등속(0.19 rad/0.33s) 확인. `--start-seconds` 기본 3.0초.
+- **궤적 끝점 clamp**. 기계적 스톱에 눌린 관절은 소프트 한계를 넘겨서 읽힌다
+  (1.6804522 vs 상한 1.680047, 0.023°). 보간을 측정값에서 시작해 첫 목표가 범위 밖이 되어
+  주행이 죽고 20초 데이터가 날아갔다. 끝점 clamp + 복귀 try/except로 로그 보존.
+- **run 5 (20초/4타깃) 판독**: 타이밍·추종은 문제 없음 — 지각 0/2438, 정책 스텝 내
+  목표 계단 따라잡기 30~32% vs LowPass 2Hz 이론 34.2%로 일치. **문제는 `finger3_joint3`가
+  상한에 36.5% 눌러앉아 있고 그 동안 정책이 a3 +0.45로 계속 밀고 있다는 것.** 정착 오차
+  4.81 mm인데 J3가 눌린 목표(6.45/5.73)가 안 눌린 목표(3.89/3.15)보다 나쁘다.
+- **명령 여백 0.95 도입**. 19만점 격자 IK로 REACH 박스 전체가 1.00/0.95/0.90 모두 100%
+  5mm 이내임을 먼저 확인 — **여백이 도달 범위를 깎지 않는다**(여유자유도 1개가 흡수).
+  MuJoCo 실측: J3 압착 80.4%→0.0%, 지문 오차 8.80→8.17 mm로 **오히려 개선**.
+  정의는 중심±0.95×반범위(Isaac `soft_joint_pos_limit_factor` 규약).
+  `COMMAND_TARGET_LIMITS`는 미변경 — 여백은 별도 테이블로 얹어 sim-real 불일치를
+  드러나게 뒀다. 실물 기본 0.95 / MuJoCo 기본 1.0, `--parallel-mujoco`가 자동 전달.
+  MuJoCo 기본 경로는 변경 전과 CSV 완전 동일.
+- 주의: **`hand_real`에 0.95를 그대로 옮기면 pregrasp가 범위 밖**이다(idx 10/18이
+  1.6272 vs 상한 1.6244/1.6197). finger_reach에서 공짜였던 것이 파지에선 아니다.
+- 상세는 root `ACTIVITY_2026-08-19.md` 7~10절.

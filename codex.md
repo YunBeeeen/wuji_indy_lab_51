@@ -3,6 +3,9 @@
 - 이 문서는 Codex가 반복하지 말아야 할 실수와 병목을 따로 남기는 운영 메모임.
 - 사용자 연구 기록(`WORKLOG.md`, `ACTIVITY_*.md`, `study.md`, `thesis.md`)에는 Codex의 시행착오를 섞지 않음.
 - 연구/실험 사실을 남겨야 할 때만 별도 요청을 받고 사용자 기록에 정리함.
+- 2026-07-31 이후 사용자가 별도로 실행을 요청하지 않는 한 Isaac Sim smoke/train/play/physics
+  probe는 Codex가 실행하지 않음. 수정 검증은 `py_compile`, 정적 코드·설정 대조,
+  `git diff --check`까지만 하고 실제 실행 로그는 사용자에게 받아 판독함.
 
 ## 2026-07-15 Codex 실수와 병목
 
@@ -121,3 +124,46 @@
 - Git 업로드 전 docstring 누락을 찾는 임시 `python -c`에서 f-string 바깥/안쪽에 같은 double quote를
   사용해 8개 병렬 진단이 모두 `SyntaxError`로 끝남. 파일 변경은 없었고, 다음 호출은 문자열 결합과
   서로 다른 quote 층을 사용해 정상 실행함. 짧은 진단도 shell/Python 두 단계 quoting을 먼저 단순화할 것.
+
+## 2026-07-30 hand_setting 순환 contact gate
+
+- Stick2를 먼저 valley에 넣는 순서를 만들면서 palm/Stick2와 thumb-mid/Stick2가 각각
+  `0.02 N`이 되어야 나머지 손가락 reward가 켜지도록 구현함. 그러나 이 힘은 나머지
+  손가락의 대향 지지가 형성된 뒤 생기는 결과라, 힘을 만드는 action을 힘 자체로 gate하는
+  순환 조건이 되었음.
+- 실제 run `21-50-01`에서 gate와 Stick2 pose-valid가 전 구간 0이고 palm contact 하나만
+  남은 뒤에야 오류를 확인함. reward dependency를 구현하기 전에 “이 gate 조건을 만드는
+  action/reward가 gate 밖에 남아 있는가”를 표로 확인해야 함.
+- broad full-pose tolerance와 body-pair contact가 실제 valley 내부를 보장한다고 과하게
+  설명한 것도 잘못임. 이후 gate는 contact를 요구하지 않는 handle-side centerline point와
+  directed shaft-axis corridor로 바꾸고, `0.02 N`은 final contact network 결과 판정에만 사용함.
+
+## 2026-07-31 Isaac probe의 mutable tensor와 종료 예외 은폐
+
+- 첫 `hand_setting_thumb_action_probe.py`는 module-level `SceneEntityCfg`를
+  직접 사용해 `body_ids=slice(None)` 상태에서 실패했지만, `finally`의
+  `SimulationApp.close()`가 pending traceback보다 먼저 Kit를 종료해 빈 결과 폴더와
+  exit code 0처럼 보였음.
+- probe는 예외를 앱 종료 전에 `error.txt`와 stderr에 기록하고, manager가 resolve한
+  reward-term params를 사용하도록 수정함.
+- Isaac data view를 record list에 그대로 저장하면 모든 시점이 마지막 buffer 값으로
+  보이는 문제도 있었음. time-series probe는 기록 순간 `detach().clone()`으로 snapshot을
+  만들어야 함.
+## 2026-07-31 — IsaacLab pure-import probe limitation
+
+- `hand_grasp.mdp`의 작은 tensor 수치 검증을 일반 conda Python에서 직접
+  import하려 했지만 IsaacLab package import가 `pxr`를 요구해
+  `ModuleNotFoundError`가 발생함.
+- 이 경로는 SimulationApp/AppLauncher 밖의 잘못된 검증 방식임. manager
+  term 변경 검증은 실제 `train.py --task hand_setting` 1-env smoke로 수행함.
+
+## 2026-07-31 — 제안한 q-reference weight를 코드에 미반영한 채 run 시작
+
+- hand_setting joint-reference weight `8→2` 감쇠를 제안하고 수치까지
+  설명했지만 실제 소스는 기존 weight `2`인 상태로 남겨 사용자가 fresh run
+  `15-56-14`를 시작하게 됨.
+- 저장된 `params/env.yaml`과 TensorBoard를 확인하자 `15-56-14`의 0~200
+  iter 주요 scalar가 `15-03-31`과 소수점까지 동일했음. 같은 seed와 같은
+  objective라 재현된 것이며 유효한 A/B가 아님.
+- 이후에는 사용자가 변경에 동의해 실행 단계로 넘어가는 문맥이면 설명 직후
+  실제 source/config diff와 새 run의 `params/env.yaml` 값을 반드시 대조함.

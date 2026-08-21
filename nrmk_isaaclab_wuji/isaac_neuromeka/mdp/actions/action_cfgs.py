@@ -94,6 +94,11 @@ class CustomResidualJointActionCfg(JointActionCfg):
     # 예제엔 없는 추가 옵션. 관절 스토퍼를 계속 미는 토크를 없앰. 예제 그대로 가려면 False.
     clamp_to_limits: bool = True
 
+    # Optional task-local target floors. Policy outputs remain signed so a
+    # flexed joint can still extend, but its PD target cannot cross the floor.
+    # Unlisted joints retain their articulation limits.
+    joint_position_lower_overrides: dict[str, float] | None = None
+
 
 @configclass
 class ReferenceResidualJointActionCfg(CustomResidualJointActionCfg):

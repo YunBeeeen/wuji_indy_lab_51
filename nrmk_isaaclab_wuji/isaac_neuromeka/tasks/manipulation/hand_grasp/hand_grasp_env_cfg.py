@@ -75,40 +75,79 @@ STICK_2 = SceneEntityCfg("stick2")
 # targets are preserved below so the previous preload-injecting baseline remains
 # reproducible, but the active residual experiment resets target=measured state
 # and requires the policy to create any necessary contact preload.
+#PREGRASP_JOINT_POSITIONS = (
+#    0.5377866626,
+#    0.8436813951,
+#    0.0377136655,
+#    -0.0000001810,
+#    0.7017297745,
+#    0.0553143807,
+#    1.1822255850,
+#    1.4215219021,
+#    0.4649881423,
+#    -0.0292181600,
+    # 2026-08-18: restored to the recorded pose_005 value.  The 2026-08-17
+    # clamp to the vendor description (1.5512) was based on a table that is
+    # NARROWER than this physical hand on all 20 joints; the connected hand
+    # reports finger3_joint3 upper = 1.680047 rad (SDK v1.7.0, firmware 1.2.1),
+    # so 1.6272 has 0.053 rad of headroom and never needed clamping.
+    #
+    # CAVEAT: 1.6272 rad is exactly 93.2317 deg, the old local-URDF placeholder
+    # upper.  This joint was therefore SATURATED when pose_005 was recorded, so
+    # the number means "pushed to the (fake) limit", not "the grasp needs this
+    # angle".  The real hand can flex 3 deg further.  Re-record the pregrasp
+    # against the real limits before treating this pose as final.
+ #   1.6272000000,  # finger3_joint3: pose_005 original (1.5512 on 2026-08-17).
+#    1.1032750607,
+#    0.9151425958,
+#    -0.0129909236,
+#    1.3248542547,
+#    0.3182539344,
+#    0.7154092789,
+#    0.0788998753,
+#    1.6272000000,  # finger5_joint3: pose_005 original (real upper 1.675141).
+#    0.2546040118,
+#)
+
 PREGRASP_JOINT_POSITIONS = (
-    0.5377866626,
-    0.8436813951,
-    0.0377136655,
-    -0.0000001810,
-    0.7017297745,
-    0.0553143807,
-    1.1822255850,
-    1.4215219021,
-    0.4649881423,
-    -0.0292181600,
-    1.6298730373,
-    1.1032750607,
-    0.9151425958,
-    -0.0129909236,
-    1.3248542547,
-    0.3182539344,
-    0.7154092789,
-    0.0788998753,
-    1.6281884909,
-    0.2546040118,
+      0.5345742259,
+      0.8214717428,
+      0.0257641812,
+      0.0236253070,
+      0.7266738102,
+      0.1332869837,
+      1.1353251203,
+      1.3972301575,
+      0.4016543424,
+      0.0103005540,
+      1.5925557413,
+      1.1031022734,
+      0.8597054933,
+      0.0217672060,
+      1.3284198815,
+      0.3220070672,
+      0.7154092789,
+      0.0788998753,
+      1.6272000000,
+      0.2546040118,
 )
+
+# Used only by scripts/debug/hand_grasp_{ik_replay,keyboard}.py; every env-side
+# reference is commented out.  Restored to the recorded values on 2026-08-18:
+# the connected hand's factory limits admit all four entries that the
+# 2026-08-17 vendor-description clamp had lowered.
 PREGRASP_JOINT_TARGETS = (
     0.5835183859,
-    0.9338999987,
+    0.9338999987,  # finger1_joint2: recorded value (real upper 0.992369).
     0.0,
     0.0,
     0.6981317997,
     0.0237611812,
     1.2566378117,
-    1.6271998882,
+    1.6271998882,  # finger2_joint4: recorded value (real upper 1.683018).
     0.4886921048,
     0.0,
-    1.6271998882,
+    1.6271998882,  # finger3_joint3: recorded value (real upper 1.680047).
     0.8592541218,
     0.9203640223,
     -0.0349065810,
@@ -116,10 +155,15 @@ PREGRASP_JOINT_TARGETS = (
     0.6587172747,
     0.7155851722,
     0.1047197506,
-    1.6271998882,
+    1.6271998882,  # finger5_joint3: recorded value (real upper 1.675141).
     -0.1006772667,
 )
-PREGRASP_STICK1_POSITION_P = (
+# Baseline measured pose_005 values stay untouched.  The active A/B below
+# shifts Stick1 along its own distal (+y) axis; set this single value back to
+# 0.0 to restore the original reset/reference/pivot/axial geometry together.
+STICK1_REFERENCE_AXIAL_SHIFT_M = 0.0
+
+_BASE_PREGRASP_STICK1_POSITION_P = (
     0.0250743479,
     0.0242451150,
     0.0969612077,
@@ -142,12 +186,55 @@ PREGRASP_STICK2_QUATERNION_P = (
     -0.5934122205,
 )
 
+
+def _local_y_axis_in_parent(
+    quaternion_wxyz: tuple[float, float, float, float],
+) -> tuple[float, float, float]:
+    """Return an object's local +y unit axis expressed in its parent frame."""
+    w, x, y, z = quaternion_wxyz
+    inv_norm = 1.0 / (w * w + x * x + y * y + z * z) ** 0.5
+    w, x, y, z = (
+        w * inv_norm,
+        x * inv_norm,
+        y * inv_norm,
+        z * inv_norm,
+    )
+    return (
+        2.0 * (x * y - z * w),
+        1.0 - 2.0 * (x * x + z * z),
+        2.0 * (y * z + x * w),
+    )
+
+
+_STICK1_DISTAL_AXIS_P = _local_y_axis_in_parent(
+    PREGRASP_STICK1_QUATERNION_P
+)
+_STICK2_DISTAL_AXIS_P = _local_y_axis_in_parent(
+    PREGRASP_STICK2_QUATERNION_P
+)
+PREGRASP_STICK1_POSITION_P = tuple(
+    position + STICK1_REFERENCE_AXIAL_SHIFT_M * axis
+    for position, axis in zip(
+        _BASE_PREGRASP_STICK1_POSITION_P,
+        _STICK1_DISTAL_AXIS_P,
+        strict=True,
+    )
+)
+
 # Both saved sticks use local +y as the distal chopstick tip.  The reference
 # Under the transverse square-section gap metric, the validated grasp starts
 # near 13.3 mm.  Start continuous recovery learning with the already proven
 # 20 mm OPEN target before expanding the motion range.
 STICK_TIP_OFFSET_O = (0.0, 0.5 * STICK_SIZE[1], 0.0)
-STICK1_PIVOT_OFFSET_O = (0.0, -0.06, 0.0)
+_BASE_STICK1_PIVOT_STATION_M = -0.06
+# Moving the centre +5 mm toward the tip and the local pivot -5 mm toward the
+# tail preserves the same palm-frame support point while giving the tip a
+# 5 mm longer lever arm about that point.
+STICK1_PIVOT_OFFSET_O = (
+    0.0,
+    _BASE_STICK1_PIVOT_STATION_M - STICK1_REFERENCE_AXIAL_SHIFT_M,
+    0.0,
+)
 OPEN_TIP_GAP = 0.020
 CLOSE_TIP_GAP = 0.0
 # pose_005 distal-tip separation, projected into the Stick2-local x-z plane.
@@ -161,9 +248,21 @@ TIP_SEPARATION_DIRECTION_STICK2 = (
 )
 TIP_LATERAL_SIGMA = 0.005
 TIP_LATERAL_ERROR_LIMIT = 0.005
-# pose_005 distal-tip offset projected onto Stick2 local +y.  The validated
-# grasp is intentionally not forced to zero axial offset.
-TIP_AXIAL_OFFSET_STICK2 = -0.0048015763
+# Baseline pose_005 distal-tip offset projected onto Stick2 local +y.  Keep the
+# target consistent with the active Stick1 local-y shift so the axial reward
+# does not pull the new reference back toward the old geometry.
+_BASE_TIP_AXIAL_OFFSET_STICK2 = -0.0048015763
+TIP_AXIAL_OFFSET_STICK2 = _BASE_TIP_AXIAL_OFFSET_STICK2 + (
+    STICK1_REFERENCE_AXIAL_SHIFT_M
+    * sum(
+        axis1 * axis2
+        for axis1, axis2 in zip(
+            _STICK1_DISTAL_AXIS_P,
+            _STICK2_DISTAL_AXIS_P,
+            strict=True,
+        )
+    )
+)
 TIP_AXIAL_SIGMA = 0.005
 
 CONTACT_SENSOR_NAMES = {
@@ -556,7 +655,7 @@ class HandGraspRewardsCfg:
             "close_target_gap": CLOSE_TIP_GAP,
             "reference_separation_direction_stick2": TIP_SEPARATION_DIRECTION_STICK2,
             "reference_axial_offset_stick2": TIP_AXIAL_OFFSET_STICK2,
-            "gap_sigma": 0.005,
+            "gap_sigma": 0.001,
             "lateral_sigma": TIP_LATERAL_SIGMA,
             "axial_sigma": TIP_AXIAL_SIGMA,
             "force_scale": 0.10,

@@ -27,7 +27,7 @@ from isaac_neuromeka.utils.etc import EmptyCfg
 
 BASE_Z = 0.25
 STICK_POS = (0.62, -0.20)
-STICK_SIZE = (0.014, 0.18, 0.014)  # square-section proxy; +y=tip, -y=tail
+STICK_SIZE = (0.014, 0.18, 0.007)  # 14(폭 x) × 180(길이 y) × 7(두께 z) mm — 젓가락 다발 실단면. +y=tip, -y=tail
 # 2026-07-30: 1cm 단일 프록시가 인위적으로 어려워 whack-a-mole → 실제 타깃(7mm 젓가락 2개 다발 ≈ 1.4cm)로 전환.
 #   1.4cm은 2cm에 가까워 되던 config가 대체로 전이됨 → 2cm 성공값으로 리사이즈: mass 0.02·offset None·
 #   depenet 5.0·solver_vel 1. STICK_HALF_EXTENT(chopstick_mdp_cfg.py)도 (0.007,0.09,0.007) 동반.
@@ -107,18 +107,24 @@ class ChopsticksGraspEnvCfg(NrmkRLEnvCfg):
     teacher_obs_list: list | None = None
 
     def __post_init__(self):
-        self.sim.dt = 1.0 / 60.0
-        self.decimation = 2
+        self.sim.dt = 1.0 / 120.0
+        self.decimation = 4
         self.episode_length_s = 8.0
         self.sim.physx.gpu_max_rigid_patch_count = 2**20
 
         self.rewards.cube_lift.params["surface_z"] = BASE_Z
         self.rewards.hand_floor.params["surface_z"] = BASE_Z
+        self.rewards.in_palm_success.params["surface_z"] = BASE_Z
+        # 2026-08-01: palm-in 항을 "공중에 뜬 뒤에만" 켜는 lift 게이트도 같은 surface_z 필요.
+        self.rewards.stick_in_palm.params["surface_z"] = BASE_Z
+        self.rewards.palm_up.params["surface_z"] = BASE_Z
         self.terminations.stick_dropped.params["minimum_height"] = BASE_Z - 0.05
 
         # 운반 이식(2026-07-22): world goal = 스폰 위 +20cm, 자세 yaw 45° 고정.
         # pos_x/pos_y는 cfg에서 STICK_POS(0.62, -0.20)로 이미 고정, z만 여기서 오버라이드.
         # 이후 ranges를 넓히면 랜덤 목표(위치/자세)가 됨.
-        self.commands.cube_goal.ranges.pos_z = (BASE_Z + 0.20, BASE_Z + 0.20)
+        # 2026-08-02: +20cm → +15cm(적당한 높이, 사수님). 저공 그릇 자세는 깨되 팜업 도달은 편하게.
+        #   in_palm_success가 이 목표점 반경 6cm 안을 요구 → 성공 높이 = 이 값이 결정.
+        self.commands.cube_goal.ranges.pos_z = (BASE_Z + 0.15, BASE_Z + 0.15)
 
         self.viewer.eye = (2.5, 2.5, 2.0)
