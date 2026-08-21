@@ -1,0 +1,16 @@
+<mujocoinclude>
+  <!-- APPROXIMATE/TEMPORARY support geometry; calibrated frames win. -->
+  <geom name="base_plate_collision" type="box" pos="-0.152500000 0.000000000 -0.006000000" size="0.312500000 0.315000000 0.006000000" rgba="0.56 0.59 0.62 1" contype="1" conaffinity="1" friction="0.8 0.02 0.001"/>
+  <geom name="hand_2020_profile_visual" type="box" pos="0.000000000 0.000000000 0.150000000" size="0.010000000 0.010000000 0.150000000" rgba="0.62 0.64 0.67 1" contype="0" conaffinity="0" mass="0" group="3"/>
+  <geom name="camera_4040_profile_visual" type="box" pos="-0.485000000 -0.025000000 0.248000000" size="0.020000000 0.020000000 0.260000000" rgba="0.52 0.54 0.57 1" contype="0" conaffinity="0" mass="0" group="3"/>
+  <geom name="camera_bracket_visual" type="capsule" fromto="-0.485000000 -0.025000000 0.423442000 -0.421189000 0.009551000 0.423442000" size="0.007500000" rgba="0.18 0.18 0.20 1" contype="0" conaffinity="0" mass="0" group="3"/>
+  <geom name="base_axis_x" type="capsule" fromto="0.000000000 0.000000000 0.000000000 0.000000000 0.000000000 0.050000000" size="0.002" rgba="1.000000000 0.000000000 0.000000000 1.000000000" contype="0" conaffinity="0" mass="0" group="4"/>
+  <geom name="base_axis_y" type="capsule" fromto="0.000000000 0.000000000 0.000000000 0.000000000 0.050000000 0.000000000" size="0.002" rgba="0.000000000 1.000000000 0.000000000 1.000000000" contype="0" conaffinity="0" mass="0" group="4"/>
+  <geom name="base_axis_z" type="capsule" fromto="0.000000000 0.000000000 0.000000000 -0.050000000 0.000000000 0.000000000" size="0.002" rgba="0.000000000 0.350000000 1.000000000 1.000000000" contype="0" conaffinity="0" mass="0" group="4"/>
+  <geom name="palm_axis_x" type="capsule" fromto="0.000000000 0.000000000 0.150000000 0.000000000 0.000000000 0.200000000" size="0.002" rgba="1.000000000 0.000000000 0.000000000 1.000000000" contype="0" conaffinity="0" mass="0" group="4"/>
+  <geom name="palm_axis_y" type="capsule" fromto="0.000000000 0.000000000 0.150000000 0.000000000 0.050000000 0.150000000" size="0.002" rgba="0.000000000 1.000000000 0.000000000 1.000000000" contype="0" conaffinity="0" mass="0" group="4"/>
+  <geom name="palm_axis_z" type="capsule" fromto="0.000000000 0.000000000 0.150000000 -0.050000000 0.000000000 0.150000000" size="0.002" rgba="0.000000000 0.350000000 1.000000000 1.000000000" contype="0" conaffinity="0" mass="0" group="4"/>
+  <geom name="camera_optical_axis_x" type="capsule" fromto="-0.421189000 0.009551000 0.423442000 -0.421636050 -0.040446900 0.423341450" size="0.002" rgba="1.000000000 0.000000000 0.000000000 1.000000000" contype="0" conaffinity="0" mass="0" group="4"/>
+  <geom name="camera_optical_axis_y" type="capsule" fromto="-0.421189000 0.009551000 0.423442000 -0.456600650 0.009938600 0.388145150" size="0.002" rgba="0.000000000 1.000000000 0.000000000 1.000000000" contype="0" conaffinity="0" mass="0" group="4"/>
+  <geom name="camera_optical_axis_z" type="capsule" fromto="-0.421189000 0.009551000 0.423442000 -0.385892850 0.009306650 0.388028400" size="0.002" rgba="0.000000000 0.350000000 1.000000000 1.000000000" contype="0" conaffinity="0" mass="0" group="4"/>
+</mujocoinclude>

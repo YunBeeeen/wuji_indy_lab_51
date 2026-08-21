@@ -1,0 +1,19 @@
+{
+  "source": "rs-enumerate-devices -c",
+  "captured_date": "2026-08-16",
+  "device": "Intel RealSense D435",
+  "serial": "814412070582",
+  "firmware": "5.17.0.10",
+  "stream": "Color",
+  "format": "RGB8/BGR8",
+  "width": 1280,
+  "height": 720,
+  "fps": 15,
+  "fx": 926.550964355469,
+  "fy": 926.377807617188,
+  "cx": 641.92529296875,
+  "cy": 356.255706787109,
+  "distortion_model": "Inverse Brown Conrady",
+  "distortion_coefficients": [0.0, 0.0, 0.0, 0.0, 0.0],
+  "fov_degrees": [69.27, 42.47]
+}

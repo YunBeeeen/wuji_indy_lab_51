@@ -1,0 +1,81 @@
+{
+  "_comment": "Deterministic reach scenario replayed identically by Isaac, MuJoCo and the real hand. Joint values are canonical finger-major order (finger1..5 x joint1..4), which is also the Wuji SDK's order.",
+  "controlled_joints": [
+    "finger3_joint1",
+    "finger3_joint2",
+    "finger3_joint3",
+    "finger3_joint4"
+  ],
+  "policy_hz": 30.0,
+  "target_duration_s": 5.0,
+  "targets_palm_m": [
+    [
+      0.04092404218303636,
+      0.01,
+      0.08622920571808584
+    ],
+    [
+      0.025413190888213227,
+      0.01,
+      0.11238266731833166
+    ],
+    [
+      0.04643510691468924,
+      0.01,
+      0.10688966339289832
+    ],
+    [
+      0.032492797263434625,
+      0.01,
+      0.0858495901343639
+    ]
+  ],
+  "initial_all_joint_q": [
+    0.05000000074505806,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "initial_middle_q": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "other_joint_hold_positions": {
+    "finger1_joint1": 0.05000000074505806,
+    "finger1_joint2": 0.0,
+    "finger1_joint3": 0.0,
+    "finger1_joint4": 0.0,
+    "finger2_joint1": 0.0,
+    "finger2_joint2": 0.0,
+    "finger2_joint3": 0.0,
+    "finger2_joint4": 0.0,
+    "finger4_joint1": 0.0,
+    "finger4_joint2": 0.0,
+    "finger4_joint3": 0.0,
+    "finger4_joint4": 0.0,
+    "finger5_joint1": 0.0,
+    "finger5_joint2": 0.0,
+    "finger5_joint3": 0.0,
+    "finger5_joint4": 0.0
+  },
+  "max_reach_error_mm": 3.0,
+  "seed": 0
+}
