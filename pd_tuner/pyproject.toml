@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "isaaclab-pd-tuner"
+version = "0.1.0"
+description = "Portable external-GUI PD gain tuner for Isaac Lab implicit actuators"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+gui = ["PySide6>=6.5,<7", "pyqtgraph>=0.13.3,<0.14", "numpy>=1.23,<2"]
+
+[project.scripts]
+pd-tuner = "pd_tuner.launcher:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pd_tuner*"]

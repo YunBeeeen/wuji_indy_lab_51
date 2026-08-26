@@ -1,0 +1,22 @@
+{
+  "effort_limit": null,
+  "step_amplitude": null,
+  "direction": "positive",
+  "target_settling_time": null,
+  "hold_duration": null,
+  "settling_tolerance": null,
+  "settling_hold_time": null,
+  "overshoot_enabled": true,
+  "maximum_overshoot": null,
+  "steady_state_error_enabled": true,
+  "maximum_steady_state_error": null,
+  "maximum_velocity": null,
+  "kp_min": null,
+  "kp_max": null,
+  "kd_min": null,
+  "kd_max": null,
+  "repeats": null,
+  "search_budget": null,
+  "preset": "balanced",
+  "custom_weights": {}
+}

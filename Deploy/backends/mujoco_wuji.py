@@ -1,3 +1,4 @@
+# [backend/MuJoCo] 고정 베이스 Wuji Hand MuJoCo 백엔드 — 리셋, 관절 읽기/쓰기, 스틱 고정, 게인 주입.
 """Real-ready fixed-base Wuji Hand 1 MuJoCo backend."""
 
 from __future__ import annotations

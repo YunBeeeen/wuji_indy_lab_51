@@ -1,3 +1,4 @@
+# [backend/MuJoCo] 목표 하나를 정확히 1/30초 유지하는 스케줄러 + glide_to_pose/settle 기동 동작.
 """MuJoCo-only timing and target-hold scheduling.
 
 The sim-to-sim contract is *the hold duration*, not a particular substep count.
@@ -22,6 +23,7 @@ import numpy as np
 import numpy.typing as npt
 
 from ..common.policy_contract import COMMAND_TARGET_LIMITS, POLICY_DT, soft_command_limits
+from ..common.timing import StageTimer
 
 if TYPE_CHECKING:
     from .mujoco_wuji import MujocoWujiHand
@@ -98,6 +100,10 @@ class MujocoScheduler:
         validate_hold_schedule(self.physics_dt, self.substeps)
         self._realtime_anchor: float | None = None
         self._policy_steps_run = 0
+        #: The physics hold is where a MuJoCo tick's time actually goes -- 64
+        #: substeps per policy step.  Without it the tick report shows a large
+        #: unaccounted remainder and points at nothing.
+        self.timing = StageTimer(budget_ms=1000.0 * POLICY_DT, name="mujoco")
 
     def hold_policy_target(self, pin_sticks=None) -> None:
         """Integrate one policy step, optionally paced to the wall clock.
@@ -145,9 +151,12 @@ class MujocoScheduler:
                 time.sleep(wait)
 
     def run_policy_tick(self, runner: "PolicyRunner", pin_sticks=None):
-        decoded = runner.command()
-        self.hold_policy_target(pin_sticks=pin_sticks)
-        observation = runner.observe_after_hold()
+        with self.timing.stage("command"):
+            decoded = runner.command()
+        with self.timing.stage("physics_hold"):
+            self.hold_policy_target(pin_sticks=pin_sticks)
+        with self.timing.stage("observe"):
+            observation = runner.observe_after_hold()
         return decoded, observation
 
     # ------------------------------------------------------------------ #

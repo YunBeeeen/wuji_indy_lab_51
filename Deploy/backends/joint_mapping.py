@@ -1,3 +1,4 @@
+# [backend/MuJoCo] 정책 관절 순서 <-> MuJoCo qpos/actuator 인덱스를 이름으로 엄격 매핑. MuJoCo에만 있는 사정.
 """Strict physical-name mapping between policy and MuJoCo arrays."""
 
 from __future__ import annotations

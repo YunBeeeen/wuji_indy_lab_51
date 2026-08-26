@@ -95,9 +95,11 @@ parser.add_argument(
     action="store_true",
     default=False,
     help=(
-        "2026-08-12_18-32-55 체크포인트를 현재 실물 하드웨어 설정 위에서 play. "
-        "obs 105D->101D(directed axis) 와 action scale 균일 0.1 만 복원하며, "
+        "2026-08-13_14-15-09(최종) hand_final 체크포인트를 현재 실물 하드웨어 "
+        "설정 위에서 play. 구 URDF 정규화의 101D directed-axis 관측, 당시 reset, "
+        "action scale 균일 0.1 을 복원하며, "
         "effort limit / Kp / Kd 는 현재 실물 값을 그대로 유지함. "
+        "101D checkpoint는 자동 판별되므로 보통 생략 가능하며, 이 플래그는 강제 검증용. "
         "play 전용이며 학습 설정 파일은 건드리지 않음."
     ),
 )
@@ -428,6 +430,61 @@ CONTACT_BODIES = {
 HAND_NET_CONTACT_SENSOR = "diag_hand_net_contact"
 
 
+# Frozen from hand_final/2026-08-13_14-15-09(최종)/params/env.yaml.  The
+# current Wuji USD carries the connected hand's official limits, so simply
+# swapping the two stick observations from quaternion to directed-axis makes
+# an actor with the right width but the wrong first 40 values.  Keep these
+# values local to the opt-in play compatibility path; active 105D tasks must
+# continue to normalize with their articulation limits.
+_LEGACY_HAND_FINAL_101_JOINT_LIMITS = (
+    (-0.04480, 1.65080), (-0.16590, 0.93390),
+    (-0.49320, 1.62720), (-0.49320, 1.62720),
+    (-0.32695, 1.63595), (-0.49500, 0.49500),
+    (-0.49320, 1.62720), (-0.49320, 1.62720),
+    (-0.32695, 1.63595), (-0.49500, 0.49500),
+    (-0.49320, 1.62720), (-0.49320, 1.62720),
+    (-0.32695, 1.63595), (-0.49500, 0.49500),
+    (-0.49320, 1.62720), (-0.49320, 1.62720),
+    (-0.32695, 1.63595), (-0.49500, 0.49500),
+    (-0.49320, 1.62720), (-0.49320, 1.62720),
+)
+
+_LEGACY_HAND_FINAL_101_RESET = (
+    0.5377866626, 0.8436813951, 0.0377136655, -0.0000001810,
+    0.7017297745, 0.0553143807, 1.1822255850, 1.4215219021,
+    0.4649881423, -0.0292181600, 1.6298730373, 1.1032750607,
+    0.9151425958, -0.0129909236, 1.3248542547, 0.3182539344,
+    0.7154092789, 0.0788998753, 1.6281884909, 0.2546040118,
+)
+
+
+def _legacy_hand_final_joint_pos_limit_normalized(env, asset_cfg):
+    """Return the old-run normalized joints without changing current physics limits."""
+    asset = env.scene[asset_cfg.name]
+    joint_pos = asset.data.joint_pos[:, asset_cfg.joint_ids]
+    limits = joint_pos.new_tensor(_LEGACY_HAND_FINAL_101_JOINT_LIMITS)
+    lower = limits[:, 0]
+    upper = limits[:, 1]
+    return 2.0 * (joint_pos - lower) / (upper - lower) - 1.0
+
+
+def _checkpoint_actor_input_dim(checkpoint_path: str) -> int | None:
+    """Read the actor input width before constructing the Isaac environment."""
+    loaded = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    actor_state = loaded.get("actor_state_dict") if isinstance(loaded, dict) else None
+    if not isinstance(actor_state, dict):
+        return None
+
+    candidates = [
+        (name, value)
+        for name, value in actor_state.items()
+        if name.endswith("mlp.0.weight") and getattr(value, "ndim", 0) == 2
+    ]
+    if len(candidates) != 1:
+        return None
+    return int(candidates[0][1].shape[1])
+
+
 def _latest_run_name(log_root_path: str) -> str:
     root = Path(log_root_path)
     candidates = [path for path in root.glob("20*") if path.is_dir()]
@@ -448,20 +505,29 @@ def _success_env_ids(env) -> torch.Tensor:
     return (manager._step_reward[:, term_idx] > 0.0).nonzero(as_tuple=False).flatten()
 
 
-# 2026-08-12_18-32-55 체크포인트를 "현재 실물 하드웨어 설정 위에서" 돌리기 위한
-# 최소 복원.  되돌리는 것은 policy contract 뿐이다:
+# 2026-08-13_14-15-09(최종) 체크포인트를 "현재 실물 하드웨어 설정 위에서"
+# 돌리기 위한 play 전용 복원.  되돌리는 것은 policy contract와 reset뿐이다:
+#   - joint normalization (현재 official limit -> 당시 local-URDF limit).
 #   - observation func (105D quaternion -> 101D directed axis).  actor 입력 폭이
 #     달라 이걸 안 되돌리면 checkpoint 로드 자체가 실패한다.
 #   - action scale (per-joint -> 균일 0.1).  scale 은 정책이 학습된 출력 단위라
 #     정책을 고정한 채 바꾸면 그 정책의 액션이 다른 크기로 해석된다.
+#   - reset joint pose (현재 4 mm-clearance pose -> 당시 저장된 pose_005).
 # effort limit, Kp, Kd 는 의도적으로 건드리지 않는다.  이 실험의 질문이 "실물
 # 토크 한계에서 그 정책이 CLOSE->OPEN 을 하는가" 이므로, 하드웨어 값을 옛날
 # 값으로 되돌리면 질문 자체가 사라진다.
 def _apply_legacy_101d_contract(env_cfg) -> None:
-    """Restore only the 2026-08-12 policy contract; keep real-hand actuators."""
+    """Restore the 2026-08-13 actor input/reset; keep real-hand actuators."""
     from isaac_neuromeka.tasks.manipulation.hand_grasp import hand_real_mdp
 
     policy_cfg = env_cfg.observations.policy
+    joint_history = getattr(policy_cfg, "joint_pos_history", None)
+    if joint_history is None:
+        raise ValueError(
+            "--legacy_obs_101d requires the hand_real joint_pos_history term."
+        )
+    joint_history.func = _legacy_hand_final_joint_pos_limit_normalized
+
     for term_name in ("stick1_pose_history", "stick2_pose_history"):
         term = getattr(policy_cfg, term_name, None)
         if term is None:
@@ -475,13 +541,104 @@ def _apply_legacy_101d_contract(env_cfg) -> None:
 
     env_cfg.actions.hand_action.scale = 0.1
 
+    reset_pregrasp = getattr(getattr(env_cfg, "events", None), "reset_pregrasp", None)
+    if reset_pregrasp is None or "joint_positions" not in reset_pregrasp.params:
+        raise ValueError(
+            "--legacy_obs_101d requires a reset_pregrasp event with joint_positions."
+        )
+    reset_pregrasp.params["joint_positions"] = _LEGACY_HAND_FINAL_101_RESET
+
     finger_actuator = env_cfg.scene.robot.actuators["fingers"]
     effort = finger_actuator.effort_limit_sim
     print(
-        "[INFO] --legacy_obs_101d: obs 101D(directed axis) + action scale 0.1 만 복원. "
+        "[INFO] --legacy_obs_101d: old-limit-normalized 101D(directed axis) + "
+        "saved pose_005 reset + action scale 0.1 복원. "
         "effort limit / Kp / Kd 는 현재 실물 값을 유지함 "
         f"(예: finger1_joint4 effort={effort['finger1_joint4']}, "
         f"finger1_joint2 Kp={finger_actuator.stiffness['finger1_joint2']}).",
+        flush=True,
+    )
+
+
+# hand_setting 의 101D 는 hand_final 의 101D 와 폭만 같고 레이아웃이 완전히 다르다.
+#   hand_final   : joint_pos_history 40 + tip 15 + directed-axis pose 24 + action 20 + mode 2
+#   hand_setting : joint_pos 20 + joint_vel 20 + tip 15 + pose 14 + vel 12 + action 20
+# 그래서 폭만 보고 위 hand_final 복원을 적용하면 값 순서가 통째로 어긋난다.
+# 아래는 hand_setting/2026-08-10_18-30-36 의 params/env.yaml 에 기록된 8개 항을
+# 그 순서 그대로 되살린다.  되돌리는 것은 policy contract 뿐이다:
+#   - observation 항 구성/순서 (105D history -> 101D 순시값).
+#   - joint 정규화 (현재 official limit -> 당시 local-URDF limit).  hand_final 과
+#     같은 표를 쓴다 — 두 런 모두 2026-08-18 USD 한계 교체 이전이다.
+#   - action scale (관절별 0.1/0.2/0.15 -> 균일 0.1).  scale 은 정책이 학습된
+#     출력 단위라 정책을 고정한 채 바꾸면 액션이 다른 크기로 해석된다.
+# effort limit / Kp / Kd 는 hand_final 경로와 동일하게 건드리지 않는다.
+def _apply_hand_setting_legacy_101d_contract(env_cfg) -> None:
+    """Restore the 2026-08-10 hand_setting actor input; keep real-hand actuators."""
+    from isaaclab.managers import ObservationGroupCfg as ObsGroup
+    from isaaclab.managers import ObservationTermCfg as ObsTerm
+    from isaaclab.utils import configclass
+
+    from isaac_neuromeka.tasks.manipulation.hand_grasp import mdp as hand_grasp_mdp
+    from isaac_neuromeka.tasks.manipulation.hand_grasp.hand_grasp_env_cfg import (
+        FINGERTIPS,
+        HAND_JOINTS,
+        PALM,
+        STICK_1,
+        STICK_2,
+    )
+
+    @configclass
+    class _LegacyHandSettingPolicyCfg(ObsGroup):
+        """101D group in the exact term order of the archived run."""
+
+        joint_pos = ObsTerm(
+            func=_legacy_hand_final_joint_pos_limit_normalized,
+            params={"asset_cfg": HAND_JOINTS},
+        )
+        joint_vel = ObsTerm(
+            func=mdp.joint_vel,
+            params={"asset_cfg": HAND_JOINTS},
+            scale=0.2,
+        )
+        fingertip_pos = ObsTerm(
+            func=hand_grasp_mdp.fingertip_positions_in_palm,
+            params={"palm_cfg": PALM, "fingertip_cfg": FINGERTIPS},
+        )
+        stick1_pose = ObsTerm(
+            func=hand_grasp_mdp.object_pose_in_palm,
+            params={"palm_cfg": PALM, "object_cfg": STICK_1},
+        )
+        stick2_pose = ObsTerm(
+            func=hand_grasp_mdp.object_pose_in_palm,
+            params={"palm_cfg": PALM, "object_cfg": STICK_2},
+        )
+        stick1_velocity = ObsTerm(
+            func=hand_grasp_mdp.object_velocity_in_palm,
+            params={"palm_cfg": PALM, "object_cfg": STICK_1},
+            scale=0.2,
+        )
+        stick2_velocity = ObsTerm(
+            func=hand_grasp_mdp.object_velocity_in_palm,
+            params={"palm_cfg": PALM, "object_cfg": STICK_2},
+            scale=0.2,
+        )
+        action_history = ObsTerm(func=mdp.action_history)
+
+        def __post_init__(self):
+            self.enable_corruption = False
+            self.concatenate_terms = True
+
+    env_cfg.observations.policy = _LegacyHandSettingPolicyCfg()
+    env_cfg.actions.hand_action.scale = 0.1
+
+    finger_actuator = env_cfg.scene.robot.actuators["fingers"]
+    effort = finger_actuator.effort_limit_sim
+    print(
+        "[INFO] hand_setting 101D play contract: "
+        "joint_pos/joint_vel/tip/pose/vel/action 8항(구 URDF 정규화) + "
+        "action scale 0.1 복원. effort limit / Kp / Kd 는 현재 실물 값을 유지함 "
+        f"(예: finger3_joint3 effort={effort['finger3_joint3']}, "
+        f"Kp={finger_actuator.stiffness['finger3_joint3']}).",
         flush=True,
     )
 
@@ -1361,11 +1518,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         mode_interval = max(float(args_cli.hand_mode_interval_s), 1.0e-3)
         mode_cfg.resampling_time_range = (mode_interval, mode_interval)
 
-    # Must run before gym.make: it changes the actor input width, so the
-    # checkpoint load below would otherwise fail the strict shape check.
-    if args_cli.legacy_obs_101d:
-        _apply_legacy_101d_contract(env_cfg)
-
     # set the environment seed
     # note: certain randomizations occur in the environment initialization so we set the seed here
     env_cfg.seed = agent_cfg.seed
@@ -1463,6 +1615,34 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     else:
         resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
 
+    # The environment must have the checkpoint's input width before gym.make
+    # and before RSL-RL constructs its actor.  Auto-detect the archived 101D
+    # hand_final actor from the checkpoint itself so omitting one CLI flag can
+    # never silently build a 105D actor and fail later in runner.load().
+    checkpoint_obs_dim = _checkpoint_actor_input_dim(resume_path)
+    if checkpoint_obs_dim == 101:
+        # 101D 는 두 계보에 존재하고 레이아웃이 서로 다르다.  폭만 보고 하나를
+        # 적용하면 actor 는 로드되지만 입력 순서가 어긋난 채 조용히 돌아간다.
+        if "hand_setting" in (args_cli.task or ""):
+            print(
+                "[INFO] Checkpoint actor input is 101D; automatically enabling "
+                "the 2026-08-10 hand_setting play contract.",
+                flush=True,
+            )
+            _apply_hand_setting_legacy_101d_contract(env_cfg)
+        else:
+            print(
+                "[INFO] Checkpoint actor input is 101D; automatically enabling "
+                "the 2026-08-13 hand_final play contract.",
+                flush=True,
+            )
+            _apply_legacy_101d_contract(env_cfg)
+    elif args_cli.legacy_obs_101d:
+        raise ValueError(
+            "--legacy_obs_101d was requested, but the selected checkpoint actor "
+            f"input is {checkpoint_obs_dim if checkpoint_obs_dim is not None else 'unknown'}D, not 101D."
+        )
+
     log_dir = os.path.dirname(resume_path)
 
     # set the log directory for the environment (works for all environment types)
@@ -1477,6 +1657,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
+
+    if checkpoint_obs_dim == 101:
+        policy_shape = env.unwrapped.observation_manager.group_obs_dim.get("policy")
+        actual_obs_dim = math.prod(policy_shape) if policy_shape is not None else None
+        if actual_obs_dim != 101:
+            raise RuntimeError(
+                "Legacy 101D checkpoint was detected, but the constructed policy "
+                f"observation is {actual_obs_dim}D instead of 101D."
+            )
+        print("[INFO] Verified constructed policy observation: 101D.", flush=True)
 
     # convert to single-agent instance if required by the RL algorithm
     if isinstance(env.unwrapped, DirectMARLEnv):

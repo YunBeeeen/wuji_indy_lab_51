@@ -2,10 +2,31 @@
 
 from isaaclab.utils import configclass
 from isaaclab_rl.rsl_rl import (
+    RslRlDistillationAlgorithmCfg,
+    RslRlDistillationRunnerCfg,
+    RslRlMLPModelCfg,
     RslRlOnPolicyRunnerCfg,
     RslRlPpoActorCriticCfg,
     RslRlPpoAlgorithmCfg,
 )
+
+from .. import hand_object_distill_mdp
+
+
+@configclass
+class HandTeacherDrivenDistillationAlgorithmCfg(RslRlDistillationAlgorithmCfg):
+    """Behavior cloning with the frozen 103D teacher driving the rollout."""
+
+    class_name: str = (
+        "isaac_neuromeka.learning.teacher_driven_distillation:"
+        "TeacherDrivenDistillation"
+    )
+    teacher_action_scale_rad: float = (
+        hand_object_distill_mdp.TEACHER_ACTION_SCALE_RAD
+    )
+    student_action_scale_rad: tuple[float, ...] = (
+        hand_object_distill_mdp.STUDENT_ACTION_SCALE_RAD
+    )
 
 
 @configclass
@@ -28,6 +49,7 @@ class HandGraspPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         activation="elu",
     )
     algorithm = RslRlPpoAlgorithmCfg(
+        class_name="isaac_neuromeka.learning.diagnostic_ppo:DiagnosticPPO",
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
@@ -89,6 +111,13 @@ class HandRealPPORunnerCfg(HandMovePPORunnerCfg):
 
 
 @configclass
+class HandReal2PPORunnerCfg(HandRealPPORunnerCfg):
+    """Separate logs for the thumb-anchored 15 mm acquisition experiment."""
+
+    experiment_name = "hand_real2"
+
+
+@configclass
 class HandObjectPPORunnerCfg(HandMovePPORunnerCfg):
     """hand_object fine-tuning 전용 로그 네임스페이스(2026-08-06).
 
@@ -110,6 +139,7 @@ class HandObjectPPORunnerCfg(HandMovePPORunnerCfg):
     # 멤버를 deepcopy 하므로(configclass.py:93, _custom_post_init) 아직 공유 상태인 기본
     # 객체를 건드리게 되어 HandGrasp/HandMove/HandSetting 의 LR 까지 같이 바뀐다.
     algorithm = RslRlPpoAlgorithmCfg(
+        class_name="isaac_neuromeka.learning.diagnostic_ppo:DiagnosticPPO",
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,
@@ -132,3 +162,52 @@ class HandFinalPPORunnerCfg(HandObjectPPORunnerCfg):
     """hand_object fine-tuning settings in a separate hand_final namespace."""
 
     experiment_name = "hand_final"
+
+
+@configclass
+class HandObject105DistillationRunnerCfg(RslRlDistillationRunnerCfg):
+    """Isolated model_300(103D) -> deployable hand_real(105D) distillation."""
+
+    num_steps_per_env = 24
+    obs_groups = {"student": ["student"], "teacher": ["teacher"]}
+    max_iterations = 5000
+    save_interval = 50
+    experiment_name = "hand_object_105_distill"
+    run_name = ""
+    resume = False
+    empirical_normalization = False
+    clip_actions = 1.0
+
+    # Student retains a Gaussian distribution so its state_dict is directly
+    # loadable by the ordinary 105D PPO actor.  Distillation trains the mean;
+    # this initial std becomes the conservative exploration start for PPO.
+    student = RslRlMLPModelCfg(
+        hidden_dims=[128, 128],
+        activation="elu",
+        obs_normalization=False,
+        distribution_cfg=RslRlMLPModelCfg.GaussianDistributionCfg(
+            init_std=0.1,
+            std_type="scalar",
+        ),
+    )
+    # Exact architecture/distribution shape of the successful PPO teacher.
+    teacher = RslRlMLPModelCfg(
+        hidden_dims=[128, 128],
+        activation="elu",
+        obs_normalization=False,
+        distribution_cfg=RslRlMLPModelCfg.GaussianDistributionCfg(
+            init_std=0.3,
+            std_type="scalar",
+        ),
+    )
+    algorithm = HandTeacherDrivenDistillationAlgorithmCfg(
+        num_learning_epochs=2,
+        learning_rate=3.0e-4,
+        # Both networks are feed-forward MLPs; no temporal backpropagation is
+        # needed.  One optimizer step per stored policy timestep also avoids a
+        # partial, unapplied gradient at the end of the 24-step rollout.
+        gradient_length=1,
+        max_grad_norm=1.0,
+        loss_type="huber",
+        optimizer="adam",
+    )

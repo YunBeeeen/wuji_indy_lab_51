@@ -1,9 +1,9 @@
 """Indy-Wuji-Box-Transport 전용 MDP 설정 (2026-07-16).
 
 CubeGrasp*Cfg(env_cfg_common.py)의 사본 + 랜덤 직육면체 확장. 큐브 태스크를 동결하기 위해
-기존 클래스를 수정하지 않고 복제함 (사용자 지시). 큐브 쪽과의 차이:
-  - 관측 +16: box_size(3) + box_quat(4) + box_ori_to_target(3)
-    + index/thumb grip-region error(6) -> policy 73
+기존 클래스를 수정하지 않고 복제함 (사용자 지시). 현재 default policy observation은
+world-frame raw box/goal pose를 쓰는 69D임:
+  - joint_pos(26) + box_pose_w(7) + box_size(3) + goal_pose_w(7) + action_history(26)
   - 이벤트 +2: randomize_box_dims(prestartup, env별 비율보존 치수) + set_box_default_height(startup)
   - scene.replicate_physics = False 필요 (box_transport_env_cfg.__post_init__에서 설정)
 
@@ -254,6 +254,8 @@ class BalancedObjectToGoalProgressReward(ManagerTermBase):
         distance = torch.norm(goal_w - obj.data.root_pos_w, dim=1)
         phi = potential_eps / (potential_eps + distance)
 
+        # 에피소드 중 goal이 바뀌면 새 goal의 첫 값을 기준선으로 다시 잡는다.
+        self._pending = self._pending | _goal_changed(self, _goal_key(env, command_name))
         # command resample 순서 오염을 피하기 위해 첫 호출에서 기준선을 잡는다.
         self._best_phi = torch.where(self._pending, phi, self._best_phi)
         self._pending[:] = False
@@ -341,6 +343,9 @@ class BalancedObjectOrientationProgressReward(ManagerTermBase):
             depth_max=depth_max,
         )
 
+        # 에피소드 중 goal이 바뀌면 orientation latch와 기준선을 새 goal로 재장전한다.
+        changed = _goal_changed(self, _goal_key(env, command_name))
+        self._active &= ~changed
         activate = (
             (position_error < activation_distance)
             & (gate > activation_gate_threshold)
@@ -478,6 +483,72 @@ class BalancedObjectAtGoalHeld(ManagerTermBase):
             torch.zeros_like(self._count),
         )
         return self._count >= hold_steps
+
+
+class PoseGoalReachedBonus(ManagerTermBase):
+    """Position + quaternion-orientation goal을 유지하면 goal당 한 번 보상한다.
+
+    Orientation은 정사각 단면 box의 8개 등가 대칭에 대한 quaternion 내적 최대값에서
+    계산한 geodesic error를 사용한다. Keypoint 거리는 사용하지 않는다.
+    """
+
+    def __init__(self, cfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        self._count = torch.zeros(env.num_envs, dtype=torch.long, device=env.device)
+        self._awarded = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+
+    def reset(self, env_ids: Sequence[int] | None = None) -> None:
+        if env_ids is None:
+            env_ids = slice(None)
+        self._count[env_ids] = 0
+        self._awarded[env_ids] = False
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        command_name: str,
+        index_cage_cfg: SceneEntityCfg,
+        middle_cage_cfg: SceneEntityCfg,
+        object_cfg: SceneEntityCfg,
+        object_half_extent: tuple[float, float, float] = (0.03, 0.03, 0.03),
+        num_points: int = 3,
+        point_fractions: tuple[float, ...] | None = None,
+        sphere_radius: float = 0.005,
+        depth_max: float = 0.005,
+        goal_radius: float = 0.05,
+        ori_limit: float = 0.2617993877991494,
+        gate_threshold: float = 0.3,
+        hold_steps: int = 15,
+    ) -> torch.Tensor:
+        obj = env.scene[object_cfg.name]
+        goal_w, goal_quat_w = _goal_pose_from_command(env, command_name)
+
+        changed = _goal_changed(self, _goal_key(env, command_name))
+        self._awarded &= ~changed
+        self._count = torch.where(changed, torch.zeros_like(self._count), self._count)
+
+        position_error = torch.norm(goal_w - obj.data.root_pos_w, dim=1)
+        orientation_error = square_prism_ori_error(obj.data.root_quat_w, goal_quat_w)
+        gate = fg_mdp.balanced_tripod_cage_gate(
+            env=env,
+            index_cage_cfg=index_cage_cfg,
+            middle_cage_cfg=middle_cage_cfg,
+            object_cfg=object_cfg,
+            object_half_extent=object_half_extent,
+            num_points=num_points,
+            point_fractions=point_fractions,
+            sphere_radius=sphere_radius,
+            depth_max=depth_max,
+        )
+        valid = (
+            (position_error < goal_radius)
+            & (orientation_error < ori_limit)
+            & (gate > gate_threshold)
+        )
+        self._count = torch.where(valid, self._count + 1, torch.zeros_like(self._count))
+        newly_success = (self._count >= hold_steps) & (~self._awarded)
+        self._awarded |= newly_success
+        return newly_success.float()
 
 
 # ── SimToolReal(2602.16863) keypoint 목표 도달 — box A/B용 (2026-07-22) ──
@@ -719,102 +790,32 @@ class BoxTransportActionsCfg:
 
 @configclass
 class BoxTransportObservationsCfg:
-    """Observation specifications for the MDP. policy = 76 (pose 67 + grip regions 9)."""
+    """Raw-state policy observation: 69D with the default 26-joint action contract.
+
+    ``box_pose_w`` and ``goal_pose_w`` are both raw world-frame ``xyz+wxyz``.
+    Fingertip-relative vectors, semantic grip
+    region errors, and precomputed object-to-goal errors are deliberately absent;
+    the policy receives the underlying state and learns those relations itself.
+    """
 
     @configclass
     class PolicyCfg(ObsGroup):
         """Observations for policy group."""
 
         joint_pos = ObsTerm(func=mdp.joint_pos)
-        cube_pos = ObsTerm(
-            func=mdp.object_position_relative,
-            params={
-                "asset_cfg": SceneEntityCfg("robot", body_names=["palm_link"]),
-                "object_cfg": SceneEntityCfg("cube"),
-            },
+        box_pose_w = ObsTerm(
+            func=mdp.object_pose_world,
+            params={"object_cfg": SceneEntityCfg("cube")},
         )
-        cube_in_fingertips = ObsTerm(
-            func=mdp.object_position_relative_to_bodies,
-            params={
-                "asset_cfg": SceneEntityCfg(
-                    "robot",
-                    body_names=[
-                        "finger1_tip_link",
-                        "finger2_tip_link",
-                        "finger3_tip_link",
-                        "finger4_tip_link",
-                        "finger5_tip_link",
-                    ],
-                ),
-                "object_cfg": SceneEntityCfg("cube"),
-            },
-        )
-        cube_to_goal = ObsTerm(
-            func=mdp.object_position_error_to_command,
-            params={
-                "command_name": "cube_goal",
-                "object_cfg": SceneEntityCfg("cube"),
-            },
-        )
-        # 2026-07-16 신규: env마다 상자가 달라서 정책이 자기 상자의 치수를 알아야 함
+        # env마다 상자가 달라질 수 있으므로 정책이 자기 상자의 치수를 알아야 함.
         box_size = ObsTerm(
             func=mdp.object_dims,
             params={"object_cfg": SceneEntityCfg("cube")},
         )
-        # 2026-07-16 신규: 직육면체는 좁은 면을 가로질러 잡아야 해서 방향이 기능임.
-        # 초기 회전은 아직 고정 — 접촉 중 회전에만 신호가 흐름 ("반쯤 살아있는" 채널,
-        # 초기 yaw 랜덤화는 사수님 컨펌 후 켜기로 함 2026-07-15)
-        box_quat = ObsTerm(
-            func=mdp.root_quat_w,
-            params={"asset_cfg": SceneEntityCfg("cube"), "make_quat_unique": True},
+        goal_pose_w = ObsTerm(
+            func=mdp.generated_commands,
+            params={"command_name": "cube_goal"},
         )
-        # 2026-07-19 신규 (+3 → policy 67): 최근접 대칭 목표까지의 상대 회전 axis-angle.
-        # raw quat만으론 대칭 등가("90° 돌린 자세 = 정답")를 발굴해야 해서 크게 되돌리기가
-        # 관찰됨 (play 실측) — 목표 대비 signed 회전 오차를 직접 제공. obs dim 변경 = fresh.
-        box_ori_to_target = ObsTerm(
-            func=mdp.object_ori_error_nearest_sym,
-            params={
-                "command_name": "cube_goal",
-                "object_cfg": SceneEntityCfg("cube"),
-            },
-        )
-
-        # 각 fingertip에서 물체 로컬 rear grip region의 최근접점까지의 오차를 palm frame으로
-        # 제공함. helper가 env.box_half_extents를 읽으므로 랜덤 box 크기도 자동 반영됨.
-        index_grip_error = ObsTerm(
-            func=fg_mdp.index_grip_error_b,
-            params={
-                "palm_cfg": _PALM_CFG,
-                "index_cfg": _INDEX_CFG,
-                "object_cfg": _OBJECT_CFG,
-                "object_half_extent": _HALF_FALLBACK,
-                **_INDEX_GRIP_REGION,
-            },
-        )
-        thumb_grip_error = ObsTerm(
-            func=fg_mdp.thumb_grip_error_b,
-            params={
-                "palm_cfg": _PALM_CFG,
-                "thumb_cfg": _THUMB_CFG,
-                "object_cfg": _OBJECT_CFG,
-                "object_half_extent": _HALF_FALLBACK,
-                **_THUMB_GRIP_REGION,
-            },
-        )
-        # 2026-07-23 신규 (+3 → policy 76): 중지 grip region 오차. chopstick과 동일 구성.
-        middle_grip_error = ObsTerm(
-            func=fg_mdp.middle_grip_error_b,
-            params={
-                "palm_cfg": _PALM_CFG,
-                "middle_cfg": _MIDDLE_CFG,
-                "object_cfg": _OBJECT_CFG,
-                "object_half_extent": _HALF_FALLBACK,
-                **_MIDDLE_GRIP_REGION,
-            },
-        )
-
-        # goal quaternion을 별도 4D로 넣지 않는 이유: 위 상대 axis-angle 3D가 현재 자세와
-        # command 자세를 모두 포함하고 대칭까지 해소함. orientation 범위를 랜덤화해도 obs 73 유지.
 
         action_history = ObsTerm(func=mdp.action_history)
 
@@ -1045,11 +1046,11 @@ class BoxTransportRewardsCfg:
     # 운반 1단계: 상자 중심의 position error만 best-so-far로 줄임.
     # 위치/각도를 keypoint 하나에 섞으면 원거리에서 위치가 각도 신호를 덮고, 어느 축이
     # 병목인지 진단하기 어려워 분리함. 왕복 이동은 best-so-far라 추가 지급되지 않음.
-    # ⚠ SimToolReal A/B (2026-07-22): 위치·자세를 keypoint_goal 한 항으로 융합해 chopstick(쿼터니안+exp)과 비교.
-    #   cube_transport·box_orientation은 weight 0으로 끄고(복구용 유지), 아래 keypoint_goal 활성.
+    # 2026-08-25: quaternion orientation 방식으로 복원. 검증된 box 성공 run
+    # 2026-07-21_23-01-25의 weight를 그대로 사용한다.
     cube_transport = RewTerm(
         func=BalancedObjectToGoalProgressReward,
-        weight=0.0,
+        weight=8000.0,
         params={
             "command_name": "cube_goal",
             "index_cage_cfg": BOX_INDEX_CAGE_BODIES,
@@ -1065,12 +1066,13 @@ class BoxTransportRewardsCfg:
     )
 
     # 운반 2단계: position < 5cm + cage gate > 0.3을 한 번 만족하면 latch 활성화.
-    # 이후 최근접 대칭 orientation error의 에피소드 최저 기록을 갱신한 만큼만 양수 지급함.
+    # 이후 quaternion 내적으로 계산한 최근접 8-대칭 orientation error의 에피소드 최저 기록을
+    # 갱신한 만큼만 양수 지급함.
     # 악화와 이전 최저 error까지의 복구는 0이라 왕복 진동으로 반복 적립할 수 없음.
     # 45° 순개선을 raw 합계 약 1로 정규화해 position progress와 동일 weight에서 시작함.
     box_orientation = RewTerm(
         func=BalancedObjectOrientationProgressReward,
-        weight=0.0,
+        weight=4000.0,
         params={
             "command_name": "cube_goal",
             "index_cage_cfg": BOX_INDEX_CAGE_BODIES,
@@ -1088,26 +1090,10 @@ class BoxTransportRewardsCfg:
         },
     )
 
-    # ── SimToolReal keypoint 목표 (활성, 2026-07-22) — 위 transport·orientation(둘 다 0) 대체 ──
-    # r = tripod gate × max(d_best − d, 0), d = 8-corner max 거리(roll 4-sym, flip 제외, m).
-    # 00-04-17은 hold/lift만 quad이고 keypoint/success는 엄지 대 검지·중지 tripod를 사용했다.
-    # ⚠ weight는 시작값 — d가 m 단위(φ와 스케일 다름)라 실측 보고 조정. keypoint success 판정은 아래 success 참고.
-    keypoint_goal = RewTerm(
-        func=KeypointMaxGoalProgressReward,
-        weight=150000.0,
-        params={
-            "command_name": "cube_goal",
-            "index_cage_cfg": BOX_INDEX_CAGE_BODIES,
-            "middle_cage_cfg": BOX_MIDDLE_CAGE_BODIES,
-            "object_cfg": _OBJECT_CFG,
-            "object_half_extent": _HALF_FALLBACK,
-            "num_points": 3,
-            "point_fractions": _POINT_FRACTIONS,
-            "sphere_radius": 0.005,
-            "depth_max": 0.005,
-            "symmetry": "square_prism_y_tip",
-        },
-    )
+    # ── SimToolReal keypoint 목표 (비활성 비교 코드) ────────────────────────────────
+    # active reward manager에서 완전히 제거했다. keypoint helper/class는
+    # 과거 A/B 재현용 소스로만 보존한다.
+    keypoint_goal = None
 
     # B안 통합 연금: gate × φ(d) — "잡은 채 goal 근처에 있는 것"에 매 스텝 지급.
     # A′(lift0, run 2026-07-17_23-15-16) 실측 처방: 일시불 φ는 현금화 후 goal 체류가
@@ -1116,8 +1102,8 @@ class BoxTransportRewardsCfg:
     #   env.rewards.cube_lift.weight=0 env.rewards.cube_transport.weight=0 \
     #   env.rewards.goal_proximity.weight=75
     # w75 근거: goal 중심 ~2.5/스텝, 경계 캠핑 현재가치 ≪ r_T +1000 (rewards.py docstring).
-    # keypoint 전환(2026-07-22): 150 → 0. 위치-only 연금은 "위치만 가깝고 자세 안 맞춤" 파밍 여지가
-    # 있어 keypoint MAX 결합을 깎음(사용자 최종안). 학습 후 goal 근처서 자꾸 놓으면 소량(≤20)만 재활성.
+    # quaternion 분리형 성공 기준선에서도 0을 유지한다. 위치 progress와 orientation progress만으로
+    # 정착이 부족할 때에만 소량(≤20) 재활성한다.
     goal_proximity = RewTerm(
         func=balanced_object_goal_proximity,
         weight=0.0,
@@ -1135,12 +1121,10 @@ class BoxTransportRewardsCfg:
         },
     )
 
-    # r_T: keypoint 도달(d<eps) + gate 물림 0.5s 유지 → 한 방 +2000 보너스. **종료 안 함** (2026-07-24).
-    #   success termination을 분리해 KeypointGoalReachedBonus로 교체 — 성공해도 에피소드 유지 → 재샘플로
-    #   다음 goal 처리. goal당 1회(_awarded)라 반복 성공 파밍 없음. (chopstick GoalReachedBonus와 동일 구조)
-    #   (기존: func=mdp.is_terminated_term, term_keys="success" — success 종료 참조. 복구용)
+    # r_T: position < 5cm + quaternion orientation < 15° + tripod gate를 0.5s 유지하면
+    # 한 방 +2000 보너스. 종료하지 않고 goal당 한 번만 지급한다.
     transport_success = RewTerm(
-        func=KeypointGoalReachedBonus,
+        func=PoseGoalReachedBonus,
         weight=60000.0,
         params={
             "command_name": "cube_goal",
@@ -1152,10 +1136,10 @@ class BoxTransportRewardsCfg:
             "point_fractions": _POINT_FRACTIONS,
             "sphere_radius": 0.005,
             "depth_max": 0.005,
-            "keypoint_eps": 0.05,
+            "goal_radius": 0.05,
+            "ori_limit": 0.2617993877991494,
             "gate_threshold": 0.3,
             "hold_steps": 15,
-            "symmetry": "square_prism_y_tip",
         },
     )
 
@@ -1230,11 +1214,9 @@ class BoxTransportTerminationsCfg:
 
     # ── success termination 제거 (2026-07-24, chopstick과 동일) ────────────────────
     # 성공 시 종료하면 첫 성공에 리셋돼 에피소드 내 goal 재샘플로 다음 goal을 못 봄.
-    # 성공 '보너스'는 유지(위 rewards.transport_success = KeypointGoalReachedBonus, goal당 1회),
+    # 성공 '보너스'는 유지(위 rewards.transport_success = PoseGoalReachedBonus, goal당 1회),
     # 종료는 time_out(8초) + cube_dropped만. ⚠ Episode_Termination/success 사라짐 →
     # 성공 빈도는 Episode_Reward_Raw/transport_success로 봄.
     #
-    # (복구용) 기존 success 종료 — KeypointMaxAtGoalHeld, keypoint_eps 0.05 / gate 0.3 / hold_steps 15 /
-    #   symmetry square_prism_y_tip. 되살리면 transport_success도 is_terminated_term(term_keys="success")으로.
-    #   (더 옛: BalancedObjectAtGoalHeld, goal_radius 0.05 / ori_limit 0.2617993877991494.)
-    # success = DoneTerm(func=KeypointMaxAtGoalHeld, params={... 위 KeypointGoalReachedBonus와 동일 ...})
+    # 종료형으로 되살릴 경우 BalancedObjectAtGoalHeld에 위와 같은 goal_radius/ori_limit/gate/hold를
+    # 연결하고 transport_success를 is_terminated_term(term_keys="success")으로 바꾼다.

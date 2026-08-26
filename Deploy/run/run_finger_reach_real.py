@@ -1,3 +1,4 @@
+# [run/실물] 중지 reach 정책을 실물 손에서 실행. 4관절만 enable.
 """Run the middle-finger reach policy on the physical Wuji Hand.
 
 Same contract as the MuJoCo path -- 15D observation, 4D residual action, the

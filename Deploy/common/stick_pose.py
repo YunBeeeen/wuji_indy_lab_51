@@ -1,3 +1,4 @@
+# [common] 스틱 7D 포즈(xyz+wxyz) 변환·쿼터니언 수학. 사각 단면 4중 대칭을 학습 브랜치로 접는 규칙 포함.
 """Canonical StickPose7D transforms matching the active Isaac observation."""
 
 from __future__ import annotations

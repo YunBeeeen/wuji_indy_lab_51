@@ -1,3 +1,4 @@
+# [policy] 중지 4관절 reach 계약(15D->4D)과 러너. 20관절 파지 계약과 섞이면 안 되는 별개 계약.
 """Middle-finger reach diagnostic: the MuJoCo half of the Sim-to-Sim probe.
 
 This is deliberately NOT the 105D ``hand_real`` stack.  The reach task exists to
@@ -54,7 +55,7 @@ import numpy as np
 import numpy.typing as npt
 
 from ..common.policy_contract import (
-    COMMAND_TARGET_LIMITS,
+    REAL_HAND_FACTORY_LIMITS,
     soft_command_limits,
     OBSERVATION_NORMALIZATION_LIMITS,
     POLICY_JOINT_NAMES,
@@ -142,7 +143,13 @@ _MIDDLE_NORMALIZATION = OBSERVATION_NORMALIZATION_LIMITS[MIDDLE_POLICY_INDICES]
 # for the same reason the twenty-joint tasks did, and the floor was measurably
 # inert for model_500 (joint4 never went below +0.186 rad; MuJoCo trajectories
 # with and without it matched to 0.000 mrad over 120 policy steps).
-MIDDLE_COMMAND_TARGET_LIMITS = COMMAND_TARGET_LIMITS[MIDDLE_POLICY_INDICES]
+#
+# Derived from the UNSCALED factory table, not from COMMAND_TARGET_LIMITS.
+# The grasp task's COMMAND_LIMIT_RATIO (0.95) narrows that table, and the reach
+# CLIs already apply their own 0.95 through ``middle_soft_command_limits``
+# (``--limit-margin``, default 0.95) -- taking the scaled table here would
+# stack the two into an effective 0.90 and silently move a validated task.
+MIDDLE_COMMAND_TARGET_LIMITS = REAL_HAND_FACTORY_LIMITS[MIDDLE_POLICY_INDICES]
 _MIDDLE_COMMAND = MIDDLE_COMMAND_TARGET_LIMITS
 
 

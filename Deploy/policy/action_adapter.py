@@ -1,3 +1,4 @@
+# [policy] 정책 출력 -> 관절 목표. clip(±1) -> q + 관절별 스케일 -> 명령 한계 clamp.
 """Canonical residual policy-action processing, independent of any backend."""
 
 from __future__ import annotations

@@ -1,3 +1,4 @@
+# [vision] MuJoCo 안에 렌더링하는 가짜 ArUco 장면. 마커 검출 코드를 정답 아는 상태로 채점하는 테스트 픽스처.
 """A PRETEND camera rig, used only to test the marker-detection code.
 
 None of these numbers describe the lab.  They describe a scene rendered inside

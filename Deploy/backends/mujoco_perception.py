@@ -1,3 +1,4 @@
+# [backend/MuJoCo] 시뮬 카메라 프레임 소스와 스틱 그라운드트루스 제공자.
 """MuJoCo camera and ground-truth stick providers."""
 
 from __future__ import annotations

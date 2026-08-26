@@ -676,7 +676,17 @@ python scripts/rsl_rl/play.py \
 
 # hand final play
 
-  python scripts/rsl_rl/play.py  --task hand_final_play  --num_envs 1    --manual_root   --checkpoint /home/lsc/wuji_indy_lab_51/nrmk_isaaclab_wuji/logs/rsl_rl/hand_final/2026-08-13_14-15-09/model_400.pt --plot_hand_contact_forces
+  # 2026-08-13 legacy 101D model_400: M으로 q/qt CSV 녹화, 1=OPEN, 2=CLOSE
+  python scripts/rsl_rl/play.py \
+    --task hand_final_play \
+    --num_envs 1 \
+    --manual_root \
+    --legacy_obs_101d \
+    --checkpoint '/home/lsc/wuji_indy_lab_51/nrmk_isaaclab_wuji/logs/rsl_rl/hand_final/2026-08-13_14-15-09(최종)/model_400.pt' \
+    --real-time
+
+  # CSV: logs/joint_records/joint_record_<timestamp>.csv
+  # M을 한 번 누르면 시작, 다시 누르면 종료. qt_*가 replay 입력이다.
 
 
   최신 hand_final run의 최신 모델:
@@ -686,21 +696,21 @@ python scripts/rsl_rl/play.py \
     --num_envs 1 \
     --manual_root
 
-  특정 날짜 run의 최신 모델:
+  특정 날짜의 현재 105D run 최신 모델:
 
   python scripts/rsl_rl/play.py \
     --task hand_final_play \
     --num_envs 1 \
     --manual_root \
-    --load_run 2026-08-13_14-15-09
+    --load_run <105D_RUN>
 
-  해당 run의 특정 모델:
+  현재 105D run의 특정 모델:
 
   python scripts/rsl_rl/play.py \
     --task hand_final_play \
     --num_envs 1 \
     --manual_root \
-    --load_run 2026-08-13_14-15-09 \
+    --load_run <105D_RUN> \
     --checkpoint model_400.pt
 
 
@@ -721,3 +731,22 @@ python scripts/rsl_rl/train.py \
 
 # hand real (1단계 학습은 오버라이드로)
   python scripts/rsl_rl/train.py --task hand_real --headless  env.episode_length_s=5.0
+
+
+
+  pose_005 -> prev_target (link4 닿게 j1 더 굽힌 게 curr_target)
+  prev_reset -> pregrasp -> pose_005 였음
+  curr_reset -> curr_pregrasp (4mm 떨어진 위치)
+
+
+# hand real2 train
+
+# hand real2 play
+    python scripts/rsl_rl/play.py \
+      --task hand_real2 \
+      --load_run ... \
+      --checkpoint model_xxx.pt \
+      --mouse_stick_disturbance \
+      --mouse_force_base 0.01 \
+      --mouse_force_stiffness 1.0 \
+      --mouse_force_max 0.30

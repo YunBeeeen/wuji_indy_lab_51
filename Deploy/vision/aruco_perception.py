@@ -1,3 +1,4 @@
+# [vision] OpenCV ArUco/IPPE로 스틱 7D 포즈를 내는 제공자. 점프 게이트와 HOLD/STALE/LOST 상태기계 포함.
 """OpenCV ArUco/IPPE StickPose7D provider shared by simulated and real RGB sources."""
 
 from __future__ import annotations

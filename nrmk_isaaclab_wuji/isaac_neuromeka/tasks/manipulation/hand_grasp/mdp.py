@@ -375,15 +375,24 @@ def _sensor_force(env: ManagerBasedEnv, sensor_name: str) -> torch.Tensor:
 def _group_forces(
     env: ManagerBasedEnv,
     sensor_groups: tuple[tuple[str, ...], ...],
+    group_reduction: str = "max",
 ) -> torch.Tensor:
-    """Return one force per semantic contact group, using OR within a group."""
+    """Return one force per semantic group, using OR/max or AND/min inside it."""
     groups = []
     for sensor_names in sensor_groups:
         forces = torch.stack(
             [_sensor_force(env, sensor_name) for sensor_name in sensor_names],
             dim=-1,
         )
-        groups.append(torch.max(forces, dim=-1).values)
+        if group_reduction == "max":
+            groups.append(torch.max(forces, dim=-1).values)
+        elif group_reduction == "min":
+            groups.append(torch.min(forces, dim=-1).values)
+        else:
+            raise ValueError(
+                "group_reduction must be 'max' or 'min', got "
+                f"{group_reduction!r}"
+            )
     return torch.stack(groups, dim=-1)
 
 
@@ -843,15 +852,32 @@ class JointReferenceTracking(ManagerTermBase):
         asset_cfg: SceneEntityCfg,
         reference_joint_positions: tuple[float, ...],
         sigma: float = 0.20,
+        deactivate_sensor_groups: tuple[tuple[str, ...], ...] | None = None,
+        deactivate_contact_threshold: float = 0.02,
+        deactivate_group_reduction: str = "max",
     ) -> torch.Tensor:
         del reference_joint_positions
         robot: Articulation = env.scene[asset_cfg.name]
         joint_error = (
             robot.data.joint_pos[:, asset_cfg.joint_ids] - self._reference
         )
-        return torch.exp(
+        score = torch.exp(
             -torch.mean(torch.square(joint_error / sigma), dim=-1)
         )
+        if deactivate_sensor_groups is None:
+            return score
+        full_contact = torch.all(
+            _group_forces(
+                env,
+                deactivate_sensor_groups,
+                deactivate_group_reduction,
+            )
+            >= deactivate_contact_threshold,
+            dim=-1,
+        )
+        # Memoryless acquisition prior: disappear at 6/6, return immediately
+        # if any semantic contact is lost so recovery still has a pose guide.
+        return (~full_contact).to(dtype=score.dtype) * score
 
 
 # [shared: hand_grasp + hand_setting] Active palm-frame stick-pose reward.
@@ -981,14 +1007,35 @@ class ObjectPairReferencePoseMinTracking(ManagerTermBase):
         stick2_reference_quaternion_p: tuple[float, float, float, float],
         position_sigma: float = 0.10,
         orientation_sigma: float = 1.5707963268,
+        score_floor: float = 0.0,
     ) -> torch.Tensor:
+        """Return the weaker stick's pose score, optionally rebased.
+
+        ``score_floor`` subtracts a constant and renormalizes:
+        ``clamp((score - floor) / (1 - floor), 0, 1)``.  The default 0.0 is the
+        identity, so every existing caller is unchanged.
+
+        This exists because a wide kernel pays a large constant for doing
+        nothing.  Run 2026-08-26_02-11-08 measured that exactly: a sigma
+        0.10 m / 90 deg term at weight 6 scored 0.348 on the untouched spawn
+        pose, worth 16.7 points per episode, against the 12.3 points the best
+        behaviour any previous run found had earned.  The policy stopped moving
+        at iteration 100 and mean_reward sat at 16.49 for the next 340
+        iterations.  Rebasing removes that annuity while keeping -- in fact
+        amplifying by 1/(1 - floor) -- the long-range gradient the wide kernel
+        was added for.
+
+        Keep the floor strictly below the score of any state the policy still
+        has to recover from: at and below the floor this term is flat zero, so
+        a floor set at the idle score would leave worse states with no pull.
+        """
         del (
             stick1_reference_position_p,
             stick1_reference_quaternion_p,
             stick2_reference_position_p,
             stick2_reference_quaternion_p,
         )
-        return _object_pair_reference_pose_min_score(
+        score = _object_pair_reference_pose_min_score(
             env,
             palm_cfg,
             stick1_cfg,
@@ -999,6 +1046,15 @@ class ObjectPairReferencePoseMinTracking(ManagerTermBase):
             self._stick2_reference_quaternion,
             position_sigma,
             orientation_sigma,
+        )
+        if score_floor == 0.0:
+            return score
+        if not 0.0 <= score_floor < 1.0:
+            raise ValueError("score_floor must be in [0, 1)")
+        return torch.clamp(
+            (score - score_floor) / (1.0 - score_floor),
+            min=0.0,
+            max=1.0,
         )
 
 
@@ -1700,6 +1756,261 @@ class Stage1MissingJointBestSoFar(ManagerTermBase):
             joint_progress * self._joint_reward_weights,
             dim=-1,
         ) / self._joint_reward_weight_sum
+
+
+# [hand_setting] Pay the signed per-joint q-reference change after Stage 1.
+class Stage1MissingJointSignedProgress(Stage1MissingJointBestSoFar):
+    """Pay ``Phi(q_t) - Phi(q_{t-1})`` per joint instead of only new records.
+
+    Same potential, same weights, same normalized budget as
+    :class:`Stage1MissingJointBestSoFar`; only the sign policy differs.  The
+    episode total telescopes to ``Phi_final - Phi_unlock`` rather than
+    ``Phi_best - Phi_unlock``, so the term pays for the pose the policy is
+    actually holding rather than the best pose it ever touched.
+
+    Why this task wants the signed form:
+
+    * The objective is maintenance, not contact.  All six functional contacts
+      must hold simultaneously, and 2026-08-10_18-30-36 ended with per-joint
+      ``best 0.921`` against ``current 0.780`` (gap 0.141).  About 42% of that
+      run's 33.3 reward points were paid for peaks the policy did not hold.
+    * Stationary farming stays impossible: holding still pays exactly zero
+      because consecutive scores are equal.  An advance/retreat round trip
+      also nets exactly zero, because the retreat is charged at the same rate
+      the advance paid.
+    * ``best_so_far`` needs sixteen hidden per-joint records that never appear
+      in the 105D observation, so equal observations can carry different
+      returns.  The signed form needs only ``Phi(q_{t-1})``, and the actor's
+      ``joint_pos_history`` term already contains both ``q_{t-1}`` and ``q_t``.
+
+    Two rules this implementation deliberately follows:
+
+    * No discount factor.  ``gamma * Phi' - Phi`` would charge
+      ``(gamma - 1) * Phi`` every step just for existing, which at weight 3000
+      and 30 Hz is about -1.0 per step, and would make dropping a stick to end
+      the episode early the cheapest way to stop the bleeding.  The plain
+      difference telescopes exactly and has neither problem.
+    * No asymmetric scaling.  Charging retreat at a fraction of the advance
+      rate reopens farming: an advance/retreat cycle would net the difference
+      every time.  Only the symmetric form is safe.
+
+    ``best_joint_scores`` keeps tracking the per-episode maximum, but it is now
+    diagnostic only and no longer touches the payout.  Keeping it means the
+    ``best`` vs ``current`` gap stays plotted on the same axis as the
+    best-so-far runs, which is exactly the A/B readout for this change.
+    """
+
+    def __init__(self, cfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        self._prev_joint_scores = torch.zeros_like(self._best_joint_scores)
+
+    @property
+    def prev_joint_scores(self) -> torch.Tensor:
+        """Return the previous-step scores that define the signed payout."""
+        return self._prev_joint_scores
+
+    def reset(self, env_ids: Sequence[int] | None = None) -> None:
+        super().reset(env_ids)
+        if env_ids is None:
+            env_ids = slice(None)
+        self._prev_joint_scores[env_ids] = 0.0
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        asset_cfg: SceneEntityCfg,
+        reference_joint_positions: tuple[float, ...],
+        joint_linear_range: float,
+        palm_cfg: SceneEntityCfg,
+        stick1_cfg: SceneEntityCfg,
+        stick2_cfg: SceneEntityCfg,
+        thumb_cfg: SceneEntityCfg,
+        stick1_reference_position_p: tuple[float, float, float],
+        stick1_reference_quaternion_p: tuple[float, float, float, float],
+        stick2_reference_position_p: tuple[float, float, float],
+        stick2_reference_quaternion_p: tuple[float, float, float, float],
+        stick1_half_extent: tuple[float, float, float],
+        long_axis: int,
+        pivot_station: float,
+        position_sigma: float,
+        orientation_sigma: float,
+        thumb_sigma: float,
+        pair_score_threshold: float,
+        thumb_score_threshold: float,
+        joint_reward_weights: tuple[float, ...] | None = None,
+    ) -> torch.Tensor:
+        if joint_linear_range <= 0.0:
+            raise ValueError("joint_linear_range must be positive")
+
+        stage1_ready = setting_stage1_gate(
+            env,
+            palm_cfg,
+            stick1_cfg,
+            stick2_cfg,
+            thumb_cfg,
+            stick1_reference_position_p,
+            stick1_reference_quaternion_p,
+            stick2_reference_position_p,
+            stick2_reference_quaternion_p,
+            stick1_half_extent,
+            long_axis,
+            pivot_station,
+            position_sigma,
+            orientation_sigma,
+            thumb_sigma,
+            pair_score_threshold,
+            thumb_score_threshold,
+        ).bool()
+
+        robot: Articulation = env.scene[asset_cfg.name]
+        reference = torch.as_tensor(
+            reference_joint_positions,
+            dtype=robot.data.joint_pos.dtype,
+            device=env.device,
+        )
+        joint_count = len(asset_cfg.joint_ids)
+        if reference.numel() != joint_count:
+            raise ValueError(
+                "Stage-1 reference size must match the selected joints: "
+                f"reference={reference.numel()}, joint_count={joint_count}"
+            )
+
+        joint_abs_error = torch.abs(
+            robot.data.joint_pos[:, asset_cfg.joint_ids] - reference
+        )
+        joint_scores = torch.clamp(
+            1.0 - joint_abs_error / joint_linear_range,
+            min=0.0,
+            max=1.0,
+        )
+        if joint_scores.shape != self._best_joint_scores.shape:
+            raise ValueError(
+                "Stage-1 joint-score shape changed after initialization: "
+                f"current={tuple(joint_scores.shape)}, "
+                f"expected={tuple(self._best_joint_scores.shape)}"
+            )
+        self._current_joint_scores = joint_scores
+
+        newly_unlocked = (~self._stage1_unlocked) & stage1_ready
+        self._stage1_unlocked |= stage1_ready
+        unlocked = self._stage1_unlocked.unsqueeze(-1)
+
+        # The unlock step establishes the baseline and pays zero, matching the
+        # best-so-far seeding so pre-Stage-1 motion is never paid for.
+        self._prev_joint_scores = torch.where(
+            newly_unlocked.unsqueeze(-1),
+            joint_scores,
+            self._prev_joint_scores,
+        )
+        # Signed on purpose: no clamp.  Losing ground costs exactly what
+        # gaining it paid, which is the whole point of this term.
+        joint_delta = (joint_scores - self._prev_joint_scores) * unlocked.float()
+        self._prev_joint_scores = torch.where(
+            unlocked,
+            joint_scores,
+            self._prev_joint_scores,
+        )
+
+        # Diagnostic only from here down; the payout above never reads it.
+        self._best_joint_scores = torch.where(
+            newly_unlocked.unsqueeze(-1),
+            joint_scores,
+            self._best_joint_scores,
+        )
+        self._best_joint_scores = torch.where(
+            unlocked,
+            torch.maximum(self._best_joint_scores, joint_scores),
+            self._best_joint_scores,
+        )
+
+        # Same normalization as the best-so-far term, so weight 3000 keeps its
+        # meaning and the two A/B runs share one reward scale.
+        return torch.sum(
+            joint_delta * self._joint_reward_weights,
+            dim=-1,
+        ) / self._joint_reward_weight_sum
+
+
+# [hand_setting] Pay fingertip contact only on the face that tip belongs on.
+def fingertip_face_contact_strength(
+    env: ManagerBasedEnv,
+    index_cfg: SceneEntityCfg,
+    middle_cfg: SceneEntityCfg,
+    ring_cfg: SceneEntityCfg,
+    stick1_cfg: SceneEntityCfg,
+    stick2_cfg: SceneEntityCfg,
+    index_sensor: str,
+    middle_sensor: str,
+    ring_sensor: str,
+    object_half_extent: tuple[float, float, float],
+    surface_axis: int = 2,
+    index_surface_sign: float = 1.0,
+    middle_surface_sign: float = -1.0,
+    ring_surface_sign: float = -1.0,
+    force_scale: float = 0.10,
+) -> torch.Tensor:
+    """Mean saturated fingertip contact, weighted by being on the right face.
+
+    ``contact_group_strength`` is a force magnitude and
+    ``body_box_surface_distance`` is an unsigned distance, so nothing in the
+    objective could tell which face of a shaft a fingertip was pressing.  Run
+    2026-08-26_10-59-50 measured the consequence: the middle tip settled at
+    face_z +16.1 mm on Stick1 at 0.649 N -- the upper face, where it belongs on
+    the lower one -- and the index tip sat further out on that same side at
+    +54.75 mm and had never once registered contact.  The middle finger was
+    occupying the index finger's place and being paid 50 of the 161 points the
+    policy earned.
+
+    Each tip is scaled by ``clamp(sign * face_coordinate / half_extent, 0, 1)``:
+    one on the correct face, zero on the wrong one or on a side face, and a
+    gradient in between as it comes around the shaft.  The scaling is on the
+    payout only, so this is meant to be registered *alongside* a face-blind
+    contact term rather than replacing it -- a wrong-face contact then still
+    earns the face-blind share instead of dropping to zero, and moving to the
+    correct face is a gain rather than the recovery of a loss.  Every hard
+    all-or-nothing structure in this task has stalled or collapsed
+    (functional_contact_min has never once paid, and the Stage-1 gate cost run
+    2026-08-26_00-24-02 its entire reward in eighteen iterations).
+
+    Per the manager's resolution rules the five SceneEntityCfg arguments are
+    separate named parameters; a list of them would silently keep body_ids at
+    None.  The sensor arguments are plain strings and are safe to group.
+    """
+    if surface_axis not in (0, 1, 2):
+        raise ValueError("surface_axis must be 0, 1, or 2")
+    if force_scale <= 0.0:
+        raise ValueError("force_scale must be positive")
+    half_extent = float(object_half_extent[surface_axis])
+    if half_extent <= 0.0:
+        raise ValueError("object_half_extent must be positive on surface_axis")
+
+    scores = []
+    for body_cfg, object_cfg, sensor_name, surface_sign in (
+        (index_cfg, stick1_cfg, index_sensor, index_surface_sign),
+        (middle_cfg, stick1_cfg, middle_sensor, middle_surface_sign),
+        (ring_cfg, stick2_cfg, ring_sensor, ring_surface_sign),
+    ):
+        if surface_sign not in (-1.0, 1.0):
+            raise ValueError("surface signs must be -1 or 1")
+        contact = torch.clamp(
+            _sensor_force(env, sensor_name) / force_scale,
+            min=0.0,
+            max=1.0,
+        )
+        robot: Articulation = env.scene[body_cfg.name]
+        obj: RigidObject = env.scene[object_cfg.name]
+        body_position_o = quat_apply_inverse(
+            obj.data.root_quat_w,
+            robot.data.body_pos_w[:, body_cfg.body_ids[0]]
+            - obj.data.root_pos_w,
+        )
+        face_factor = torch.clamp(
+            surface_sign * body_position_o[:, surface_axis] / half_extent,
+            min=0.0,
+            max=1.0,
+        )
+        scores.append(contact * face_factor)
+    return torch.mean(torch.stack(scores, dim=-1), dim=-1)
 
 
 # [hand_setting] Measure whether the index tip lies between the two stick shafts.
@@ -2791,23 +3102,107 @@ def tip_lateral_deviation(
 
 
 # [hand_grasp] Active six-contact strength reward.
+def _normalized_group_force_scales(
+    force_scale: float | tuple[float, ...],
+    group_count: int,
+) -> tuple[float, ...]:
+    """Return one positive force scale per semantic contact group."""
+    if isinstance(force_scale, (int, float)):
+        scales = (float(force_scale),) * group_count
+    else:
+        scales = tuple(float(value) for value in force_scale)
+        if len(scales) != group_count:
+            raise ValueError(
+                "Per-group force_scale must match sensor_groups: "
+                f"got {len(scales)} scales for {group_count} groups."
+            )
+    if any(value <= 0.0 for value in scales):
+        raise ValueError(f"force_scale values must be positive, got {scales}.")
+    return scales
+
+
 def contact_group_strength(
     env: ManagerBasedEnv,
     sensor_groups: tuple[tuple[str, ...], ...],
-    force_scale: float = 0.10,
+    force_scale: float | tuple[float, ...] = 0.10,
     reduction: str = "mean",
+    group_reduction: str = "max",
 ) -> torch.Tensor:
-    """Dense contact strength; multiple sensors in a group implement logical OR."""
-    strengths = torch.clamp(
-        _group_forces(env, sensor_groups) / force_scale,
-        min=0.0,
-        max=1.0,
+    """Dense contact strength with configurable within-group credit.
+
+    ``force_scale`` may be one shared scalar or one value per semantic group.
+    ``max`` and ``min`` preserve the historical OR and hard-AND semantics.
+    ``mean_strength`` first saturates each physical contact independently and
+    then averages them.  ``partial_and_bonus`` preserves singleton groups and,
+    for a two-surface group, returns ``0.25 * sum + 0.5 * min``.  Therefore one
+    loaded surface earns 0.25 while both loaded surfaces earn 1.0.
+    """
+    force_scales = _normalized_group_force_scales(
+        force_scale, len(sensor_groups)
     )
+    if group_reduction in ("mean_strength", "partial_and_bonus"):
+        group_strengths = []
+        for group_index, sensor_names in enumerate(sensor_groups):
+            sensor_strengths = torch.stack(
+                [
+                    torch.clamp(
+                        _sensor_force(env, sensor_name)
+                        / force_scales[group_index],
+                        min=0.0,
+                        max=1.0,
+                    )
+                    for sensor_name in sensor_names
+                ],
+                dim=-1,
+            )
+            if group_reduction == "partial_and_bonus" and len(sensor_names) > 1:
+                if len(sensor_names) != 2:
+                    raise ValueError(
+                        "partial_and_bonus requires singleton or two-sensor groups"
+                    )
+                partial_credit = 0.25 * torch.sum(sensor_strengths, dim=-1)
+                both_contact_bonus = 0.5 * torch.min(
+                    sensor_strengths, dim=-1
+                ).values
+                group_strengths.append(partial_credit + both_contact_bonus)
+            else:
+                group_strengths.append(torch.mean(sensor_strengths, dim=-1))
+        strengths = torch.stack(group_strengths, dim=-1)
+    else:
+        group_forces = _group_forces(env, sensor_groups, group_reduction)
+        scale_tensor = torch.as_tensor(
+            force_scales,
+            device=group_forces.device,
+            dtype=group_forces.dtype,
+        ).unsqueeze(0)
+        strengths = torch.clamp(
+            group_forces / scale_tensor,
+            min=0.0,
+            max=1.0,
+        )
     if reduction == "mean":
         return torch.mean(strengths, dim=-1)
     if reduction == "min":
         return torch.min(strengths, dim=-1).values
     raise ValueError(f"Unsupported contact reduction: {reduction}")
+
+
+# [hand_real2] Per-step bonus for retaining every semantic contact.
+def full_contact_bonus(
+    env: ManagerBasedEnv,
+    sensor_groups: tuple[tuple[str, ...], ...],
+    contact_threshold: float = 0.02,
+    group_reduction: str = "max",
+) -> torch.Tensor:
+    """Return one while every hard contact group exceeds the threshold.
+
+    This is deliberately memoryless and does not terminate on contact loss, so
+    a policy that drops a contact can continue acting and learn recovery.
+    """
+    group_forces = _group_forces(env, sensor_groups, group_reduction)
+    return torch.all(group_forces >= contact_threshold, dim=-1).to(
+        dtype=group_forces.dtype
+    )
 
 
 # [hand_setting] Apply partial or all-six contact strength only after Stage 1.
@@ -3816,9 +4211,10 @@ def full_grasp_stability(
     contact_threshold: float = 0.02,
     linear_speed_scale: float = 0.10,
     angular_speed_scale: float = 2.0,
+    group_reduction: str = "max",
 ) -> torch.Tensor:
     """Reward quiet two-stick motion only while every contact group is engaged."""
-    group_forces = _group_forces(env, sensor_groups)
+    group_forces = _group_forces(env, sensor_groups, group_reduction)
     contacts_valid = torch.all(
         group_forces >= contact_threshold,
         dim=-1,
@@ -3982,6 +4378,7 @@ def mode_grasp_stability(
     linear_speed_scale: float = 0.10,
     angular_speed_scale: float = 2.0,
     clamp_gap: bool = True,
+    group_reduction: str = "max",
 ) -> torch.Tensor:
     """Reward quiet six-contact gap, lateral, and axial mode tracking."""
     base_stability = full_grasp_stability(
@@ -3994,6 +4391,7 @@ def mode_grasp_stability(
         contact_threshold,
         linear_speed_scale,
         angular_speed_scale,
+        group_reduction,
     )
     command = env.command_manager.get_command(command_name)
     command_valid = torch.clamp(command.sum(dim=-1), min=0.0, max=1.0)
@@ -4246,6 +4644,7 @@ class OpenCloseModeHeld(ManagerTermBase):
         # (교차) 상태가 gap=0 으로 보고돼, 보상은 깎으면서 성공은 인정하는 모순이
         # 생긴다.  기본 True 로 hand_grasp/hand_setting 은 그대로.
         clamp_gap: bool = True,
+        group_reduction: str = "max",
     ) -> torch.Tensor:
         del (
             stick1_reference_position_p,
@@ -4255,7 +4654,7 @@ class OpenCloseModeHeld(ManagerTermBase):
             reference_separation_direction_stick2,
         )
         contacts_valid = torch.all(
-            _group_forces(env, sensor_groups) >= contact_threshold,
+            _group_forces(env, sensor_groups, group_reduction) >= contact_threshold,
             dim=-1,
         )
         stick1_pivot = _object_point_in_palm(
@@ -4402,8 +4801,9 @@ class FunctionalContactLoss(ManagerTermBase):
         acquire_hold_steps: int = 5,
         minimum_retained_contacts: int = 5,
         loss_hold_steps: int = 10,
+        group_reduction: str = "max",
     ) -> torch.Tensor:
-        group_forces = _group_forces(env, sensor_groups)
+        group_forces = _group_forces(env, sensor_groups, group_reduction)
         all_acquired = torch.all(
             group_forces >= acquire_threshold,
             dim=-1,

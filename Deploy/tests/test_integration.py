@@ -1,3 +1,4 @@
+# [test] MuJoCo 백엔드를 실제로 띄워서 도는 통합 테스트.
 from __future__ import annotations
 
 import unittest

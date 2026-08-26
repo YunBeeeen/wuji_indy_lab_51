@@ -1,3 +1,4 @@
+# [tool] 19mm ArUco 마커 비주얼을 배포용 MJCF에 심는다.
 """Install exact 19 mm OpenCV ArUco visuals in the derived deployment MJCF."""
 
 from __future__ import annotations

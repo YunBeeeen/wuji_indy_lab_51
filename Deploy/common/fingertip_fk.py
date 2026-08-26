@@ -1,3 +1,4 @@
+# [common] URDF 체인으로 손끝 5개를 palm 좌표로 푸는 FK. 어느 URDF를 쓸지 반드시 명시해야 함(엄지 3mm 차이).
 """Standalone Wuji Hand 1 fingertip FK parsed from a pinned URDF.
 
 There are TWO Wuji URDFs in this repository and they do not agree, so every

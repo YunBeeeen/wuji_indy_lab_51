@@ -218,6 +218,23 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
 
+    is_distillation_runner = agent_cfg.class_name == "DistillationRunner"
+    if is_distillation_runner and args_cli.load_actor_only:
+        raise ValueError(
+            "Distillation에서 --load_actor_only 는 의미가 없음. Fresh distillation은 "
+            "--init_checkpoint <103D teacher.pt>, 이어하기는 --resume 을 사용할 것."
+        )
+    if (
+        is_distillation_runner
+        and args_cli.init_checkpoint is None
+        and not agent_cfg.resume
+    ):
+        raise ValueError(
+            "Distillation teacher가 지정되지 않음. "
+            "--init_checkpoint <103D PPO teacher.pt> 를 사용하거나, 기존 "
+            "distillation run을 잇는 경우 --resume 을 사용할 것."
+        )
+
     # save resume path before creating a new log_dir
     if args_cli.init_checkpoint is not None:
         # 명시 경로 fine-tuning. get_checkpoint_path 는 현재 experiment_name 폴더
@@ -233,7 +250,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 " 전자는 다른 experiment 에서 가중치만 받아오는 것이고,"
                 " 후자는 같은 experiment 의 런을 이어가는 것이라 대상이 다름."
             )
-    elif agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation":
+    elif agent_cfg.resume:
         resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
 
     # wrap for video recording
@@ -261,15 +278,15 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # write git state to logs
     runner.add_git_repo_to_log(__file__)
     # load the checkpoint
-    if (
-        args_cli.init_checkpoint is not None
-        or agent_cfg.resume
-        or agent_cfg.algorithm.class_name == "Distillation"
-    ):
+    if args_cli.init_checkpoint is not None or agent_cfg.resume:
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
         # load previously trained model
         load_cfg = None
-        if args_cli.load_actor_only:
+        if is_distillation_runner and args_cli.init_checkpoint is not None:
+            # A PPO checkpoint initializes only the frozen teacher.  The 105D
+            # student, its optimizer and the new run's iteration start fresh.
+            load_cfg = {"teacher": True, "iteration": False}
+        elif args_cli.load_actor_only:
             load_cfg = {
                 "actor": True,
                 "critic": False,
@@ -290,7 +307,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 "rnd": False,
             }
         runner.load(resume_path, load_cfg=load_cfg)
-        if args_cli.load_actor_only:
+        if is_distillation_runner and args_cli.init_checkpoint is not None:
+            print(
+                "[INFO]: Loaded the explicit PPO checkpoint as the frozen "
+                "distillation teacher; student/optimizer/iteration start fresh."
+            )
+        elif args_cli.load_actor_only:
             print("[INFO]: Loaded actor only; critic, optimizer, and iteration start fresh.")
         elif args_cli.init_checkpoint is not None:
             print(
@@ -302,15 +324,41 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         # obs/action 차원이 다르면 위에서 이미 예외가 났을 것이고, 여기까지 왔다면
         # 두 태스크의 policy interface 가 동일하다는 뜻이다.
         try:
-            actor_params = list(runner.alg.actor.parameters())
-            print(
-                "[INFO]: policy interface verified -"
-                f" actor input {actor_params[0].shape[1]},"
-                f" actor output {actor_params[-1].shape[0]}"
-            )
+            def _mlp_interface(model):
+                weights = [
+                    parameter
+                    for name, parameter in model.named_parameters()
+                    if name.startswith("mlp.")
+                    and name.endswith(".weight")
+                    and parameter.ndim == 2
+                ]
+                if not weights:
+                    raise RuntimeError("MLP weight tensors were not found")
+                return weights[0].shape[1], weights[-1].shape[0]
+
+            if is_distillation_runner:
+                student_input, student_output = _mlp_interface(runner.alg.student)
+                teacher_input, teacher_output = _mlp_interface(runner.alg.teacher)
+                print(
+                    "[INFO]: distillation interfaces verified -"
+                    f" teacher {teacher_input}D -> {teacher_output}D,"
+                    f" student {student_input}D -> {student_output}D"
+                )
+            else:
+                actor_input, actor_output = _mlp_interface(runner.alg.actor)
+                print(
+                    "[INFO]: policy interface verified -"
+                    f" actor input {actor_input},"
+                    f" actor output {actor_output}"
+                )
         except Exception as exc:  # noqa: BLE001 - 로그용, 학습을 막지 않는다
             print(f"[WARN]: could not report policy shapes: {type(exc).__name__}: {exc}")
     if args_cli.reset_policy_std is not None:
+        if is_distillation_runner:
+            raise ValueError(
+                "--reset_policy_std 는 PPO actor용 옵션임. Distillation student "
+                "std는 runner cfg에서 설정할 것."
+            )
         reset_std = float(args_cli.reset_policy_std)
         if reset_std <= 0.0:
             raise ValueError("--reset_policy_std must be positive.")

@@ -680,16 +680,8 @@ class CustomRewardManager(RewardManager):
     def _configure_hand_grasp_metrics(self):
         """Enable contact and OPEN/CLOSE diagnostics only for hand_grasp."""
         self._hand_grasp_metric_enabled = False
-        self._hand_grasp_sensor_names = (
-            "thumb_distal_stick1",
-            "index_tip_stick1",
-            "middle_tip_stick1",
-            "palm_stick2",
-            "thumb_mid_stick2",
-            "ring_tip_stick2",
-        )
+        self._hand_grasp_tip_press_sensor_name = None
         self._hand_grasp_metric_names = [
-            *[f"{name}_force" for name in self._hand_grasp_sensor_names],
             "ring_support_force",
             "min_functional_force",
             "functional_contact_count",
@@ -830,8 +822,45 @@ class CustomRewardManager(RewardManager):
         }
         if not required_params.issubset(success_cfg.params):
             return
+        self._hand_grasp_sensor_groups = tuple(
+            tuple(group) for group in success_cfg.params["sensor_groups"]
+        )
+        self._hand_grasp_group_reduction = success_cfg.params.get(
+            "group_reduction", "max"
+        )
+        # Keep first-seen order while flattening the semantic groups.  This is
+        # six sensors for hand_real and eight raw sensors feeding hand_real2's
+        # six semantic groups.
+        self._hand_grasp_sensor_names = tuple(
+            dict.fromkeys(
+                name
+                for group in self._hand_grasp_sensor_groups
+                for name in group
+            )
+        )
+        self._hand_grasp_metric_names[:0] = [
+            f"{name}_force" for name in self._hand_grasp_sensor_names
+        ]
         if any(name not in self._env.scene.sensors for name in self._hand_grasp_sensor_names):
             return
+
+        # Optional tip-force fine-tuning diagnostics.  Resolve this from the
+        # reward term rather than hard-coding a scene name, so tasks without the
+        # hand_real term stay untouched.
+        try:
+            tip_press_cfg = self.get_term_cfg("tip_press_force")
+        except ValueError:
+            tip_press_cfg = None
+        if tip_press_cfg is not None:
+            tip_sensor_name = tip_press_cfg.params.get("tip_contact_sensor_name")
+            if tip_sensor_name in self._env.scene.sensors:
+                self._hand_grasp_tip_press_sensor_name = tip_sensor_name
+                self._hand_grasp_metric_names.extend(
+                    ["tip_contact_force", "close_tip_contact_force"]
+                )
+                self._hand_grasp_conditional_metrics["close_tip_contact_force"] = (
+                    "mode_close"
+                )
 
         stick1_name = success_cfg.params["stick1_cfg"].name
         stick2_name = success_cfg.params["stick2_cfg"].name
@@ -1002,15 +1031,36 @@ class CustomRewardManager(RewardManager):
                 force = torch.linalg.vector_norm(force_matrix, dim=-1).sum(dim=(-1, -2))
             sensor_forces[name] = force
 
+        tip_press_force = torch.zeros(
+            self.num_envs,
+            dtype=torch.float,
+            device=self.device,
+        )
+        if self._hand_grasp_tip_press_sensor_name is not None:
+            force_matrix = self._env.scene.sensors[
+                self._hand_grasp_tip_press_sensor_name
+            ].data.force_matrix_w
+            if force_matrix is not None:
+                tip_press_force = torch.linalg.vector_norm(
+                    force_matrix, dim=-1
+                ).sum(dim=(-1, -2))
+
         ring_support = sensor_forces["ring_tip_stick2"]
+        # Match reward/success semantics exactly.  A multi-sensor group is OR;
+        # hand_real2 expresses its required tip+link4 contacts as separate
+        # singleton groups, which makes the outer all/min operation logical AND.
         functional_forces = torch.stack(
             [
-                sensor_forces["thumb_distal_stick1"],
-                sensor_forces["index_tip_stick1"],
-                sensor_forces["middle_tip_stick1"],
-                sensor_forces["palm_stick2"],
-                sensor_forces["thumb_mid_stick2"],
-                ring_support,
+                (
+                    torch.min if self._hand_grasp_group_reduction == "min"
+                    else torch.max
+                )(
+                    torch.stack(
+                    [sensor_forces[name] for name in group], dim=-1
+                    ),
+                    dim=-1,
+                ).values
+                for group in self._hand_grasp_sensor_groups
             ],
             dim=-1,
         )
@@ -1428,6 +1478,8 @@ class CustomRewardManager(RewardManager):
                 "max_angular_speed": max_angular_speed,
                 "mode_open": mode[:, 0],
                 "mode_close": mode[:, 1],
+                "tip_contact_force": tip_press_force,
+                "close_tip_contact_force": mode[:, 1] * tip_press_force,
                 "tip_surface_gap": tip_surface_gap,
                 "tip_lateral_error": tip_lateral_error,
                 "tip_axial_offset": tip_axial_offset,
@@ -1521,6 +1573,17 @@ class CustomRewardManager(RewardManager):
             "stage1_pair_score",
             "thumb_pivot_distance",
             "thumb_pivot_score",
+            # 2026-08-26: body_box_axial_station_distance is built on abs(), so
+            # thumb_pivot_distance is identical 5 mm above and 5 mm below the
+            # shaft -- it cannot tell a correct approach from the mirrored one.
+            # Relaxing thumb_score_threshold 0.35 -> 0.20 grew the qualifying
+            # region from 60.2 to 188.4 cm^3 (3.13x) and half of that growth is
+            # on the wrong side.  These three signed components in the Stick1
+            # local frame are what distinguishes the two; thumb_offset_z is the
+            # face, and its sign is the whole question.
+            "thumb_offset_x",
+            "thumb_offset_y_from_station",
+            "thumb_offset_z",
             "stage1_ready",
             "stage1_unlocked",
             "missing_joint_best_score",
@@ -1589,6 +1652,17 @@ class CustomRewardManager(RewardManager):
             "index_tip_stick1_surface_distance",
             "middle_tip_stick1_surface_distance",
             "ring_tip_stick2_surface_distance",
+            # 2026-08-26: signed face coordinate, stick local z, in metres.
+            # The surface distances above and contact_group_strength are both
+            # magnitudes, so nothing in the reward or the metrics could tell
+            # which face of the shaft a fingertip was on.  The stick half
+            # extent is 3.5 mm, so a value above +0.0035 is the upper face and
+            # below -0.0035 is the lower one.  Run 2026-08-26_04-26-02 won its
+            # fourth contact with middle_tip at 0.202 N and there was no way to
+            # check it was the intended face.
+            "index_tip_stick1_face_z",
+            "middle_tip_stick1_face_z",
+            "ring_tip_stick2_face_z",
             "pose_valid",
             "stick1_linear_speed",
             "stick2_linear_speed",
@@ -1630,18 +1704,36 @@ class CustomRewardManager(RewardManager):
                 "reference_thumb_pivot_min"
             )
             stage1_cfg = self.get_term_cfg("stage1_joint_reference")
-            missing_joint_cfg = self.get_term_cfg(
-                "stage1_missing_joint_reference"
-            )
             try:
-                linear_missing_joint_cfg = self.get_term_cfg(
-                    "stage1_missing_joint_best_so_far"
+                missing_joint_cfg = self.get_term_cfg(
+                    "stage1_missing_joint_reference"
                 )
             except ValueError:
-                # Rollback compatibility with the parked per-step annuity.
-                linear_missing_joint_cfg = self.get_term_cfg(
-                    "stage1_missing_joint_linear_reference"
+                # 2026-08-25 linear + fine split.  The metric block needs a
+                # term carrying joint_sigma, which is the fine half; the linear
+                # half has joint_linear_range instead and would fail the
+                # required-parameter check below, killing every hand_setting
+                # metric.
+                missing_joint_cfg = self.get_term_cfg(
+                    "stage1_missing_joint_fine"
                 )
+            try:
+                # 2026-08-25 signed-progress A/B.  All three terms expose the
+                # same params and the same best/current diagnostic API, so the
+                # hand_setting metrics are identical across the variants.
+                linear_missing_joint_cfg = self.get_term_cfg(
+                    "stage1_missing_joint_signed_progress"
+                )
+            except ValueError:
+                try:
+                    linear_missing_joint_cfg = self.get_term_cfg(
+                        "stage1_missing_joint_best_so_far"
+                    )
+                except ValueError:
+                    # Rollback compatibility with the parked per-step annuity.
+                    linear_missing_joint_cfg = self.get_term_cfg(
+                        "stage1_missing_joint_linear_reference"
+                    )
         except ValueError:
             return
         try:
@@ -2108,6 +2200,32 @@ class CustomRewardManager(RewardManager):
         thumb_pivot_score = torch.exp(
             -thumb_pivot_distance / float(pivot_params["thumb_sigma"])
         )
+        # Signed thumb position in the Stick1 local frame.  Diagnostics must
+        # never take a 4096-env run down, so this falls back to zeros.
+        try:
+            thumb_cfg = pivot_params["thumb_cfg"]
+            stick1_asset = self._env.scene[pivot_params["stick1_cfg"].name]
+            thumb_body_w = self._env.scene[thumb_cfg.name].data.body_pos_w[
+                :,
+                thumb_cfg.body_ids[0],
+            ]
+            thumb_offset_o = math_utils.quat_apply_inverse(
+                stick1_asset.data.root_quat_w,
+                thumb_body_w - stick1_asset.data.root_pos_w,
+            )
+            long_axis = int(pivot_params["long_axis"])
+            thumb_offset_x = thumb_offset_o[:, 0]
+            thumb_offset_y_from_station = (
+                thumb_offset_o[:, long_axis]
+                - float(pivot_params["pivot_station"])
+            )
+            thumb_offset_z = thumb_offset_o[:, 2]
+        except (KeyError, TypeError, ValueError, IndexError, AttributeError):
+            thumb_offset_x = torch.zeros_like(thumb_pivot_distance)
+            thumb_offset_y_from_station = torch.zeros_like(
+                thumb_pivot_distance
+            )
+            thumb_offset_z = torch.zeros_like(thumb_pivot_distance)
         stage1_params = self._hand_setting_stage1_params
         stage1_stick1_score = torch.exp(
             -stick1_position_error / float(stage1_params["position_sigma"])
@@ -2445,6 +2563,35 @@ class CustomRewardManager(RewardManager):
                 )
             ),
         }
+        # Signed face coordinate for the same three tips.  Diagnostics must
+        # never take a 4096-env run down, so this falls back to zeros.
+        try:
+            face_z = {}
+            for label, tip_key, stick_key in (
+                ("index_tip_stick1_face_z", "index_tip_cfg", "stick1_cfg"),
+                ("middle_tip_stick1_face_z", "middle_tip_cfg", "stick1_cfg"),
+                ("ring_tip_stick2_face_z", "ring_tip_cfg", "stick2_cfg"),
+            ):
+                face_z[label] = (
+                    self._hand_setting_body_surface_region_geometry(
+                        self._env,
+                        params[tip_key],
+                        params[stick_key],
+                        stick_half_extent,
+                        int(params["long_axis"]),
+                        float(params["axial_half_length"]),
+                        2,
+                        1.0,
+                    )[0]
+                )
+        except (KeyError, TypeError, ValueError, IndexError, AttributeError):
+            zero = torch.zeros_like(stage1_pair_score)
+            face_z = {
+                "index_tip_stick1_face_z": zero,
+                "middle_tip_stick1_face_z": zero,
+                "ring_tip_stick2_face_z": zero,
+            }
+        missing_tip_surface_metrics.update(face_z)
         if self._hand_setting_semantic_approach_range is None:
             semantic_approach_mean_score = torch.zeros_like(stage1_pair_score)
             semantic_approach_min_score = torch.zeros_like(stage1_pair_score)
@@ -2548,6 +2695,9 @@ class CustomRewardManager(RewardManager):
                 "stage1_pair_score": stage1_pair_score,
                 "thumb_pivot_distance": thumb_pivot_distance,
                 "thumb_pivot_score": thumb_pivot_score,
+                "thumb_offset_x": thumb_offset_x,
+                "thumb_offset_y_from_station": thumb_offset_y_from_station,
+                "thumb_offset_z": thumb_offset_z,
                 "stage1_ready": stage1_ready.float(),
                 "stage1_unlocked": stage1_unlocked.float(),
                 "missing_joint_best_score": missing_joint_best_score,

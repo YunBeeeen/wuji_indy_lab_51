@@ -6,6 +6,27 @@
 
 ## Codex 운영 메모
 
+- **2026-08-25 Box-Transport quaternion orientation reward 복원:** active pose reward를
+  8-corner keypoint MAX에서 position/orientation 분리형으로 바꿨다. 검증된 box 성공 run
+  `2026-07-21_23-01-25_chopsticks(success)` 기준으로 `cube_transport=8000`, quaternion 내적 기반
+  8-대칭 `box_orientation=4000`을 활성화하고 `keypoint_goal=None`으로 active reward
+  manager에서 제거했다. 비종료 성공
+  보너스도 keypoint 거리 대신 `position<5 cm && orientation<15° && tripod_gate>0.3`을 15 step
+  유지하는 `PoseGoalReachedBonus`로 바꿨으며 weight `60000`은 유지했다. grip/lift/action/69D raw
+  observation은 불변이다. reward/success 의미 변경이므로 이전 checkpoint resume 금지, fresh 학습만 한다.
+- **2026-08-25 Box-Transport raw observation 전환:** `Indy-Wuji-Box-Transport`의 default
+  actor observation을 92D engineered 구성에서 **69D raw-pose 구성**으로 바꿨다. 순서는
+  `joint_pos(26) + box_pose_w(xyz+wxyz,7) + box_size(3) + goal_pose_w(xyz+wxyz,7)
+  + action_history(26)`이다. box/goal은 모두 world frame으로 표기하며 quaternion은 canonical
+  `wxyz`다. 병렬 env의 배치 translation은 position에서 제거한다.
+  `cube_in_fingertips(15)`,
+  `index/thumb/middle_grip_error(9)`, `cube_to_goal(3)`, `box_ori_to_target(3)`은 actor에서
+  제거했다. grip reward와 gate는 유지하며 pose reward/success는 위 quaternion 항목처럼 후속
+  변경했다. Cube-Grasp는 별도 공용 cfg라
+  무영향이다. 이전 default 92D 및 legacy 76D checkpoint는 새 관측과 비호환이므로 반드시 fresh로
+  학습한다. `WUJI_LEGACY_ACTION=1`은 이제 action 18 / raw obs 53이며 예전 checkpoint play 복원
+  기능이 아니다. 정적 `py_compile`/scoped `git diff --check`만 완료했고 런타임 69D 확인은 사용자 실행이
+  필요하다.
 - **2026-08-17 MuJoCo Camera2 reset-tail 결정:** 추가 Camera2는 Hand/Palm `+Y` 측에서
   `-Y`를 보는 **하강각 0° 수평 설치**로 고정하고, full-workspace tracker가 아니라 reset의
   tail marker ID0/ID2 확인용 보조 카메라로 범위를 좁혔다. reset marker Base 높이는

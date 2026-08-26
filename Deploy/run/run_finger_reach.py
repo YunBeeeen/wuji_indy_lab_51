@@ -1,3 +1,4 @@
+# [run/MuJoCo] 중지 reach 진단을 MuJoCo에서 실행. 실물 판과 같은 CSV 컬럼.
 """Run the middle-finger reach diagnostic in MuJoCo, in the real hand's shape.
 
 The loop mirrors the vendor SDK example: read a 20-joint finger-major state,

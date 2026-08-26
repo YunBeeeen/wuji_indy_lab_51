@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# [run/양쪽] 녹화한 Isaac 관절 목표를 정책 없이 재생. MuJoCo와 실물이 같은 코드.
 """Replay a logged Isaac joint-target trajectory on MuJoCo or the real hand.
 
 The input is a CSV written by ``play.py``'s ``M`` key (see ``HandJointRecorder``).
@@ -29,8 +30,11 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import select
 import sys
+import termios
 import time
+import tty
 from pathlib import Path
 
 import numpy as np
@@ -235,8 +239,34 @@ def timed_glide_real(
 ):
     """Actual convergence를 요구하지 않고 target을 선형으로 이동시킨다."""
 
-    q_from = np.asarray(q_from, dtype=np.float32)
-    q_to = np.asarray(q_to, dtype=np.float32)
+    q_from_raw = np.asarray(q_from, dtype=np.float32)
+    q_to_raw = np.asarray(q_to, dtype=np.float32)
+    lower = COMMAND_TARGET_LIMITS[:, 0]
+    upper = COMMAND_TARGET_LIMITS[:, 1]
+
+    # Measured q can legitimately sit just outside the deployment envelope
+    # while the motors are off.  The trajectory CSV is clamped when loaded,
+    # but this bring-up/return helper also receives raw encoder poses.  Starting
+    # interpolation from that raw value leaves the first few targets outside
+    # COMMAND_TARGET_LIMITS and the backend correctly refuses them (measured:
+    # finger1_joint2 -0.214788 against the -0.213203 lower bound).  A command
+    # trajectory cannot reproduce the out-of-envelope part of a measured pose,
+    # so clamp both endpoints explicitly and keep every blended sample inside
+    # the same one hardware envelope used by all other real-hand commands.
+    q_from = np.clip(q_from_raw, lower, upper).astype(np.float32)
+    q_to = np.clip(q_to_raw, lower, upper).astype(np.float32)
+
+    for endpoint, raw, clipped in (
+        ("start", q_from_raw, q_from),
+        ("goal", q_to_raw, q_to),
+    ):
+        hit = np.flatnonzero(np.abs(clipped - raw) > 1e-9)
+        if hit.size:
+            details = ", ".join(
+                f"{POLICY_JOINT_NAMES[j]} {raw[j]:+.6f}->{clipped[j]:+.6f}"
+                for j in hit
+            )
+            print(f"[{label}] {endpoint} pose command-limit clamp: {details}")
 
     dt = 1.0 / command_hz
     ticks = max(1, int(np.ceil(seconds * command_hz)))
@@ -254,9 +284,11 @@ def timed_glide_real(
     for i in range(ticks):
         alpha = (i + 1) / ticks
 
-        target = (
+        target = np.clip(
             (1.0 - alpha) * q_from
-            + alpha * q_to
+            + alpha * q_to,
+            lower,
+            upper,
         ).astype(np.float32)
 
         backend.write_joint_position_targets(
@@ -288,6 +320,12 @@ def build_argument_parser() -> argparse.ArgumentParser:
     p.add_argument("--backend", choices=("mujoco", "real"), default="mujoco")
     p.add_argument("--segment", type=int, default=None,
                    help="Replay only this OPEN/CLOSE segment (default: the whole file).")
+    p.add_argument("--keyboard-open-close", action="store_true",
+                   help="Real backend: use 1=OPEN, 2=CLOSE, q=quit with segments from this CSV.")
+    p.add_argument("--open-segment", type=int, default=None,
+                   help="OPEN segment for keyboard mode (default: last OPEN segment).")
+    p.add_argument("--close-segment", type=int, default=None,
+                   help="CLOSE segment for keyboard mode (default: last CLOSE segment).")
 
     p.add_argument("--limit-margin", type=float, default=0.95, metavar="FRACTION",
                    help="Command only this fraction of each joint's range, as "
@@ -541,7 +579,51 @@ def confirm(prompt: str, skip: bool) -> None:
         raise SystemExit("중단했습니다.")
 
 
-def run_real(traj: Trajectory, stream, args) -> int:
+def _keyboard_segments(csv_path: Path, limit_fraction: float, open_segment, close_segment):
+    """Resolve one OPEN and one CLOSE segment from a single recorder CSV."""
+    whole = Trajectory(csv_path, limit_fraction)
+    mode_by_segment = {}
+    for segment, mode in zip(whole.segments.tolist(), whole.modes):
+        previous = mode_by_segment.setdefault(int(segment), mode)
+        if previous != mode:
+            raise ValueError(f"segment {segment} contains both {previous} and {mode} modes")
+
+    def pick(requested, mode):
+        candidates = [s for s, recorded_mode in mode_by_segment.items() if recorded_mode == mode]
+        if not candidates:
+            raise ValueError(f"CSV has no {mode} segment.")
+        selected = max(candidates) if requested is None else int(requested)
+        if mode_by_segment.get(selected) != mode:
+            raise ValueError(
+                f"segment {selected} is {mode_by_segment.get(selected, 'missing')}, not {mode}."
+            )
+        return selected
+
+    open_id = pick(open_segment, "OPEN")
+    close_id = pick(close_segment, "CLOSE")
+    return (
+        Trajectory(csv_path, limit_fraction, open_id),
+        Trajectory(csv_path, limit_fraction, close_id),
+        open_id,
+        close_id,
+    )
+
+
+def _read_replay_key() -> str:
+    """Read one key immediately from a terminal, while still allowing Ctrl+C."""
+    fd = sys.stdin.fileno()
+    previous = termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)
+        while True:
+            ready, _, _ = select.select([sys.stdin], [], [], 0.1)
+            if ready:
+                return sys.stdin.read(1).lower()
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, previous)
+
+
+def run_real(traj: Trajectory, stream, args, keyboard_streams=None) -> int:
     from ..backends.real_wuji import RealWujiHand
     from ..backends.real_wuji_scheduler import RealWujiScheduler
 
@@ -670,6 +752,91 @@ def run_real(traj: Trajectory, stream, args) -> int:
                 backend.publish_latest_target(controller)
                 time.sleep(dt)
 
+            if keyboard_streams is not None:
+                open_stream, close_stream, open_id, close_id = keyboard_streams
+
+                # The recorded OPEN transition starts from a closed grasp.  Establish
+                # that state once, then only execute a transition when its opposite
+                # state is currently active.
+                initial_target = close_stream[-1]
+                initial_delta = float(np.max(np.abs(initial_target - pregrasp)))
+                timed_glide_real(
+                    backend=backend,
+                    controller=controller,
+                    q_from=pregrasp,
+                    q_to=initial_target,
+                    command_hz=args.command_hz,
+                    seconds=max(0.5, initial_delta / VALIDATED_JOINT_SPEED_RAD_S),
+                    max_step_rad=args.max_step_rad,
+                    label="BRIDGE PREGRASP -> CLOSE",
+                )
+                current_mode = "CLOSE"
+                current_target = initial_target
+                print(
+                    f"[KEYBOARD] segment {open_id}=OPEN, {close_id}=CLOSE\n"
+                    "           1=OPEN  2=CLOSE  q=종료  (Enter 불필요)"
+                )
+
+                while True:
+                    key = _read_replay_key()
+                    if key == "q":
+                        print("\n[KEYBOARD] 종료")
+                        break
+                    requested = {"1": "OPEN", "2": "CLOSE"}.get(key)
+                    if requested is None:
+                        continue
+                    if requested == current_mode:
+                        print(f"\n[KEYBOARD] 이미 {current_mode}; 무시")
+                        continue
+
+                    selected = open_stream if requested == "OPEN" else close_stream
+                    bridge_delta = float(np.max(np.abs(selected[0] - current_target)))
+                    if bridge_delta > 1e-6:
+                        timed_glide_real(
+                            backend=backend,
+                            controller=controller,
+                            q_from=current_target,
+                            q_to=selected[0],
+                            command_hz=args.command_hz,
+                            seconds=max(0.25, bridge_delta / VALIDATED_JOINT_SPEED_RAD_S),
+                            max_step_rad=args.max_step_rad,
+                            label=f"BRIDGE -> {requested}",
+                        )
+
+                    print(f"[{requested}]  {len(selected)} commands")
+                    replay_start = time.monotonic()
+                    for i, target in enumerate(selected):
+                        backend.write_joint_position_targets(
+                            target, max_step_rad=args.max_step_rad
+                        )
+                        backend.publish_latest_target(controller)
+                        deadline = replay_start + (i + 1) * dt
+                        wait = deadline - time.monotonic()
+                        if wait > 0:
+                            time.sleep(wait)
+                        else:
+                            scheduler.timing.late_ticks += 1
+                    current_target = selected[-1]
+                    current_mode = requested
+                    print(f"[{requested}]  완료")
+
+                if args.return_to_start:
+                    return_delta = float(np.max(np.abs(current_target - q_now)))
+                    timed_glide_real(
+                        backend=backend,
+                        controller=controller,
+                        q_from=current_target,
+                        q_to=q_now,
+                        command_hz=args.command_hz,
+                        seconds=max(args.start_seconds,
+                                    return_delta / VALIDATED_JOINT_SPEED_RAD_S),
+                        max_step_rad=args.max_step_rad,
+                        label="RETURN -> START",
+                    )
+                    print("[RETURN]   시작 자세 command 도달")
+                print(f"[TIMING]   {scheduler.timing.summary()}")
+                return 0
+
 
             # ---------------------------------------------------------
             # 3. PREGRASP -> CSV 첫 qt
@@ -772,10 +939,33 @@ def run_real(traj: Trajectory, stream, args) -> int:
 
 def main() -> int:
     args = build_argument_parser().parse_args()
-    traj = Trajectory(args.csv, args.limit_margin, args.segment)
-    speed = resolve_speed(traj, args.speed, args.max_joint_speed)
-    stream, per_row = command_schedule(traj, speed, args.command_hz)
-    describe_plan(traj, speed, per_row, len(stream), args)
+    keyboard_streams = None
+    if args.keyboard_open_close:
+        if args.backend != "real":
+            raise ValueError("--keyboard-open-close currently supports --backend real only.")
+        if args.segment is not None:
+            raise ValueError("Do not combine --segment with --keyboard-open-close.")
+        if args.out is not None:
+            raise ValueError("--out is not supported for an unbounded keyboard session.")
+        open_traj, close_traj, open_id, close_id = _keyboard_segments(
+            args.csv, args.limit_margin, args.open_segment, args.close_segment
+        )
+        open_speed = resolve_speed(open_traj, args.speed, args.max_joint_speed)
+        close_speed = resolve_speed(close_traj, args.speed, args.max_joint_speed)
+        open_stream, open_per_row = command_schedule(open_traj, open_speed, args.command_hz)
+        close_stream, close_per_row = command_schedule(close_traj, close_speed, args.command_hz)
+        print(f"[KEYBOARD] selected OPEN segment {open_id}, CLOSE segment {close_id}")
+        describe_plan(open_traj, open_speed, open_per_row, len(open_stream), args)
+        describe_plan(close_traj, close_speed, close_per_row, len(close_stream), args)
+        traj, stream = close_traj, close_stream
+        keyboard_streams = (open_stream, close_stream, open_id, close_id)
+    else:
+        if args.open_segment is not None or args.close_segment is not None:
+            raise ValueError("--open-segment/--close-segment require --keyboard-open-close.")
+        traj = Trajectory(args.csv, args.limit_margin, args.segment)
+        speed = resolve_speed(traj, args.speed, args.max_joint_speed)
+        stream, per_row = command_schedule(traj, speed, args.command_hz)
+        describe_plan(traj, speed, per_row, len(stream), args)
 
     limits = soft_command_limits(args.limit_margin)
     assert (stream >= limits[:, 0] - 1e-6).all() and (stream <= limits[:, 1] + 1e-6).all()
@@ -786,7 +976,8 @@ def main() -> int:
     if args.dry_run:
         print("\n[DRY RUN]  백엔드를 열지 않고 종료합니다.")
         return 0
-    return run_mujoco(traj, stream, args) if args.backend == "mujoco" else run_real(traj, stream, args)
+    return (run_mujoco(traj, stream, args) if args.backend == "mujoco"
+            else run_real(traj, stream, args, keyboard_streams=keyboard_streams))
 
 
 if __name__ == "__main__":

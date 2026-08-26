@@ -1,3 +1,4 @@
+# [backend/실물] 하드웨어 백엔드 생성 게이트 — 실측으로 검증된 항목과 미측정 항목을 명시적으로 나열.
 """Construct the hardware backend, with an explicit record of what is verified.
 
 ``RealWujiHand`` in ``real_wuji.py`` is the SDK wrapper.  This module is the

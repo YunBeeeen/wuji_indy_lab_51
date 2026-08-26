@@ -1,3 +1,4 @@
+# [tool] 실험대 근사 형상을 scene 상수에서 생성(시각 확인용).
 """Generate approximate fixture geometry from named scene-contract values."""
 
 from __future__ import annotations

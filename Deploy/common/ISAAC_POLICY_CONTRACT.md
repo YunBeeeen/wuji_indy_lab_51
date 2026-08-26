@@ -3,7 +3,8 @@
 > Historical audit amended for the active 105D `hand_real` observation. It is
 > not the source of truth for the Real-ready model, limits, or controller. Use
 > `policy_contract.py`, the pinned official description, and
-> `VALIDATION_REPORT.md`. Existing ONNX compatibility is not required.
+> `VALIDATION_REPORT.md`. Existing ONNX compatibility is not part of the active
+> contract; the separately audited 101D adapter is documented in section F.
 
 Status: source-audited on 2026-08-14. Current source code and the inspected ONNX
 graph take precedence over older worklog notes. This document describes the
@@ -275,9 +276,15 @@ dynamic batch: no
 custom metadata: none
 ```
 
-This is the superseded 101D graph. It must not be loaded by the active 105D
-deployment contract; a new policy/export is required. The historical
-hand_real exported graph had the same old fixed shapes.
+This is the superseded 101D graph. It still must not be loaded by the active
+105D deployment contract. As of 2026-08-25 it is supported only through the
+isolated `policy/legacy_hand_final_101.py` adapter, selected automatically from
+the ONNX input width by `policy/grasp_policy_contract.py`. That adapter restores
+the 6D directed-axis stick history, old local-URDF normalization limits,
+uniform 0.1 rad residuals, Joint4 lower floors, and the run-owned reset pose as
+one bundle; it does not alter the active 105D constants. The historical
+hand_real exported graph had the same old fixed shapes, but only this audited
+2026-08-13 hand_final lineage is claimed by the compatibility adapter.
 The current `play.py` exports after loading its selected checkpoint and writes
 `exported/policy.onnx` beside that checkpoint (`scripts/rsl_rl/play.py:1075-1094`).
 The installed RSL-RL exporter uses the model's named dummy inputs and ONNX opset

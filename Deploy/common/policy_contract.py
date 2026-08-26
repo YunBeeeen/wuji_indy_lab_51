@@ -1,3 +1,4 @@
+# [common] 20관절 정책 계약 — 관절 이름·순서, 세 한계 테이블, obs 슬라이스, 액션 스케일, kp/kd/effort.
 """Canonical Wuji Hand 1 policy contract shared by every backend.
 
 The nominal model values come from wuji-description commit
@@ -135,7 +136,40 @@ OBSERVATION_NORMALIZATION_LIMITS = REAL_HAND_FACTORY_LIMITS.copy()
 # 0.000 N.m from a joint that carries one of the six functional contacts.
 # Keeping the floor here and not in Isaac would re-freeze that joint on the
 # real hand only.
-COMMAND_TARGET_LIMITS = REAL_HAND_FACTORY_LIMITS.copy()
+#
+# 2026-08-22: scaled by COMMAND_LIMIT_RATIO on the user's instruction, to keep
+# the hand off its mechanical stops.  This is a DELIBERATE narrowing of the
+# trained action space, not a correction -- see the constant below.
+
+#: Fraction of each factory joint limit the policy is allowed to command.
+#:
+#: The trained action space was the full range (Isaac's
+#: ``soft_joint_pos_limit_factor`` is 1.0, so the policy WAS allowed to command
+#: the hard stop, and measurements on 2026-08-22 showed it doing exactly that:
+#: ``finger5_joint3`` railed on 100% of steps, asking for 179 mrad/tick past
+#: the stop).  Narrowing here therefore changes what the policy can express --
+#: it was chosen for hardware safety with that cost accepted.
+#:
+#: The rule is ``limit * ratio``, NOT ``centre +- ratio * half_range``
+#: (``soft_command_limits`` below, which is Isaac's definition and is used for
+#: the bring-up glides).  The two give different numbers -- for
+#: ``finger5_joint3`` the upper bound is 1.5914 here versus 1.6197 there -- so
+#: never substitute one for the other.  ``limit * ratio`` only shrinks a range
+#: when it straddles zero, which is asserted at import.
+COMMAND_LIMIT_RATIO = 0.95
+
+COMMAND_TARGET_LIMITS = (REAL_HAND_FACTORY_LIMITS * COMMAND_LIMIT_RATIO).astype(np.float32)
+if not (
+    np.all(REAL_HAND_FACTORY_LIMITS[:, 0] <= 0.0)
+    and np.all(REAL_HAND_FACTORY_LIMITS[:, 1] >= 0.0)
+):
+    # Multiplying a range that does not contain zero moves one bound AWAY from
+    # the centre -- a "safety" ratio would then widen the very side it was
+    # meant to protect.  All twenty joints straddle zero today; if a future
+    # table does not, this must become an explicit shrink-toward-centre.
+    raise RuntimeError(
+        "COMMAND_LIMIT_RATIO assumes every joint range contains 0; "
+        "scaling a one-sided range would widen it.")
 
 
 def soft_command_limits(fraction: float, limits=None):
@@ -290,6 +324,25 @@ OBSERVATION_SLICES: dict[str, ObservationSlice] = {
 OBSERVATION_DIM = max(term.stop for term in OBSERVATION_SLICES.values())
 
 
+def observation_csv_columns() -> list[str]:
+    """One CSV column name per observation element, named by its block.
+
+    Derived from ``OBSERVATION_SLICES`` rather than written out, so a layout
+    change cannot leave the logs mislabelled -- the failure mode where a column
+    called ``stick1`` quietly holds fingertips is unrecoverable after the fact.
+    The index inside the name is the index within the block, which is what you
+    want when reading e.g. ``obs_stick1_current_03`` as a quaternion component.
+    """
+
+    columns = ["" for _ in range(OBSERVATION_DIM)]
+    for name, term in OBSERVATION_SLICES.items():
+        for offset, index in enumerate(range(term.start, term.stop)):
+            columns[index] = f"obs_{name}_{offset:02d}"
+    if any(not column for column in columns):
+        raise RuntimeError("OBSERVATION_SLICES leaves a gap; columns would be unnamed.")
+    return columns
+
+
 def normalize_joint_positions(joint_positions: npt.ArrayLike) -> npt.NDArray[np.float32]:
     """Normalize canonical actual q without clipping.
 
@@ -306,12 +359,26 @@ def normalize_joint_positions(joint_positions: npt.ArrayLike) -> npt.NDArray[np.
 
 
 def mode_one_hot(mode: str) -> npt.NDArray[np.float32]:
+    """OPEN/CLOSE/NEUTRAL as the two-element command in ``obs[103:105]``.
+
+    NEUTRAL is ``[0, 0]`` -- not a missing command but a THIRD state the task
+    can train on.  ``HandMoveOpenCloseCommandCfg.neutral_before_open_close``
+    emits it before ``open_close_start_time_s``, and a task whose
+    ``episode_length_s`` equals that boundary (the 5 s grasp/setting curriculum
+    stage, e.g. ``hand_real2``) therefore trains on NEUTRAL and nothing else.
+    Such a checkpoint has never seen ``[1, 0]`` or ``[0, 1]``; driving it with
+    the OPEN/CLOSE schedule feeds it an input outside its training set.
+    """
+
     normalized = mode.strip().lower()
     if normalized == "open":
         return np.asarray([1.0, 0.0], dtype=np.float32)
     if normalized == "close":
         return np.asarray([0.0, 1.0], dtype=np.float32)
-    raise ValueError(f"Unknown hand mode {mode!r}; expected 'open' or 'close'.")
+    if normalized == "neutral":
+        return np.asarray([0.0, 0.0], dtype=np.float32)
+    raise ValueError(
+        f"Unknown hand mode {mode!r}; expected 'open', 'close' or 'neutral'.")
 
 
 def validate_factory_limits(
@@ -398,10 +465,28 @@ def validate_contract() -> None:
         )
     if np.shares_memory(OBSERVATION_NORMALIZATION_LIMITS, COMMAND_TARGET_LIMITS):
         raise RuntimeError("Observation and command limits must not alias.")
-    if not np.array_equal(COMMAND_TARGET_LIMITS, OBSERVATION_NORMALIZATION_LIMITS):
+    # Until 2026-08-22 these two had to be EQUAL, because Isaac trains with a
+    # single clamp derived from the articulation limits.  COMMAND_LIMIT_RATIO
+    # deliberately breaks that equality to keep the hand off its stops, so the
+    # invariant is now containment plus the exact scaling rule.  Normalization
+    # must stay on the unscaled table: it defines what the network's inputs
+    # mean, and rescaling it would feed the policy numbers it never trained on.
+    if not np.array_equal(OBSERVATION_NORMALIZATION_LIMITS, REAL_HAND_FACTORY_LIMITS):
         raise RuntimeError(
-            "Command and observation ranges must match: Isaac trains with a "
-            "single clamp derived from the articulation limits."
+            "Observation normalization must stay on the unscaled factory table."
+        )
+    if not np.allclose(COMMAND_TARGET_LIMITS,
+                       REAL_HAND_FACTORY_LIMITS * COMMAND_LIMIT_RATIO,
+                       atol=1e-7):
+        raise RuntimeError(
+            "COMMAND_TARGET_LIMITS must be REAL_HAND_FACTORY_LIMITS * COMMAND_LIMIT_RATIO."
+        )
+    if np.any(COMMAND_TARGET_LIMITS[:, 0] < OBSERVATION_NORMALIZATION_LIMITS[:, 0]) or np.any(
+        COMMAND_TARGET_LIMITS[:, 1] > OBSERVATION_NORMALIZATION_LIMITS[:, 1]
+    ):
+        raise RuntimeError(
+            "The command range must sit inside the normalization range; a "
+            "commandable target the policy cannot express is a wiring error."
         )
     if OBSERVATION_DIM != 105:
         raise RuntimeError(f"StickPose7D contract must be 105D, got {OBSERVATION_DIM}.")

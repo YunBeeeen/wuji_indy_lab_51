@@ -1,3 +1,4 @@
+# [policy] 105D 관측 조립 — q 히스토리·손끝FK·스틱 두 개·last_action·모드. 손끝은 백엔드가 아니라 여기서 FK로 푼다.
 """Canonical 105D observation builder with policy-step history.
 
 ``obs[40:55]`` is solved here from measured joint angles rather than taken from
@@ -15,12 +16,14 @@ real hand has no Cartesian sensor and could only ever have done it this way.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import ClassVar
 
 import numpy as np
 import numpy.typing as npt
 
 from ..common.fingertip_fk import POLICY_TIP_FRAME_URDF, WujiHand1FingertipFK
 from ..common.perception import PoseState, StickPosePair7D, StickPoseProvider, SyntheticStickPoseProvider
+from ..common.timing import StageTimer
 from ..common.policy_contract import (
     ACTION_DIM,
     OBSERVATION_DIM,
@@ -46,9 +49,16 @@ def policy_fingertip_fk() -> WujiHand1FingertipFK:
 class PolicyObservationAdapter:
     """Maintain oldest-to-newest q/stick history independent of a backend."""
 
+    observation_dim: ClassVar[int] = OBSERVATION_DIM
+    observation_slices: ClassVar[dict[str, object]] = OBSERVATION_SLICES
+
     mode: str = "open"
     stick_provider: StickPoseProvider = field(default_factory=SyntheticStickPoseProvider)
     fingertip_fk: WujiHand1FingertipFK = field(default_factory=policy_fingertip_fk)
+    #: Splits the two things that build an observation: asking perception for a
+    #: stick pose, and solving fingertip FK.  Without the split a slow tick is
+    #: just "observation_build" and says nothing about which one to look at.
+    timing: StageTimer = field(default_factory=lambda: StageTimer(name="obs"))
 
     def __post_init__(self) -> None:
         self.set_mode(self.mode)
@@ -71,7 +81,8 @@ class PolicyObservationAdapter:
         q = self._validate_vector(q_current, ACTION_DIM, "q_current")
         tips = self._fingertips_from_joints(q)
         self.stick_provider.reset()
-        sticks = self.stick_provider.sample()
+        with self.timing.stage("stick_sample"):
+            sticks = self.stick_provider.sample()
         self._last_stick_sample = sticks
         self._q_previous = q.copy()
         self._q_current = q.copy()
@@ -93,7 +104,8 @@ class PolicyObservationAdapter:
         q = self._validate_vector(q_current, ACTION_DIM, "q_current")
         tips = self._fingertips_from_joints(q)
         action = self._validate_vector(last_action, ACTION_DIM, "last_action")
-        sticks = self.stick_provider.sample()
+        with self.timing.stage("stick_sample"):
+            sticks = self.stick_provider.sample()
         self._last_stick_sample = sticks
         self._q_previous = self._q_current.copy()
         self._q_current = q.copy()
@@ -144,9 +156,9 @@ class PolicyObservationAdapter:
     def _fingertips_from_joints(self, q: npt.NDArray[np.float32]) -> npt.NDArray[np.float32]:
         """Solve obs[40:55] in the trained tip frames from measured q."""
 
-        return self._validate_vector(
-            self.fingertip_fk.fingertip_positions_in_palm(q), 15, "fingertips_in_palm"
-        )
+        with self.timing.stage("fingertip_fk"):
+            tips = self.fingertip_fk.fingertip_positions_in_palm(q)
+        return self._validate_vector(tips, 15, "fingertips_in_palm")
 
     @staticmethod
     def _validate_vector(value: npt.ArrayLike, size: int, label: str) -> npt.NDArray[np.float32]:

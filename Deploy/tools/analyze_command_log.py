@@ -1,3 +1,4 @@
+# [tool] 90Hz 명령 로그를 읽어 정책 스텝 내부(틱 간 거동)를 들여다본다.
 """Read a ``*_90hz.csv`` command-rate log and look inside the policy step.
 
 The policy samples q every 33.3 ms, so the 30 Hz log shows only where the joint

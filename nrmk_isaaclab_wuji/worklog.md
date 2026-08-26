@@ -4422,3 +4422,33 @@ palm_normal_b (0.19,0.28,0.94) -> (1,0,0)   rewards.py + managers.py
 - 주의: **`hand_real`에 0.95를 그대로 옮기면 pregrasp가 범위 밖**이다(idx 10/18이
   1.6272 vs 상한 1.6244/1.6197). finger_reach에서 공짜였던 것이 파지에선 아니다.
 - 상세는 root `ACTIVITY_2026-08-19.md` 7~10절.
+
+### 2026-08-21 ~ 08-24 — 105D 실물 파지 배포, 체크포인트 교체, 전류 상한
+
+- **`mujoco_deploy` → `Deploy` 재편** (41파일). 층 기준은 "공유되는가"가 아니라
+  **"바꾸면 학습된 체크포인트가 무효가 되는가"**. 임포트 방향
+  `run → backends → policy/vision → common` 을 테스트로 강제.
+- **`obs[40:55]` tip_link 프레임 버그**. URDF 두 벌의 `*_tip_fixed` origin z 가 달라
+  엄지 3.00 mm / 검지 0.70 mm 상수 바이어스. **물리 부품은 같은 자리**이고 틀린 건
+  관측 배선뿐. q 에서 FK 로 푸는 방식으로 교체.
+- **105D 실물 파지 첫 완주** (600/600 스텝, 20초). 액션·qt 로깅 추가.
+- **명령 여백 0.95 를 계약 테이블에 반영** (사용자 지시). 8/19 의
+  `중심 ± f×반범위` 와 **다른 식이다** — `COMMAND_LIMIT_RATIO = 0.95` 를
+  `한계 × ratio` 로 곱한다. `COMMAND_TARGET_LIMITS` 를 실제로 좁혔고,
+  `OBSERVATION_NORMALIZATION_LIMITS` 는 공장표 그대로 둔다(정규화는 학습과 같아야 함).
+  `finger_reach` 는 공장표에서 따로 유도 — 안 그러면 0.95² = 0.90 이 된다.
+- **체크포인트 교체 안전장치**: `Deploy/tools/verify_policy_contract.py` 가 학습 런의
+  `params/env.yaml` 을 배포 상수와 대조한다. shape 검사로는 못 잡는 pregrasp(78 mrad),
+  스칼라 액션 스케일, joint4 override, **학습이 본 모드**를 실제로 잡았다.
+- **NEUTRAL `[0,0]` 은 세 번째 학습 상태다.** `hand_real2` 의 5초 커리큘럼은 이것만
+  본다 — OPEN/CLOSE 만 보내면 그 체크포인트는 아예 못 돌린다.
+- **전류 상한 실험** (1.5 / 1.3 / 0.8 A). 1.3 A 부하 주행은 +0.98 °C/s 로 평형 없이
+  76.3 °C 까지 올랐다. **상한을 낮춰도 포화 duty cycle 은 안 준다** (틱당 5.4 → 6.26 관절).
+  열 여유는 `I²` 에서 나오는 것이지 포화가 줄어서가 아니다.
+- **주행을 죽인 버그 둘**: glide 보간의 float32 1 ULP 초과(0.95 여백 이후 일상적),
+  중첩 클로저의 `current_sum +=` 재바인딩(ENABLE 직후 step 0 사망). 둘 다 회귀 테스트.
+- **로그에서 체크포인트 역추적**: 실물 CSV 에는 정책 경로가 없다. 기록된 obs 를 후보
+  ONNX 에 재생(L1)해 `max|diff| = 0.000e+00` 로 식별. 녹화 재생 쪽은
+  `joint_record_*.meta.json` 에 `checkpoint` 가 있다.
+- 상세는 root `활동기록/ACTIVITY_2026-08-21.md` ~ `ACTIVITY_2026-08-24.md`.
+  CLI 는 `Deploy/CLI.md`, 에이전트 함정은 `Deploy/CLAUDE.md`.

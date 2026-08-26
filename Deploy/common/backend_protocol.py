@@ -1,3 +1,4 @@
+# [common] 백엔드가 갖춰야 할 인터페이스(WujiBackend). 값 없음, 모양만.
 """The boundary a backend must satisfy.  An interface, not a backend.
 
 Lives beside the other contracts rather than in ``backends/`` because

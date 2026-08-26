@@ -1,3 +1,4 @@
+# [tool] 서로 다른 백엔드의 reach 로그를 컬럼 단위로 비교.
 """Compare finger-reach logs from different backends, column by column.
 
 The three backends never run together: the scenario file fixes the target

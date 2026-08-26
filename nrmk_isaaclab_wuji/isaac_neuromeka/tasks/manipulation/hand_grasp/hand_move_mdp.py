@@ -116,7 +116,7 @@ class HandMoveScheduleCfg:
 
     #range_x: tuple[float, float] = (0, 0)
     #range_y: tuple[float, float] = (0, math.pi/4)
-    #range_z: tuple[float, float] = (-math.pi/4, 0)
+    #range_z: tuple[float, float] = (-math.pi, 0)
 
     # -- Timing, in seconds.  Phases are derived from these at runtime using
     #    the environment's own ``step_dt``; no step counts are hard-coded.
@@ -1050,6 +1050,11 @@ def geometry_report(
 class StickDisturbance(ManagerTermBase):
     """One short transverse force pulse per episode on one randomly chosen stick.
 
+    ``application_offset_o=(0, 0, 0)`` applies the historical force at the
+    center of mass.  A non-zero object-frame offset adds the equivalent
+    ``r x F`` torque, allowing task-local tip-force curricula without changing
+    any existing task that omits the parameter.
+
     Why an ``interval`` event that fires every step
     ----------------------------------------------
     A pulse has a *duration*, so something has to run on every policy step to
@@ -1099,11 +1104,15 @@ class StickDisturbance(ManagerTermBase):
         self._stick1: RigidObject = env.scene[params["stick1_cfg"].name]
         self._stick2: RigidObject = env.scene[params["stick2_cfg"].name]
         self._sensor_groups = params["sensor_groups"]
+        self._group_reduction = params.get("group_reduction", "max")
         self._contact_threshold = float(params["contact_threshold"])
         self._time_range = tuple(params["time_range_s"])
         self._duration = float(params["duration_s"])
         self._force_range = tuple(params["force_range_n"])
         self._probability = float(params["probability"])
+        self._application_offset_o = tuple(
+            params.get("application_offset_o", (0.0, 0.0, 0.0))
+        )
 
         if self._time_range[0] > self._time_range[1]:
             raise ValueError(
@@ -1116,6 +1125,11 @@ class StickDisturbance(ManagerTermBase):
             raise ValueError(
                 "StickDisturbance.force_range_n must be ordered and non-negative; "
                 f"got {self._force_range}."
+            )
+        if len(self._application_offset_o) != 3:
+            raise ValueError(
+                "StickDisturbance.application_offset_o must be an xyz offset; "
+                f"got {self._application_offset_o}."
             )
 
         num_envs, device = env.num_envs, env.device
@@ -1133,6 +1147,7 @@ class StickDisturbance(ManagerTermBase):
         self._fired = falses()              # pulse has already started
         self._active = falses()             # pulse is running right now
         self._force_w = torch.zeros(num_envs, 3, device=device)
+        self._torque_w = torch.zeros(num_envs, 3, device=device)
 
         # -- diagnostics (episode-latched, never used by reward/termination)
         self._contacts_before = zeros()
@@ -1141,7 +1156,9 @@ class StickDisturbance(ManagerTermBase):
         self._recovery_time = zeros()
 
         self._local_y = torch.tensor((0.0, 1.0, 0.0), device=device).expand(num_envs, -1)
-        self._zero_wrench = torch.zeros(num_envs, 1, 3, device=device)
+        self._application_offset = torch.tensor(
+            self._application_offset_o, device=device
+        ).expand(num_envs, -1)
         self._contact_count = zeros()       # previous step's count, for "before"
 
         # Guards the sim-side write in reset().  Manager terms are constructed
@@ -1220,6 +1237,7 @@ class StickDisturbance(ManagerTermBase):
         self._fired[env_ids] = False
         self._active[env_ids] = False
         self._force_w[env_ids] = 0.0
+        self._torque_w[env_ids] = 0.0
 
         self._contacts_before[env_ids] = 0.0
         self._min_contacts_after[env_ids] = float(len(self._sensor_groups))
@@ -1245,6 +1263,8 @@ class StickDisturbance(ManagerTermBase):
         duration_s: float,
         force_range_n: tuple[float, float],
         probability: float,
+        group_reduction: str = "max",
+        application_offset_o: tuple[float, float, float] = (0.0, 0.0, 0.0),
     ) -> None:
         """Advance the per-environment pulse state machine by one policy step.
 
@@ -1256,7 +1276,8 @@ class StickDisturbance(ManagerTermBase):
         matter how the event manager batches the firing.
         """
         del env_ids, stick1_cfg, stick2_cfg, sensor_groups, contact_threshold
-        del time_range_s, duration_s, force_range_n, probability
+        del time_range_s, duration_s, force_range_n, probability, group_reduction
+        del application_offset_o
 
         elapsed = env.episode_length_buf.float() * env.step_dt
         starting = self._scheduled & (~self._fired) & (elapsed >= self._start_time)
@@ -1312,7 +1333,10 @@ class StickDisturbance(ManagerTermBase):
         transverse = transverse / torch.clamp(norm, min=1.0e-8)
 
         force = self._magnitude.unsqueeze(-1) * transverse
+        application_offset_w = quat_apply(quat, self._application_offset)
+        torque = torch.linalg.cross(application_offset_w, force, dim=-1)
         self._force_w = torch.where(starting.unsqueeze(-1), force, self._force_w)
+        self._torque_w = torch.where(starting.unsqueeze(-1), torque, self._torque_w)
         self._fired = self._fired | starting
 
     def _write_wrenches(self) -> None:
@@ -1329,24 +1353,32 @@ class StickDisturbance(ManagerTermBase):
         """
         active = self._active.unsqueeze(-1)
         force = torch.where(active, self._force_w, torch.zeros_like(self._force_w))
+        torque = torch.where(active, self._torque_w, torch.zeros_like(self._torque_w))
         on_stick1 = self._target_is_stick1.unsqueeze(-1)
         force1 = torch.where(on_stick1, force, torch.zeros_like(force)).unsqueeze(1)
         force2 = torch.where(on_stick1, torch.zeros_like(force), force).unsqueeze(1)
+        torque1 = torch.where(on_stick1, torque, torch.zeros_like(torque)).unsqueeze(1)
+        torque2 = torch.where(on_stick1, torch.zeros_like(torque), torque).unsqueeze(1)
 
-        for asset, wrench in ((self._stick1, force1), (self._stick2, force2)):
+        for asset, force_wrench, torque_wrench in (
+            (self._stick1, force1, torque1),
+            (self._stick2, force2, torque2),
+        ):
             asset.permanent_wrench_composer.set_forces_and_torques(
-                forces=wrench,
-                # Explicit zeros, not None: this experiment is translation only
-                # (torque perturbation is a separate follow-up), and passing the
-                # zeros makes sure no torque can be left over from anywhere else.
-                torques=self._zero_wrench,
+                forces=force_wrench,
+                # A non-zero application offset is represented by its exactly
+                # equivalent CoM wrench: tau = r x F.  The default offset is
+                # zero, preserving the historical translation-only behavior.
+                torques=torque_wrench,
                 env_ids=None,
                 is_global=True,
             )
 
     def _update_diagnostics(self, elapsed: torch.Tensor, starting: torch.Tensor) -> None:
         """Latch the recovery statistics.  Never read by reward or termination."""
-        forces = _group_forces(self._env, self._sensor_groups)
+        forces = _group_forces(
+            self._env, self._sensor_groups, self._group_reduction
+        )
         count = (forces > self._contact_threshold).float().sum(dim=-1)
         full = float(len(self._sensor_groups))
 

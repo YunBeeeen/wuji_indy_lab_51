@@ -1,3 +1,4 @@
+# [common] 스틱 포즈 제공자가 갖춰야 할 인터페이스(PoseState/StickPoseProvider) + 합성 스텁. 카메라 아님.
 """What a stick-pose source must provide, and how stale it may get.
 
 An interface, not a camera.  ``PoseState`` and ``StickPoseProvider`` describe

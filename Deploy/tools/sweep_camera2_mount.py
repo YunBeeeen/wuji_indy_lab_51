@@ -1,3 +1,4 @@
+# [tool] 두 번째 카메라 장착 높이 후보를 렌더 이미지로 평가.
 """Evaluate fixed-angle +Palm-Y Camera2 height candidates in rendered RGB."""
 
 from __future__ import annotations

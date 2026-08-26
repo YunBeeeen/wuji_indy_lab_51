@@ -117,7 +117,6 @@ from .hand_move_root_actions import HandRootHoldActionCfg
 # hand_grasp OPEN target when reproducing the hand_move baseline.
 HAND_MOVE_OPEN_TARGET_GAP = 0.017
 
-
 # Parked fixed-reference A/B scale.  Although +/-0.30 rad stabilized the grasp,
 # run 2026-08-09_22-29-38 retained about 16 mm OPEN error (roughly 4 mm actual
 # gap for a 20 mm command), so the range was not sufficient for this task.
@@ -461,12 +460,12 @@ DISTURBANCE_DURATION_S = 0.10
 # when DISTURBANCE_PROBABILITY is explicitly enabled in a later stage.
 DISTURBANCE_FORCE_RANGE_N = (0.02, 0.1)
 #DISTURBANCE_FORCE_RANGE_N = (0.05, 0.3)
-#DISTURBANCE_FORCE_RANGE_N = (0.3, 1.2)
-#DISTURBANCE_FORCE_RANGE_N = (0.0, 0.0001)
+#DISTURBANCE_FORCE_RANGE_N = (0.3, 0.9)
+#DISTURBANCE_FORCE_RANGE_N = (0.9, 1.2)
 
 # Fraction of episodes that get a pulse at all.  Below 1.0 the policy still sees
 # undisturbed episodes, which keeps the original behaviour represented.
-DISTURBANCE_PROBABILITY = 1.0
+DISTURBANCE_PROBABILITY = 0.0
 
 
 @configclass

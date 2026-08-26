@@ -1,3 +1,4 @@
+# [tool] 스틱 없는 finger-reach MJCF를 원본 모델에서 재생성.
 """Regenerate the stickless finger-reach MJCF from the pinned upstream model.
 
 ``right_reach.xml`` = upstream ``right.xml`` + the same five massless tip sites

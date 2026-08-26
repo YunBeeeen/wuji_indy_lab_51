@@ -43,19 +43,19 @@ class Indy7WujiBoxTransportEnvCfg(BoxTransportEnvCfg):
         )
 
         # ── 액션 구조 스위치 (2026-07-24, chopstick과 동일) ──────────────────────────
-        # 기본 = 잔차(residual) + 커플링 해제: action 26, policy obs 76 → 92.
+        # 기본 = 잔차(residual) + 커플링 해제: action 26, raw-pose policy obs 69.
         #   근거: 07-23_23-52-08 런(절대형 유지)이 파지 실패 — action_track_err 1.5,
         #   thumb_index_opposition −0.20(같은 쪽), cage_inside_frac 0.08, keypoint raw 0.0002.
         #   같은 스틱에 잔차를 쓴 chopstick은 opposition +0.33/track_err 0.43으로 파지 성공.
         #   → box의 병목은 keypoint 가중치가 아니라 절대형 액션의 dead zone이었음.
-        # `WUJI_LEGACY_ACTION=1` 이면 2026-07-24 이전 구성(절대형 + mimic, action 18, obs 76).
-        #   옛 체크포인트 play용.
+        # `WUJI_LEGACY_ACTION=1` 이면 절대형 + mimic action 18, raw-pose obs 53.
+        #   관측 계약도 바뀌었으므로 예전 76D 체크포인트와는 더 이상 호환되지 않는다.
         legacy_action = os.environ.get("WUJI_LEGACY_ACTION", "") == "1"
         if legacy_action:
-            print("[INFO] WUJI_LEGACY_ACTION=1 → 절대형 + mimic 액션 (action 18 / obs 76)")
+            print("[INFO] WUJI_LEGACY_ACTION=1 → 절대형 + mimic 액션 (action 18 / raw-pose obs 53)")
 
         # 약지·새끼 mimic 커플링 해제 — 20개 손가락 관절을 정책이 직접 제어. fresh 필수.
-        # ⚠ obs 76 → 92: joint_pos(18→26) + action_history(=prev_action, 18→26) = +16.
+        # obs 53 → 69: joint_pos(18→26) + action_history(=prev_action, 18→26) = +16.
         controlled_joint_names = (
             ["joint[0-5]", "finger[1-3]_joint[1-4]"]
             if legacy_action

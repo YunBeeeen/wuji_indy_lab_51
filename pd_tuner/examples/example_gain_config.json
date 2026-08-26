@@ -1,0 +1,12 @@
+{
+  "asset_file": "/replace/with/path/to/your_robot.py",
+  "asset_cfg_name": "YOUR_ARTICULATION_CFG",
+  "physics_dt": 0.0083333333,
+  "joints": {
+    "your_joint_name": {
+      "stiffness": 20.0,
+      "damping": 0.5,
+      "effort_limit": 1.0
+    }
+  }
+}

@@ -1,3 +1,4 @@
+# [backend/실물] wujihandpy SDK 래퍼 — 관절 읽기/목표 저장/전송, 슬루 가드, enable/disable, 온도·전류.
 """Real Wuji Hand backend for the middle-finger reach contract.
 
 Deliberately imports no MuJoCo: ``wujihandpy`` lives in the ``wuji_hw``
@@ -48,6 +49,27 @@ HAND_JOINTS = FINGERS * JOINTS_PER_FINGER
 # finger3 is row 2 of the SDK grid; derived from the canonical indices rather
 # than written down, so a change to REACH_FINGER_INDEX cannot desync them.
 MIDDLE_GRID_ROWS = sorted({int(i) // JOINTS_PER_FINGER for i in MIDDLE_POLICY_INDICES})
+
+
+def _step_limit(value) -> npt.NDArray[np.float32]:
+    """Normalize a slew allowance to a scalar or a 20-vector.
+
+    The guard exists to catch what the contract cannot -- a corrupt ONNX graph,
+    a mis-shaped observation, a decode bug asking for a large jump.  It is NOT a
+    second opinion on the action scale: set below the contract's own per-joint
+    step it rejects correct output, which is how a first hardware run stopped on
+    ``finger5_joint3`` asking for a perfectly legal 0.1326 rad against a 0.05
+    allowance inherited from the four-joint reach task.
+    """
+
+    array = np.asarray(value, dtype=np.float32)
+    if array.ndim == 0:
+        return array
+    if array.shape != (HAND_JOINTS,):
+        raise ValueError(
+            f"Per-joint slew allowance must have shape {(HAND_JOINTS,)}, got {array.shape}."
+        )
+    return array
 
 
 def full_enable_mask() -> npt.NDArray[np.bool_]:
@@ -119,8 +141,12 @@ class RealWujiHand:
         # no-op and the sim/real contract is unchanged.  It exists to catch the
         # cases the contract cannot: a corrupt ONNX, a mis-shaped observation,
         # or a decode bug asking the hand for a large jump in one step.
-        self.max_step_rad = (
-            float(REACH_ACTION_SCALE_RAD) if max_step_rad is None else float(max_step_rad)
+        # Scalar or per-joint.  Per-joint is the meaningful form for the
+        # twenty-joint grasp contract, whose legal step differs by joint
+        # (0.1 / 0.1 / 0.2 / 0.15 rad); a single scalar below the largest of
+        # those rejects output the contract explicitly permits.
+        self.max_step_rad = _step_limit(
+            REACH_ACTION_SCALE_RAD if max_step_rad is None else max_step_rad
         )
         self._last_read_q: npt.NDArray[np.float32] | None = None
         # Set by safe_stop().  Sticky on purpose: a run that hit a safe stop
@@ -207,9 +233,9 @@ class RealWujiHand:
                 f"Targets outside COMMAND_TARGET_LIMITS at policy indices {bad}: "
                 f"{targets[bad].tolist()}"
             )
-        limit = self.max_step_rad if max_step_rad is None else float(max_step_rad)
+        limit = _step_limit(self.max_step_rad if max_step_rad is None else max_step_rad)
 
-        if limit > 0.0:
+        if np.any(limit > 0.0):
             if self.step_guard_reference == "measured":
                 # Original residual-policy guard:
                 # q_target is defined relative to the measured q, so reject a
@@ -226,7 +252,7 @@ class RealWujiHand:
 
             if reference is not None:
                 step = targets - reference
-                excessive = np.abs(step) > limit + 1e-5
+                excessive = (np.abs(step) > limit + 1e-5) & (limit > 0.0)
 
                 if excessive.any():
                     names = [
@@ -237,7 +263,8 @@ class RealWujiHand:
                         f"Target changes by "
                         f"{np.round(step[excessive], 5).tolist()} rad "
                         f"from the {reference_name} at {names}, "
-                        f"beyond the {limit:.4f} rad allowance. "
+                        f"beyond the per-joint allowance "
+                        f"{np.round(np.broadcast_to(limit, targets.shape)[excessive], 4).tolist()} rad. "
                         "Refusing to send it to hardware."
                     )
 

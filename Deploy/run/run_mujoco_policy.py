@@ -1,4 +1,5 @@
-"""Run a 105D grasp policy in MuJoCo through the real hand's bring-up sequence.
+# [run/MuJoCo] 지원 grasp 정책을 실물과 같은 절차로 실행. 105D/legacy 101D 자동 선택.
+"""Run a supported grasp policy in MuJoCo through the real hand's bring-up sequence.
 
 This is the MuJoCo twin of ``run_finger_reach_real.py``: same phase names, same
 order, same meanings, so a sim-to-sim comparison is reading two logs of one
@@ -39,15 +40,23 @@ from ..backends.mujoco_scheduler import (
     MujocoScheduler,
 )
 from ..backends.mujoco_wuji import DEFAULT_MODEL_PATH, MujocoWujiHand
-from ..policy.observation_adapter import PolicyObservationAdapter
+from ..common.action_report import (
+    action_summary,
+    action_verdict,
+    print_action_detail,
+)
 from ..common.policy_contract import (
     ACTION_DIM,
     DEFAULT_RESET_JOINT_POSITIONS,
-    OBSERVATION_DIM,
-    OBSERVATION_SLICES,
     POLICY_DT,
     POLICY_JOINT_NAMES,
     soft_command_limits,
+)
+from ..common.timing import StageTimer
+from ..policy.grasp_policy_contract import (
+    CURRENT_105D_CONTRACT,
+    GraspPolicyContract,
+    load_grasp_policy,
 )
 from ..policy.policy_runner import PolicyRunner
 from ..common.isaac_reset import (
@@ -71,11 +80,12 @@ class ZeroPolicy:
 
 def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run a 105D policy in MuJoCo with the hardware bring-up sequence.",
+        description="Run a supported 105D or legacy 101D policy in MuJoCo.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--policy", type=Path, default=None,
-                        help="105D ONNX actor. Omit to run the zero-action plumbing check.")
+                        help="ONNX actor; 105D/legacy 101D is auto-detected. "
+                             "Omit to run the zero-action plumbing check.")
     parser.add_argument("--model", type=Path, default=DEFAULT_MODEL_PATH)
     parser.add_argument("--mode", choices=("open", "close"), default="close",
                         help="OPEN/CLOSE one-hot handed to the policy.")
@@ -120,12 +130,19 @@ def build_argument_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--print-interval", type=int, default=15,
                         help="Policy steps between progress lines.")
+    parser.add_argument("--no-vectors", dest="print_vectors", action="store_false",
+                        default=True,
+                        help="관절별 action / 목표 / 현재값 3줄 덤프를 끈다. "
+                             "기본 켜짐 -- 실물 러너와 같은 화면이라 sim-to-real "
+                             "대조가 눈으로 된다.")
     parser.add_argument("--out", type=Path, default=None, help="Write per-step CSV here.")
     return parser
 
 
-def named_pose(name: str) -> np.ndarray:
+def named_pose(name: str, contract: GraspPolicyContract) -> np.ndarray:
     if name == "pregrasp":
+        if contract.default_pregrasp is not None:
+            return np.asarray(contract.default_pregrasp, dtype=np.float32).copy()
         return np.asarray(ISAAC_PREGRASP_JOINT_POSITIONS_RAD, dtype=np.float32)
     return np.asarray(DEFAULT_RESET_JOINT_POSITIONS, dtype=np.float32)
 
@@ -142,13 +159,13 @@ def main() -> int:
 
     # ---- everything checkable before the model is built ----
     if args.policy is not None:
-        from ..policy.onnx_policy import OnnxPolicy
-
-        policy = OnnxPolicy(args.policy, OBSERVATION_DIM, ACTION_DIM)
+        policy, policy_contract = load_grasp_policy(args.policy)
         print(f"[POLICY]   {policy.path}")
         print(f"           {policy.input.shape} -> {policy.output.shape}")
+        print(f"[ADAPTER]  {policy_contract.key} (ONNX input width auto-detected)")
     else:
         policy = ZeroPolicy()
+        policy_contract = CURRENT_105D_CONTRACT
         print("[POLICY]   zero-action plumbing check -- NOT a grasp test")
 
     hand = MujocoWujiHand(
@@ -163,11 +180,12 @@ def main() -> int:
             f"{args.model} has no sticks; this script stages a two-stick grasp."
         )
     print(f"[MODEL]    {hand.model_summary()}")
-    print(f"[CONTRACT] obs {OBSERVATION_DIM}D, action {ACTION_DIM}D, "
+    print(f"[CONTRACT] {policy_contract.key}: obs {policy_contract.observation_dim}D, "
+          f"action {policy_contract.action_dim}D, "
           f"{len(POLICY_JOINT_NAMES)} joints")
 
-    park = named_pose(args.park_pose)
-    start = named_pose(args.start_pose)
+    park = named_pose(args.park_pose, policy_contract)
+    start = named_pose(args.start_pose, policy_contract)
     reference_poses = np.asarray(
         MUJOCO_VISIBLE_STICK_RESET_POSES_PALM_XYZ_WXYZ, dtype=np.float64
     )
@@ -175,6 +193,8 @@ def main() -> int:
     viewer = None
     rows: list[list] = []
     failure: BaseException | None = None
+    runner = None
+    tick_timer = StageTimer(budget_ms=1000.0 * POLICY_DT, name="tick")
     try:
         if args.viewer:
             import mujoco.viewer
@@ -232,12 +252,16 @@ def main() -> int:
 
         # ---------------- SEED ----------------
         provider, camera = _make_provider(args.stick_provider, hand)
-        adapter = PolicyObservationAdapter(mode=args.mode, stick_provider=provider)
-        runner = PolicyRunner(hand, policy, adapter)
+        adapter = policy_contract.make_observation_adapter(
+            mode=args.mode, stick_provider=provider
+        )
+        runner = PolicyRunner(
+            hand, policy, adapter, action_decoder=policy_contract.action_decoder
+        )
         observation = runner.reset()
         print(f"\n[SEED]     stick provider {type(provider).__name__}, mode {args.mode}")
         print(f"           obs {observation.shape[0]}D, "
-              f"fingertips {np.round(observation[OBSERVATION_SLICES['fingertips'].slice][:3], 4)} ...")
+              f"fingertips {np.round(adapter.debug_slices()['fingertips'][:3], 4)} ...")
 
         # ---------------- RUN ----------------
         steps = max(1, int(round(args.seconds / POLICY_DT)))
@@ -248,11 +272,16 @@ def main() -> int:
               + (f", mode -> {_other(args.mode)} at step {switch_step}"
                  if switch_step is not None else ""))
         began = time.monotonic()
+        # Accumulated here rather than re-derived from the CSV so it survives
+        # an abort -- an aborted run is the one where "was the policy alive?"
+        # actually matters.
+        action_peak = {"sum": 0.0, "max": 0.0, "n": 0}
         for step in range(steps):
             if switch_step is not None and step == switch_step:
                 runner.set_mode(_other(args.mode))
                 print(f"  [MODE]  -> {_other(args.mode)} at t={step * POLICY_DT:.2f}s")
-            decoded, observation = scheduler.run_policy_tick(runner, pin_sticks=pin)
+            with tick_timer.stage("total"):
+                decoded, observation = scheduler.run_policy_tick(runner, pin_sticks=pin)
             offsets = stick_offsets_mm(hand, released_reference)
             rows.append(
                 [step, step * POLICY_DT, runner.observations.mode,
@@ -260,16 +289,38 @@ def main() -> int:
                 + list(hand.read_joint_positions())
                 + list(decoded.position_target)
                 + list(decoded.action_manager_action)
+                # NOT the `observation` run_policy_tick returns -- that one is
+                # built AFTER the physics hold and is the NEXT tick's input.
+                # The log's contract is "the obs this action came from", which
+                # is the only pairing that can be replayed through the ONNX.
+                + list(runner.last_observation)
+                + list(tick_timer.csv_row())
+                + list(runner.timing.csv_row())
+                + list(runner.observations.timing.csv_row())
             )
+            peak = float(np.max(np.abs(decoded.onnx_action)))
+            action_peak["sum"] += peak
+            action_peak["max"] = max(action_peak["max"], peak)
+            action_peak["n"] += 1
             if step % args.print_interval == 0 or step == steps - 1:
                 print(f"  t={step * POLICY_DT:6.2f}s mode={runner.observations.mode:5s} "
                       f"stick1={offsets[0]:8.2f}mm stick2={offsets[1]:8.2f}mm "
                       f"clamp={int(decoded.target_was_clamped.sum()):2d} "
-                      f"a=[{decoded.action_manager_action.min():+.3f},"
-                      f"{decoded.action_manager_action.max():+.3f}]")
+                      f"{action_summary(decoded)}")
+                if args.print_vectors:
+                    print_action_detail(decoded, hand.read_joint_positions())
 
         # ---------------- REPORT ----------------
         offsets = stick_offsets_mm(hand, released_reference)
+        print()
+        print(tick_timer.report())
+        print(runner.timing.report())
+        print(scheduler.timing.report())
+        print(runner.observations.timing.report())
+        if action_peak["n"]:
+            for line in action_verdict(action_peak["sum"] / action_peak["n"],
+                                       action_peak["max"], action_peak["n"]):
+                print(line)
         print(f"\n[REPORT]   wall clock {time.monotonic() - began:.1f}s")
         print(f"           stick1 moved {offsets[0]:.2f} mm from the release pose")
         print(f"           stick2 moved {offsets[1]:.2f} mm from the release pose")
@@ -293,7 +344,17 @@ def main() -> int:
             _close_viewer_and_wait(viewer)
 
     if args.out is not None and rows:
-        _write_csv(args.out, rows)
+        timers = [("tick", tick_timer)]
+        if runner is not None:
+            timers += [("policy", runner.timing),
+                       ("obs", runner.observations.timing),
+                       ("mj", scheduler.timing)]
+        _write_csv(
+            args.out,
+            rows,
+            observation_columns=policy_contract.observation_csv_columns(),
+            timers=tuple(timers),
+        )
         print(f"[CSV]      {args.out}  ({len(rows)} rows)")
     return 1 if failure is not None else 0
 
@@ -308,13 +369,16 @@ def _make_provider(name: str, hand: MujocoWujiHand):
     return create_stick_provider(hand, name)
 
 
-def _write_csv(path: Path, rows) -> None:
+def _write_csv(path: Path, rows, observation_columns, timers=()) -> None:
     header = (
         ["step", "t_s", "mode", "stick1_mm", "stick2_mm", "targets_clamped"]
         + [f"q_{n}" for n in POLICY_JOINT_NAMES]
         + [f"qt_{n}" for n in POLICY_JOINT_NAMES]
         + [f"a_{n}" for n in POLICY_JOINT_NAMES]
+        + list(observation_columns)
     )
+    for prefix, timer in timers:
+        header += [f"{prefix}_{c}" for c in timer.csv_columns()]
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="") as handle:
         writer = csv.writer(handle)

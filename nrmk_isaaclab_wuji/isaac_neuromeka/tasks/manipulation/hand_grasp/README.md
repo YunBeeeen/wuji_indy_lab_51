@@ -13,6 +13,7 @@ It uses Isaac Lab's manager-based environment API.
 | `hand_move` | Functional grasp on a floating, root-controlled hand | Preserve OPEN/CLOSE grasp while the hand pose changes | 103D / 20D |
 | `hand_real` | Same simulated task boundary as `hand_move` | Train with deployment-compatible quaternion pose history | 105D / 20D |
 | `hand_object` | Functional grasp plus a supported 1 cm cube | Approach, pinch, and retain the cube | 103D / 20D |
+| `hand_object_105_distill` | Successful `hand_object` rollout driven by a frozen teacher | Distill 103D velocity policy into the 105D deployable contract | teacher 103D + student 105D / 20D |
 | `hand_play` | `hand_object` policy on a table with two plates | Play only; training this ID is refused | 103D / 20D |
 | `hand_final_play` | `hand_final` policy on the same table with two plates | Play only; 105D sim-to-real checkpoint inspection | 105D / 20D |
 | `finger_reach` | One fingertip and a random target point | Diagnostic mini-reach for PD/action authority | Diagnostic only |
@@ -67,17 +68,17 @@ same directed-axis angle in `hand_real`, so they preserve position and shaft
 direction without requiring roll. Contact, tip-gap, lateral and axial geometry
 remain the original physical training signals.
 
-The task-local residual action scale is `0.1 rad` for Joint1/2 and `0.2 rad`
-for Joint3/4 on all five fingers. The 20D order and the Joint4 zero-radian target
-floor are unchanged; per-joint `effort_limit_sim` remains the final torque cap.
+The task-local residual action scale is `0.1 rad` for Joint1/2, `0.2 rad` for
+Joint3, and `0.15 rad` for Joint4 on all five fingers. The 20D order is
+unchanged; per-joint `effort_limit_sim` remains the final torque cap.
 
 Simulator-only contact and velocity values may still be used by training
 rewards and terminations because they are not actor inputs. A deployment bridge
 does not need to reproduce reward signals.
 
 `hand_real` is intentionally incompatible with 103D `hand_move` and 101D
-directed-axis-history `hand_real` checkpoints. The Joint3/4 action meaning also
-changed from scale `0.1` to `0.2`; train it fresh:
+directed-axis-history `hand_real` checkpoints. Joint3/4 also changed from the
+old uniform `0.1` action scale to `0.2/0.15`; train it fresh:
 
 ```bash
 python scripts/rsl_rl/train.py \
@@ -86,6 +87,50 @@ python scripts/rsl_rl/train.py \
   --num_envs 4096 \
   --max_iterations 50000
 ```
+
+## 103D teacher to 105D student distillation
+
+`hand_object_105_distill` is isolated from the active `hand_object` and
+`hand_real` tasks. The frozen
+`hand_object/2026-08-08_20-39-52(성공)/model_300.pt` actor receives its exact
+old 103D input and drives the rollout. A separate 105D actor sees the current
+`hand_real` input and imitates the same physical joint residual. Uniform
+teacher actions are converted to the current action units: Joint1/2 `x1`,
+Joint3 `x0.5`, Joint4 `x2/3`.
+
+The bridge also freezes the successful run's pose_005 reset, 5.5 s support
+retract, five-step retract debounce, and `0.3~0.9 N` disturbance distribution.
+Start a fresh supervised run with:
+
+```bash
+python scripts/rsl_rl/train.py \
+  --task hand_object_105_distill \
+  --headless \
+  --num_envs 4096 \
+  --max_iterations 1000 \
+  --init_checkpoint \
+  'logs/rsl_rl/hand_object/2026-08-08_20-39-52(성공)/model_300.pt'
+```
+
+The distillation checkpoint contains a PPO-compatible `actor_state_dict` for
+the student. Continue with fresh critic/optimizer state under current
+`hand_real` dynamics:
+
+```bash
+python scripts/rsl_rl/train.py \
+  --task hand_real \
+  --headless \
+  --num_envs 4096 \
+  --max_iterations 50000 \
+  --init_checkpoint \
+  'logs/rsl_rl/hand_object_105_distill/<run>/model_<best>.pt' \
+  --load_actor_only
+```
+
+Distillation removes simulator velocity from the deployed actor input, but it
+is not itself a hardware-safety guarantee. PPO fine-tuning, vision-noise
+validation, command/joint clamps, current limits, and temperature shutdowns
+remain required.
 
 ## Reset semantics
 
@@ -473,6 +518,8 @@ Always verify the saved `params/env.yaml` before loading:
 * `hand_grasp` command-conditioned checkpoints expect 103D observations.
 * `hand_setting` checkpoints expect 101D observations and no command.
 * `hand_move` and `hand_object` checkpoints expect 103D observations.
+* `hand_object_105_distill` checkpoints contain a 105D student actor plus the
+  frozen 103D teacher; use the student `actor_state_dict` for PPO fine-tuning.
 * Current `hand_real` checkpoints expect 105D observations and must be trained
   fresh rather than initialized from a 101D or 103D actor.
 * Changes to Wuji collision overlays alter contact dynamics even when tensor

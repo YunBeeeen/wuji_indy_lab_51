@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# [vision] Stick2 단독 추적기. 사용자 작성, 원본 유지.
 
 from __future__ import annotations
 
@@ -26,6 +27,29 @@ MARKER_B_ID = 3
 
 MARKER_SIZE_M = 0.019
 MARKER_AXIS_LENGTH_M = 0.015
+
+
+def _draw_frame_axes_if_visible(vis, K, dist, rvec, tvec, length, thickness=2):
+    """Avoid OpenCV's per-frame warning when an axis leaves the image."""
+    points = np.asarray(
+        [[0.0, 0.0, 0.0], [length, 0.0, 0.0],
+         [0.0, length, 0.0], [0.0, 0.0, length]],
+        dtype=np.float64,
+    )
+    try:
+        projected, _ = cv2.projectPoints(points, rvec, tvec, K, dist)
+    except cv2.error:
+        return False
+    xy = np.asarray(projected, dtype=np.float64).reshape(-1, 2)
+    height, width = vis.shape[:2]
+    if not (
+        np.isfinite(xy).all()
+        and np.all(xy[:, 0] >= 0.0) and np.all(xy[:, 0] < float(width))
+        and np.all(xy[:, 1] >= 0.0) and np.all(xy[:, 1] < float(height))
+    ):
+        return False
+    cv2.drawFrameAxes(vis, K, dist, rvec, tvec, length, thickness)
+    return True
 
 # ============================================================
 # Workspace orientation prior
@@ -80,8 +104,8 @@ DUAL_REJECT_RESET_FRAMES = 6           # 3 -> 6
 # FINAL FILTER
 # ============================================================
 
-POS_ALPHA = 0.2584
-ROT_ALPHA = 0.1938
+POS_ALPHA = 0.8
+ROT_ALPHA = 0.8
 
 FINAL_FILTER_RESET_MISSES = 16         # 8 -> 16
 
@@ -157,8 +181,8 @@ T_M2_S[:3, :3] = np.eye(
 # User confirmed this stays unchanged.
 T_M2_S[:3, 3] = np.array(
     [
-        0.0,
-        +0.0888,
+        +0.0075,
+        +0.0890,
         -0.0035,
     ],
     dtype=np.float64,
@@ -188,8 +212,8 @@ T_M3_S[:3, :3] = np.array(
 # Marker3 is moved.  Do NOT enter Marker2->Marker3 here.
 T_M3_S[:3, 3] = np.array(
     [
-        +0.0065,
-        -0.030,
+        +0.0075,
+        -0.0470,
         -0.0035,
     ],
     dtype=np.float64,
@@ -3449,7 +3473,7 @@ def main():
                     marker_id
                 ] = selected
 
-                cv2.drawFrameAxes(
+                _draw_frame_axes_if_visible(
                     vis,
                     K,
                     dist_coeffs,

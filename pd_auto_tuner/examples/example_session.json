@@ -1,0 +1,17 @@
+{
+  "project_root": "../your_robot_project",
+  "asset_directory": "../your_robot_project/assets",
+  "asset_file": "../your_robot_project/assets/your_robot.py",
+  "asset_cfg_name": "YOUR_ARTICULATION_CFG",
+  "device": "cuda:0",
+  "physics_dt": 0.0083333333,
+  "initial_pose_mode": "asset_default",
+  "effort_limit_override": null,
+  "joint": "your_joint_name",
+  "step_amplitude": 0.2,
+  "step_period": 2.0,
+  "initial_delay": 0.25,
+  "step_direction": 1,
+  "repeat_step": true,
+  "history_seconds": 10.0
+}

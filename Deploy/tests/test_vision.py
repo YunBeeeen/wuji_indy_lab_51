@@ -1,9 +1,11 @@
+# [test] 렌더링 ArUco 픽스처로 마커 검출·포즈 복원 검증.
 from __future__ import annotations
 
 import os
 from pathlib import Path
 import subprocess
 import sys
+import types
 import unittest
 
 import numpy as np
@@ -202,3 +204,250 @@ camera.close()
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StaleLadderTests(unittest.TestCase):
+    """When both cameras lose a stick, how long before the hand is frozen.
+
+    The ladder is the only thing standing between "one dropped frame" and
+    "freeze the grasp mid-hold", so it is exercised directly rather than only
+    through a live camera.  ``_advance`` is driven with synthetic selections and
+    a synthetic clock; no RealSense, no ArUco, no tracker frames.
+    """
+
+    def setUp(self) -> None:
+        from Deploy.vision.provider import DualCameraStickPoseProvider
+
+        self.provider = DualCameraStickPoseProvider(
+            25.0, acknowledge_candidate_geometry=True
+        )
+
+    @staticmethod
+    def _seen(position=(0.02, 0.02, 0.09)):
+        return {"pose": {"position": np.asarray(position, dtype=np.float64),
+                         "quaternion": np.asarray([1.0, 0.0, 0.0, 0.0])},
+                "source": "MAIN", "reason": "MAIN_SEES_AT_LEAST_ONE_MARKER"}
+
+    @staticmethod
+    def _blind():
+        return {"pose": None, "source": "NONE",
+                "reason": "MAIN_MISSED_BOTH_SIDE_INVALID"}
+
+    def test_first_sighting_is_reinit_then_valid(self) -> None:
+        from Deploy.common.perception import PoseState
+
+        _, first = self.provider._advance(0, self._seen(), 1000.0)
+        _, second = self.provider._advance(0, self._seen(), 1033.0)
+        self.assertIs(first, PoseState.REINIT)
+        self.assertIs(second, PoseState.VALID)
+
+    def test_ladder_is_time_based_not_frame_based(self) -> None:
+        # The camera went 15 -> 30 Hz mid-project.  A frame-count ladder would
+        # have silently halved every threshold; these must not move.
+        from Deploy.common.perception import PoseState
+
+        self.provider._advance(0, self._seen(), 0.0)
+        for elapsed, expected in ((33.0, PoseState.HOLD),     # 1 frame @30Hz
+                                  (99.0, PoseState.HOLD),
+                                  (101.0, PoseState.STALE),
+                                  (249.0, PoseState.STALE),
+                                  (251.0, PoseState.LOST)):
+            pose, state = self.provider._advance(0, self._blind(), elapsed)
+            self.assertIs(state, expected, f"at {elapsed} ms blind")
+            # The last good pose is held throughout -- the policy keeps a value
+            # to act on; freezing the COMMAND is safe_stop's job, not this one.
+            self.assertIsNotNone(pose)
+
+    def test_recovery_clears_the_blind_clock(self) -> None:
+        from Deploy.common.perception import PoseState
+
+        self.provider._advance(0, self._seen(), 0.0)
+        self.provider._advance(0, self._blind(), 200.0)          # STALE
+        _, state = self.provider._advance(0, self._seen(), 210.0)
+        self.assertIs(state, PoseState.VALID)
+        _, state = self.provider._advance(0, self._blind(), 260.0)
+        self.assertIs(state, PoseState.HOLD)                     # 50 ms, not 260
+
+    def test_never_seen_is_lost_not_hold(self) -> None:
+        from Deploy.common.perception import PoseState
+
+        pose, state = self.provider._advance(1, self._blind(), 500.0)
+        self.assertIsNone(pose)
+        self.assertIs(state, PoseState.LOST)
+
+    def test_hold_threshold_must_sit_below_stale(self) -> None:
+        from Deploy.vision.provider import DualCameraStickPoseProvider
+
+        with self.assertRaises(ValueError):
+            DualCameraStickPoseProvider(25.0, hold_after_ms=300.0,
+                                        stale_after_ms=250.0,
+                                        acknowledge_candidate_geometry=True)
+
+    def test_policy_runner_stops_on_stale_but_rides_out_hold(self) -> None:
+        # The contract this ladder exists to feed: HOLD keeps running, STALE
+        # freezes.  Verified against PolicyRunner itself, not restated here.
+        from Deploy.common.perception import PoseState
+        from Deploy.policy.policy_runner import PolicyRunner
+        import inspect
+
+        source = inspect.getsource(PolicyRunner.command)
+        self.assertIn("PoseState.STALE", source)
+        self.assertIn("PoseState.LOST", source)
+        self.assertNotIn("PoseState.HOLD", source)
+
+
+class FirstFrameWaitTests(unittest.TestCase):
+    """Opening a camera is not the same as having a frame from it.
+
+    ``pipeline.start()`` returns before any frame arrives, and the tracker
+    threads then need a frame plus a detection pass.  Sampling in that gap gives
+    ``latest() is None``, which the MAIN/SIDE arbitration reads as "saw
+    nothing" -- identical to markers being out of view.  That cost a hardware
+    run: the failure said "are the cameras seeing the markers?" when the true
+    answer was "no frame has arrived yet".
+    """
+
+    class FakeWorker:
+        def __init__(self, name, ready_after_polls):
+            self.name = name
+            self._left = ready_after_polls
+
+        def latest(self):
+            if self._left > 0:
+                self._left -= 1
+                return None
+            return object()
+
+    def _provider(self):
+        from Deploy.vision.provider import DualCameraStickPoseProvider
+
+        provider = DualCameraStickPoseProvider(
+            25.000097, acknowledge_candidate_geometry=True
+        )
+        provider.tracker = types.SimpleNamespace(
+            MAIN_CAMERA_SERIAL="814412070582", SIDE_CAMERA_SERIAL="342222074358"
+        )
+        return provider
+
+    def test_waits_until_both_cameras_deliver(self) -> None:
+        provider = self._provider()
+        provider._workers = [self.FakeWorker("MAIN", 3), self.FakeWorker("SIDE", 8)]
+        warmup = provider.wait_for_first_frames(timeout_s=5.0)
+        self.assertEqual(set(warmup), {"MAIN", "SIDE"})
+        # Recorded as gauges so a slow-starting camera is visible in the report.
+        self.assertIn("side_warmup_ms", provider.timing.labels)
+
+    def test_a_silent_camera_is_named_and_blamed_on_the_camera(self) -> None:
+        provider = self._provider()
+        provider._workers = [self.FakeWorker("MAIN", 0),
+                             self.FakeWorker("SIDE", 10**9)]
+        with self.assertRaises(RuntimeError) as caught:
+            provider.wait_for_first_frames(timeout_s=0.2)
+        message = str(caught.exception)
+        self.assertIn("SIDE", message)
+        self.assertNotIn("MAIN,", message)
+        # Must not send the operator to move the chopsticks.
+        self.assertIn("카메라 문제", message)
+        self.assertIn("342222074358", message)
+
+    def test_failure_message_separates_the_three_causes(self) -> None:
+        provider = self._provider()
+        provider._modules = (types.SimpleNamespace(TARGET_IDS=(0, 1)),
+                             types.SimpleNamespace(TARGET_IDS=(2, 3)))
+        from Deploy.vision.provider import StickSourceReport
+
+        report = StickSourceReport(stick1_reason="MAIN_MISSED_BOTH_SIDE_INVALID",
+                                   stick2_reason="MAIN_MISSED_BOTH_SIDE_INVALID")
+        no_frame = provider._first_pose_failure(None, None, report)
+        self.assertIn("프레임 없음", no_frame)
+
+        seen_nothing = types.SimpleNamespace(detected={})
+        seen_marker = types.SimpleNamespace(detected={0: None})
+        message = provider._first_pose_failure(seen_nothing, seen_marker, report)
+        self.assertIn("마커가 안 보입니다", message)   # MAIN: frame, no markers
+        self.assertIn("[0]", message)                  # SIDE: marker 0 seen
+        self.assertNotIn("프레임 없음", message)
+
+    def test_reset_waits_for_a_fresh_frame_before_returning(self) -> None:
+        """The exact sequence a hardware run failed on.
+
+        start() -> reset() -> sample().  reset() clears each worker's latest
+        frame together with the tracker history, and the caller samples on the
+        next line, so reset must re-wait or that sample sees nothing.
+        """
+
+        class Resettable:
+            def __init__(self, name, warm_polls):
+                self.name = name
+                self.warm_polls = warm_polls
+                self._left = warm_polls
+
+            def reset(self):
+                self._left = self.warm_polls      # frames thrown away
+
+            def latest(self):
+                if self._left > 0:
+                    self._left -= 1
+                    return None
+                return object()
+
+        provider = self._provider()
+        provider._workers = [Resettable("MAIN", 2), Resettable("SIDE", 4)]
+        provider.wait_for_first_frames(timeout_s=5.0)
+        self.assertIsNotNone(provider._workers[0].latest())
+
+        provider.reset()
+        # After reset the frames must be back, not None.
+        self.assertIsNotNone(provider._workers[0].latest())
+        self.assertIsNotNone(provider._workers[1].latest())
+
+    def test_reset_without_open_cameras_does_not_wait(self) -> None:
+        # reset() is also reachable before start(); it must not block there.
+        provider = self._provider()
+        provider.reset()
+
+
+class CrossCameraSyncTests(unittest.TestCase):
+    """One observation built from two cameras needs them close in time.
+
+    The arbitration picks a camera per stick, so Stick1 can come from MAIN and
+    Stick2 from SIDE -- measured 386 of 450 steps on 2026-08-21.  Their newest
+    frames are up to a frame apart (p95 49 ms), and at the sticks' own
+    21-24 mm/s that is about 1 mm of error in the stick1-to-stick2 geometry the
+    grasp depends on.  The task is chopstick manipulation, so "the sticks are
+    not moving" is not an available assumption.
+
+    The tracker already finds the closest-in-time pair (7-8.5 ms) and prints it;
+    it just never feeds it to the pose path, because a display has no use for
+    it.  Re-selecting from that pair costs a little frame age and buys back most
+    of the skew -- but only when the sources actually differ.
+    """
+
+    def setUp(self) -> None:
+        from Deploy.vision.provider import DualCameraStickPoseProvider
+
+        self.P = DualCameraStickPoseProvider
+
+    def test_same_camera_is_not_treated_as_cross_camera(self) -> None:
+        # Both on MAIN: a nearest-pair frame would just be older for nothing.
+        self.assertFalse(self.P._cross_camera([{"source": "MAIN"}, {"source": "MAIN"}]))
+        self.assertFalse(self.P._cross_camera([{"source": "MAIN"}, {"source": "NONE"}]))
+
+    def test_split_sources_are_detected(self) -> None:
+        self.assertTrue(self.P._cross_camera([{"source": "MAIN"}, {"source": "SIDE"}]))
+        self.assertTrue(self.P._cross_camera([{"source": "SIDE"}, {"source": "MAIN"}]))
+
+    def test_resync_can_be_switched_off(self) -> None:
+        provider = self.P(25.000097, acknowledge_candidate_geometry=True,
+                          prefer_synchronised_pair=False)
+        self.assertFalse(provider.prefer_synchronised_pair)
+
+    def test_nearest_pair_comes_from_worker_history(self) -> None:
+        # It must read history_snapshot(), not latest(): latest() is the very
+        # thing whose skew is being avoided.
+        import inspect
+
+        source = inspect.getsource(self.P._nearest_pair)
+        self.assertIn("history_snapshot()", source)
+        self.assertNotIn("latest()", source)
+        self.assertIn("find_nearest_timestamp_pair", source)

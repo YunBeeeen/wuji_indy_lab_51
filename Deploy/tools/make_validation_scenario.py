@@ -1,3 +1,4 @@
+# [tool] 세 백엔드가 똑같이 재생할 결정적 타깃 시퀀스를 생성.
 """Generate the deterministic target sequence the three backends replay.
 
 Isaac, MuJoCo and the real hand must not each sample their own targets, or the

@@ -1,3 +1,4 @@
+# [run/MuJoCo] 계약 검증·진단 모드 모음(--validate-fk, --validate-aruco, --inspect-* 등). 파지 성능 평가 아님.
 """Command-line entry point for Wuji MuJoCo deployment plumbing checks."""
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from ..backends.mujoco_scheduler import (
 from ..backends.mujoco_wuji import DEFAULT_MODEL_PATH, MujocoWujiHand
 from ..policy.observation_adapter import PolicyObservationAdapter
 from ..policy.onnx_policy import OnnxPolicy
+from ..policy.grasp_policy_contract import GraspPolicyContract, load_grasp_policy
 from ..policy.policy_runner import PolicyRunner
 from ..backends.real_wuji_backend import pending_validation_report
 from ..common.policy_contract import (
@@ -27,8 +29,6 @@ from ..common.policy_contract import (
     DEFAULT_RESET_JOINT_POSITIONS,
     OFFICIAL_NOMINAL_PHYSICAL_LIMITS,
     OBSERVATION_NORMALIZATION_LIMITS,
-    OBSERVATION_DIM,
-    OBSERVATION_SLICES,
     POLICY_DT,
     POLICY_JOINT_NAMES,
     contract_summary,
@@ -43,7 +43,7 @@ from ..common.policy_contract import (
 DEFAULT_POLICY_PATH = (
     Path(__file__).resolve().parents[1]
     / "models"
-    / "hand_final_2026-08-21_01-14-36.onnx"
+    / "hand_real_2026-08-18_23-57-25_model4500.onnx"
 )
 
 
@@ -243,19 +243,24 @@ def test_single_joint_commands(
 def run_onnx_only(
     hand: MujocoWujiHand,
     policy: OnnxPolicy,
+    policy_contract: GraspPolicyContract,
     mode: str,
     debug_observation: bool,
     stick_provider,
 ) -> bool:
     """Validate fixed-shape deterministic inference without applying action."""
 
-    adapter = PolicyObservationAdapter(mode=mode, stick_provider=stick_provider)
-    runner = PolicyRunner(hand, policy, adapter)
+    adapter = policy_contract.make_observation_adapter(
+        mode=mode, stick_provider=stick_provider
+    )
+    runner = PolicyRunner(
+        hand, policy, adapter, action_decoder=policy_contract.action_decoder
+    )
     observation = runner.reset()
     print(f"[STICK PROVIDER] {type(stick_provider).__name__}")
     if debug_observation:
         for name, value in adapter.debug_slices().items():
-            term = OBSERVATION_SLICES[name]
+            term = policy_contract.observation_slices[name]
             print(f"  obs[{term.start:03d}:{term.stop:03d}] {name}: {value}")
     first = policy.infer(observation)
     second = policy.infer(observation)
@@ -277,6 +282,7 @@ def run_onnx_only(
 def run_closed_loop(
     hand: MujocoWujiHand,
     policy: OnnxPolicy,
+    policy_contract: GraspPolicyContract,
     mode: str,
     policy_steps: int,
     print_interval: int,
@@ -289,8 +295,12 @@ def run_closed_loop(
 
     if policy_steps < 1 or print_interval < 1:
         raise ValueError("Policy steps and print interval must be positive.")
-    adapter = PolicyObservationAdapter(mode=mode, stick_provider=stick_provider)
-    runner = PolicyRunner(hand, policy, adapter)
+    adapter = policy_contract.make_observation_adapter(
+        mode=mode, stick_provider=stick_provider
+    )
+    runner = PolicyRunner(
+        hand, policy, adapter, action_decoder=policy_contract.action_decoder
+    )
     observation = runner.reset()
     if np.any(hand.last_reset_clamped):
         names = [
@@ -859,16 +869,22 @@ def main() -> int:
                 _close_viewer_and_wait(viewer)
         return 0 if ok else 1
 
-    policy = OnnxPolicy(args.policy, OBSERVATION_DIM, ACTION_DIM)
+    policy, policy_contract = load_grasp_policy(args.policy)
+    print(f"[ADAPTER] {policy_contract.key} (ONNX input width auto-detected)")
+    if policy_contract.default_pregrasp is not None:
+        hand.reset(policy_contract.default_pregrasp)
+        print(f"[RESET]   {policy_contract.key} saved pregrasp selected")
     stick_provider, camera = create_stick_provider(hand, args.stick_provider)
     try:
         if args.onnx_only:
             return 0 if run_onnx_only(
-                hand, policy, args.mode, args.debug_observation, stick_provider
+                hand, policy, policy_contract, args.mode,
+                args.debug_observation, stick_provider
             ) else 1
         run_closed_loop(
             hand,
             policy,
+            policy_contract,
             args.mode,
             args.policy_steps,
             args.print_interval,

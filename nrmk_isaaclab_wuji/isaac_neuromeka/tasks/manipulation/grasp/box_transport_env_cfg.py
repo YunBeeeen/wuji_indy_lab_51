@@ -1,7 +1,7 @@
 """Indy-Wuji-Box-Transport 장면/환경 설정 (2026-07-16).
 
 cube_grasp_env_cfg.py의 사본 + 랜덤 직육면체 확장 (큐브 태스크 동결 방침으로 별도 파일).
-차이: env별 상자 치수 랜덤화(prestartup) → replicate_physics=False, obs 73.
+차이: env별 상자 치수 랜덤화(prestartup) → replicate_physics=False, default obs 69.
 asset 이름은 mdp 파라미터 호환을 위해 "cube"를 유지함 (실체는 직육면체).
 """
 

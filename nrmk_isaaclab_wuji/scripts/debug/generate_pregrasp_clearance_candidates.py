@@ -1,9 +1,9 @@
 """Generate near-current pregrasp IK candidates without running Isaac physics.
 
-The four functional fingertip pads are displaced along the outward normal of
-their assigned reset stick.  Thumb displacement is half the requested nominal
-clearance; the little finger is unchanged because it has no direct functional
-stick contact in the active topology.
+The five fingertip pads are displaced along the outward normal of their
+assigned reset stick.  Thumb displacement is half the requested nominal
+clearance.  Little is associated with Stick2 only to construct a collision-free
+open reset candidate; it is not promoted to a functional-contact target.
 """
 
 from __future__ import annotations
@@ -11,14 +11,14 @@ from __future__ import annotations
 import numpy as np
 from scipy.optimize import least_squares
 
-from Deploy.contract.fingertip_fk import (
+from Deploy.common.fingertip_fk import (
     POLICY_TIP_FRAME_URDF,
     WujiHand1FingertipFK,
     _axis_angle_transform,
 )
-from Deploy.contract.policy_contract import REAL_HAND_FACTORY_LIMITS
-from Deploy.contract.isaac_reset import ISAAC_STICK_RESET_POSES_PALM_XYZ_WXYZ
-from Deploy.stick_pose import quaternion_to_rotation_matrix_wxyz
+from Deploy.common.policy_contract import REAL_HAND_FACTORY_LIMITS
+from Deploy.common.isaac_reset import ISAAC_STICK_RESET_POSES_PALM_XYZ_WXYZ
+from Deploy.common.stick_pose import quaternion_to_rotation_matrix_wxyz
 
 
 Q0 = np.asarray(
@@ -37,8 +37,9 @@ PAD_OFFSETS = {
     1: np.asarray([0.0, 0.0, -0.0140]),
     2: np.asarray([0.0, 0.0, -0.0140]),
     3: np.asarray([0.0, 0.0, -0.0140]),
+    4: np.asarray([0.0, 0.0, -0.0140]),
 }
-STICK_FOR_FINGER = {0: 0, 1: 0, 2: 0, 3: 1}
+STICK_FOR_FINGER = {0: 0, 1: 0, 2: 0, 3: 1, 4: 1}
 STICK_HALF = np.asarray([0.0035, 0.0900, 0.0035])
 
 
@@ -110,10 +111,10 @@ def solve_family(fk, finger: int, displacement_m: float) -> list[np.ndarray]:
 
 def main() -> None:
     fk = WujiHand1FingertipFK(POLICY_TIP_FRAME_URDF)
-    names = ("thumb", "index", "middle", "ring")
-    for clearance_mm in (1, 2, 3, 4):
+    names = ("thumb", "index", "middle", "ring", "little")
+    for clearance_mm in (1, 2, 3, 4, 15, 30):
         families = []
-        for finger in range(4):
+        for finger in range(5):
             scale = 0.5 if finger == 0 else 1.0
             families.append(solve_family(fk, finger, clearance_mm * scale * 1.0e-3))
         print(f"CLEARANCE {clearance_mm} mm (thumb {0.5 * clearance_mm:.1f} mm)")

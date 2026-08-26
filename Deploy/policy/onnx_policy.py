@@ -1,3 +1,4 @@
+# [policy] ONNX 액터 래퍼. 입출력 차원을 계약과 대조하고 유한성 검사.
 """Small validated ONNX Runtime adapter for the fixed-shape actor graph."""
 
 from __future__ import annotations

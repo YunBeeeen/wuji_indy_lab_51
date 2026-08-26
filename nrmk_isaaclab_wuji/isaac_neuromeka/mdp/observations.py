@@ -12,6 +12,7 @@ from isaaclab.utils.math import (  # noqa: F401
     quat_apply,
     quat_apply_inverse,
     quat_conjugate,
+    quat_unique,
     subtract_frame_transforms,
 )
 
@@ -109,6 +110,23 @@ def joint_pos_history(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneE
 
 def generated_position_commands(env: ManagerBasedRLEnv, command_name: str) -> torch.Tensor:
     return env.command_manager.get_command(command_name)[:, :3]
+
+
+def object_pose_world(
+    env: ManagerBasedRLEnv,
+    object_cfg: SceneEntityCfg = SceneEntityCfg("cube"),
+) -> torch.Tensor:
+    """Return raw object pose ``xyz+wxyz`` in the world frame.
+
+    The replicated-environment placement offset is removed from world position so
+    every environment observes the same world-frame task coordinates.  The world
+    quaternion is canonicalized only across the equivalent ``q``/``-q``
+    representations and is otherwise left raw.
+    """
+    obj = env.scene[object_cfg.name]
+    pos_w = obj.data.root_pos_w - env.scene.env_origins
+    quat_w = quat_unique(obj.data.root_quat_w)
+    return torch.cat((pos_w, quat_w), dim=-1)
 
 
 def object_position_relative(

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# [vision] MAIN/SIDE D435 2대 통합 추적기. 스틱별로 MAIN이 마커를 하나라도 보면 MAIN, 둘 다 놓칠 때만 SIDE 폴백. 둘 다 무효면 그게 safe_stop 조건. 사용자 작성, 원본 유지.
 from __future__ import annotations
 
 """
@@ -66,6 +67,38 @@ PRINT_INTERVAL_SEC = 1.0
 PERF_INTERVAL_SEC = 5.0
 STICK_AXIS_LENGTH_M = 0.030
 
+
+def _draw_frame_axes_if_visible(vis, K, dist, rvec, tvec, length, thickness=2):
+    """Draw axes only when OpenCV can keep every endpoint in the image.
+
+    ``drawFrameAxes`` logs a warning on every frame when an endpoint projects
+    outside the image.  That warning is visualization-only, but at 30 Hz it
+    floods the terminal.  Pre-project the same origin and three endpoints; the
+    pose result remains usable even when its overlay is skipped.
+    """
+    points = np.asarray(
+        [[0.0, 0.0, 0.0], [length, 0.0, 0.0],
+         [0.0, length, 0.0], [0.0, 0.0, length]],
+        dtype=np.float64,
+    )
+    try:
+        projected, _ = cv2.projectPoints(points, rvec, tvec, K, dist)
+    except cv2.error:
+        return False
+    xy = np.asarray(projected, dtype=np.float64).reshape(-1, 2)
+    height, width = vis.shape[:2]
+    visible = (
+        np.isfinite(xy).all()
+        and np.all(xy[:, 0] >= 0.0)
+        and np.all(xy[:, 0] < float(width))
+        and np.all(xy[:, 1] >= 0.0)
+        and np.all(xy[:, 1] < float(height))
+    )
+    if not visible:
+        return False
+    cv2.drawFrameAxes(vis, K, dist, rvec, tvec, length, thickness)
+    return True
+
 # Host-arrival timestamp is used for cross-camera comparison.
 # This flag does NOT reject poses; it only labels whether the comparison
 # was temporally close enough to trust strongly.
@@ -94,13 +127,14 @@ T_BASE_CAMERA_MAIN = np.array(
 # Chosen from the calibration run with the lowest reported RMS (0.950 mm).
 T_BASE_CAMERA_SIDE = np.array(
     [
-        [ 0.999989882, -0.003139647,  0.003221657,  0.654231507],
-        [-0.003071812,  0.046616270,  0.998908148, -0.372806389],
-        [-0.003286401, -0.998907937,  0.046606154,  0.153432702],
-        [ 0.0,          0.0,          0.0,          1.0        ],
+        [-0.999818334, -0.004661734, -0.018481544,  0.708760260],
+        [ 0.018519592, -0.008255073, -0.999794418,  0.176561998],
+        [ 0.004508209, -0.999955060,  0.008339907,  0.144789317],
+        [ 0.0,          0.0,          0.0,          1.0],
     ],
     dtype=np.float64,
 )
+
 
 
 # ============================================================
@@ -123,7 +157,7 @@ T_BASE_J6 = np.array(
 
 # q6 remains a VARIABLE.
 # Later replace the manual value with the live Indy7 joint-6 encoder.
-Q6_INITIAL_DEG = 25.000097
+Q6_INITIAL_DEG = -105.000097
 Q6_STEP_DEG = 1.0
 
 # link6 +Z and Wuji Hand +Z are physically shared.
@@ -1068,7 +1102,7 @@ def draw_stick_pose(
         .reshape(3, 1)
     )
 
-    cv2.drawFrameAxes(
+    _draw_frame_axes_if_visible(
         vis,
         K,
         dist,

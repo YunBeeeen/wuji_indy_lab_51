@@ -55,20 +55,30 @@ conda activate wuji_mujoco     # MuJoCo 두 개
 conda activate wuji_hw         # 실물
 ```
 
-MuJoCo 쪽 둘은 리포지토리 루트의 런처로 실행한다. 인자는 `-m` 형태와 동일하다.
+MuJoCo 쪽 둘도 리포지토리 루트에서 모듈(`-m`) 형태로 실행한다.
 
-| 런처 | = |
+| 명령 | 용도 |
 |---|---|
-| `python mj_grasp.py` | `python -m Deploy.run.run_policy` |
-| `python mj_reach.py` | `python -m Deploy.run.run_finger_reach` |
+| `python -m Deploy.run.run_policy` | MuJoCo 젓가락 파지 정책·계약 진단 |
+| `python -m Deploy.run.run_finger_reach` | MuJoCo 손가락 reach |
 
 `python Deploy/run/run_policy.py` 처럼 직접 실행하면 안 된다 — 패키지 내부가
 상대 import 라 `attempted relative import with no known parent package` 가 난다.
-런처가 리포지토리 루트를 `sys.path` 에 넣어서 그걸 해결한다.
+리포지토리 루트에서 `python -m Deploy.run.<진입점>`으로 실행하면 패키지 import가
+정상적으로 설정된다.
 
-실물과 `tools/*` 는 런처가 없어서 `-m` 을 쓴다.
+실물과 `tools/*`도 같은 방식으로 `-m`을 쓴다.
 
-```bash
+```bash  python -m Deploy.run.run_joint_replay \
+    --csv nrmk_isaaclab_wuji/logs/joint_records/joint_record_2026-08-20_00-34-12.csv \
+    --backend real \
+    --keyboard-open-close \
+    --limit-margin 0.95 \
+    --start-seconds 9 \
+    --max-step-rad 0.05 \
+    --return-to-start
+
+
 python -m Deploy.run.run_finger_reach_real --read-only
 python -m Deploy.tools.compare_reach_logs a.csv b.csv
 ```
@@ -78,7 +88,7 @@ python -m Deploy.tools.compare_reach_logs a.csv b.csv
 # 1. `run_finger_reach` — MuJoCo 손가락 reach
 
 ```bash
-python mj_reach.py --policy PATH --scenario PATH --viewer --realtime
+python -m Deploy.run.run_finger_reach --policy PATH --scenario PATH --viewer --realtime
 ```
 
 ### 무엇을 돌릴지
@@ -95,7 +105,16 @@ python mj_reach.py --policy PATH --scenario PATH --viewer --realtime
 
 ### 물리 — 계약이 아니라 수치 손잡이
 
-| 인자 | 타입 | 기본값 | 설명 |
+| 인자 | 타입 | 기본값 | 설명 |  python -m Deploy.run.run_joint_replay \
+    --csv nrmk_isaaclab_wuji/logs/joint_records/joint_record_2026-08-20_00-34-12.csv \
+    --backend real \
+    --keyboard-open-close \
+    --limit-margin 0.95 \
+    --start-seconds 9 \
+    --max-step-rad 0.05 \
+    --return-to-start
+
+
 |---|---|---|---|
 | `--physics-substeps` | int | `64` (= 1/1920 s) | 정책 스텝당 물리 스텝. **유지 시간은 1/30 s 고정** |
 | `--controller-gains` | `vendor` \| `isaac_tuned` | **`vendor`** | 아래 주의 참조 |
@@ -115,6 +134,15 @@ python mj_reach.py --policy PATH --scenario PATH --viewer --realtime
 | `--realtime` | 플래그 | 꺼짐 | 벽시계 시간에 맞춤 |
 
 `--viewer`만 주면 20초 주행이 순식간에 끝난다. **눈으로 볼 거면 `--realtime`을 같이.**
+  python -m Deploy.run.run_joint_replay \
+    --csv nrmk_isaaclab_wuji/logs/joint_records/joint_record_2026-08-20_00-34-12.csv \
+    --backend real \
+    --keyboard-open-close \
+    --limit-margin 0.95 \
+    --start-seconds 9 \
+    --max-step-rad 0.05 \
+    --return-to-start
+
 
 ### 한계 여백
 
@@ -378,11 +406,11 @@ python -m Deploy.run.run_joint_replay --csv <파일> --backend real \
 
 ---
 
-# 4. `run_policy` — 젓가락 파지 (105D 계약)
+# 4. `run_policy` — 젓가락 파지 진단
 
 ```bash
-python mj_grasp.py --inspect-contract
-MUJOCO_GL=egl python mj_grasp.py --validate-aruco
+python -m Deploy.run.run_policy --inspect-contract
+MUJOCO_GL=egl python -m Deploy.run.run_policy --validate-aruco
 ```
 
 ### 모드 — 하나만 선택 (상호 배타, 전부 플래그)
@@ -454,7 +482,7 @@ python -m Deploy.run.run_mujoco_policy \
 
 | 인자 | 기본값 | 설명 |
 |---|---|---|
-| `--policy` | 없음 | 105D ONNX. 생략하면 **zero-action 배선 확인**(파지 테스트 아님) |
+| `--policy` | 없음 | 105D 또는 2026-08-13 legacy 101D ONNX(자동 판별). 생략하면 **zero-action 배선 확인**(파지 테스트 아님) |
 | `--mode` | `close` | OPEN/CLOSE one-hot |
 | `--switch-at` | 없음 | 이 시각(초)에 반대 모드로 전환 |
 | `--seconds` | `10.0` | 기동 단계 이후 정책 구간 길이 |
@@ -498,6 +526,10 @@ python -m Deploy.run.run_mujoco_policy \
 | `compare_reach_logs` | `reference` (위치) | 필수 |
 | | `others ...` (위치, 1개 이상) | 필수 |
 | | `--tolerance-mrad` | `10.0` |
+| `verify_policy_contract` | `run` (위치) | 필수 — 학습 런 폴더 / `params/env.yaml` / `policy.onnx` |
+| `compare_policy_logs` | `log_a` (위치) | 필수 — `--out` 으로 쓴 105D CSV |
+| | `log_b` (위치, 선택) | 없으면 L1 만 |
+| | `--onnx-a` / `--onnx-b` | 없음 — 주면 L1/L2 검증 |
 | `analyze_command_log` | `log` (위치) | 필수 — `*_90hz.csv` |
 | | `--divider` | `3` (90/30) |
 | `sweep_camera2_mount` | `--heights` / `--angles` / `--down-angle` / `--side-y` | 씬 상수 |
@@ -509,6 +541,62 @@ python -m Deploy.run.run_mujoco_policy \
 시나리오에 들어가지 않는다.
 `compare_reach_logs`는 시각이 아니라 **policy step 서수**로 정렬하고, 양쪽에 다
 있는 컬럼만 비교한다.
+
+**체크포인트를 갈아끼울 때는 `verify_policy_contract` 를 먼저 돌린다.**
+`run_hand_policy_real`과 `run_mujoco_policy`는 ONNX 입력 폭을 읽어 active
+`105D->20D` 또는 2026-08-13 `hand_final` 전용 `101D->20D`를 자동 선택한다.
+`--legacy` 같은 추가 플래그는 없으며 `--policy` 경로만 바꾸면 된다. legacy 선택 시
+다음 항목이 **한 묶음**으로 바뀐다.
+
+- Stick 관측: `xyz+wxyz`가 아니라 `xyz+directed local +Y axis`
+- 관절 정규화: 당시 local URDF placeholder 한계
+- 액션: 전 관절 uniform `0.1 rad`, Joint4 하한 `0`
+- 시작 자세: 해당 run의 저장된 reset pose
+
+현재 105D 어댑터는 그대로 유지되고 이 호환 경로는
+`policy/legacy_hand_final_101.py`에 격리돼 있다. 101D CSV도 101개 관측 열 이름을
+따로 기록하므로 105D 로그로 잘못 라벨링되지 않는다.
+
+그 밖의 체크포인트에서 `--policy` 는 경로만 바꾸면 되고 `OnnxPolicy` 가 형상을 검사하지만,
+**ONNX 는 형상과 가중치만 들고 있다.** pregrasp 자세, 관절별 액션 스케일,
+관절 순서, 정규화 범위, OPEN/CLOSE 스케줄은 전부 `common/` 의 하드코딩 상수라
+런이 달라도 조용히 그대로 쓰인다. 어긋나면 예외가 아니라 **부드럽게 틀리게
+움직이는 손**이 나온다. Isaac 이 런마다 남기는 `params/env.yaml` 이 "실제로 뭘로
+학습했는가"의 기록이라 그걸 배포 상수와 대조한다.
+
+```bash
+conda run -n wuji_mujoco python -m Deploy.tools.verify_policy_contract \
+    nrmk_isaaclab_wuji/logs/rsl_rl/hand_real/<run>
+```
+
+실측(2026-08-23): `2026-08-18_23-57-25`·`2026-08-19_02-20-20` 전부 일치,
+`2026-08-21_20-37-48` 은 **pregrasp 가 78 mrad 다르고**,
+`2026-08-12_18-32-55(최종)` 은 Joint4 하한 override 5개 + **전 관절 단일 스케일
+0.1**(배포는 0.1/0.2/0.15)이라 그대로 배포하면 Joint3 이 2배로 움직인다.
+불일치는 정보이지 금지가 아니다. active 105D와 위 101D legacy 이외의 계약은 아직
+자동 지원하지 않는다. pregrasp만 다른 105D run은 `--pregrasp-from <run>/params/env.yaml`,
+스케줄은 `--open-lead-seconds` / `--segment-seconds`로 명시한다. 관절 순서·정규화·액션
+스케일까지 다른 새 계보는 기존 상수를 덮어쓰지 말고 이번 legacy처럼 별도 어댑터로
+추가해야 한다.
+
+`compare_policy_logs`는 105D 파지 정책용이고 **궤적을 맞춰보지 않는다**. 폐루프라
+초기조건 0.001 rad 차이가 1초 만에 0.12 rad 로 커지는 게 실측이므로(2026-08-22,
+settle 0.50s vs 0.55s) 스텝별 대조는 아무것도 판정하지 못한다. 대신 3단계:
+
+- **L1 REPLAY** — 기록된 obs 를 ONNX 에 다시 넣어 기록된 action 과 대조. 같은
+  파일·같은 망이므로 **반드시 0 이어야 한다**. 런 하나로 배선을 판정한다.
+- **L2 CROSS** — A 의 obs 를 B 의 ONNX 에. 같은 정책이면 PASS. FAIL = 두 런이
+  **다른 체크포인트**를 썼다는 뜻이고, 궤적 그림으로는 절대 안 보인다.
+- **L3 BLOCKS** — 그 다음에야 obs 를 블록별(q / fingertips / stick1 / stick2 /
+  last_action / mode) 범위로 비교. 여기는 pass/fail 이 아니라 **측정**이다.
+
+L1/L2 는 판정, L3 는 측정. 이 순서를 뒤집으면 sim-to-real 차이처럼 보이는 것이
+사실은 체크포인트 착오인 경우를 놓친다.
+
+```bash
+conda run -n wuji_mujoco python -m Deploy.tools.compare_policy_logs \
+    mj.csv real.csv --onnx-a <sim 이 쓴>.onnx --onnx-b <실물이 쓴>.onnx
+```
 
 ---
 
@@ -563,3 +651,49 @@ python -m Deploy.run.run_joint_replay \
     --start-seconds 9 \
     --max-step-rad 0.05 \
     --return-to-start
+
+
+    (키보드 제어 버전)
+python -m Deploy.run.run_joint_replay \
+    --csv nrmk_isaaclab_wuji/logs/joint_records/joint_record_2026-08-20_00-34-12.csv \
+    --backend real \
+    --keyboard-open-close \
+    --limit-margin 0.95 \
+    --start-seconds 9 \
+    --max-step-rad 0.05 \
+    --return-to-start
+
+ (101D 버전)
+  python -m Deploy.run.run_joint_replay \
+    --csv nrmk_isaaclab_wuji/logs/joint_records/joint_record_2026-08-25_19-53-08.csv \
+    --backend real \
+    --keyboard-open-close \
+    --close-segment 3 \
+    --open-segment 4 \
+    --limit-margin 1.0 \
+    --speed 1.0 \
+    --start-seconds 9 \
+    --max-step-rad 0.05 \
+    --return-to-start
+
+
+
+#Deploy
+
+    (deploy cli)
+    python -m Deploy.run.run_hand_policy_real \
+    --policy Deploy/models/hand_real_2026-08-18_23-57-25_model4500.onnx \
+    --mode open --q6-deg -105.000097 --seconds 20 \
+    --current-limit 0.8 --out real_4500_i12_run1.csv
+
+
+
+
+# Deploy (101D)
+python -m Deploy.run.run_hand_policy_real \
+    --policy 'Deploy/models/hand_final_2026-08-13_14-15-09_model400.onnx' \
+    --mode open \
+    --q6-deg -105.000097 \
+    --seconds 20 \
+    --current-limit 0.8 \
+    --out real_hand_final_0813.csv

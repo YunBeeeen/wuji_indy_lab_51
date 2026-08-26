@@ -1,3 +1,4 @@
+# [vision] 실험실 실측 리그 — D435 2대 외부파라미터, Indy7 J6에 달린 palm 프레임. 값마다 측정/후보 출처 표시.
 """The physical installation, with each number's provenance attached.
 
 Not to be confused with ``scene_contract.py``.  That file describes the
@@ -212,18 +213,30 @@ def unverified_inputs() -> tuple[str, ...]:
 
 
 def assert_deployable(acknowledge_candidates: bool = False) -> None:
-    """Refuse to treat candidate geometry as a contract without saying so."""
+    """Report unverified rig geometry.  Warns; does not refuse.
+
+    Until 2026-08-23 this raised unless the caller passed
+    ``acknowledge_candidates``.  The intent was to keep two un-measured
+    rotations visible, but a refusal that every single run has to opt out of
+    stops being a signal -- the flag just becomes part of the command line and
+    nobody reads the reason again.  Printing it every run keeps the information
+    where it is actually seen, and costs no keystrokes.
+
+    Nothing about the geometry changes either way: the same TOTAL_YAW_DEG and
+    q6 are used whether this warns or is silenced.  ``acknowledge_candidates``
+    now only suppresses the message, and is kept so existing commands still
+    parse.
+    """
 
     pending = unverified_inputs()
     if pending and not acknowledge_candidates:
-        detail = "\n".join(f"  ! {name}: {PROVENANCE[name].note}" for name in pending)
-        raise RuntimeError(
-            "The deploy rig still rests on unverified geometry:\n"
-            f"{detail}\n"
-            "Both rotate the palm frame, which every stick observation is "
-            "expressed in. Verify them, or pass acknowledge_candidates=True to "
-            "proceed with the discrepancy on the record."
-        )
+        detail = "\n".join(f"           ! {name}: {PROVENANCE[name].note}"
+                            for name in pending)
+        print("[RIG]      미검증 기하 위에서 동작합니다 "
+              "(--acknowledge-candidate-geometry 로 이 경고를 끕니다):\n"
+              f"{detail}\n"
+              "           둘 다 palm 프레임을 돌리므로 스틱 관측 전체가 함께 "
+              "움직입니다. 스틱이 수 mm 어긋나 보이면 여기부터 볼 것.")
 
 
 def provenance_report() -> str:

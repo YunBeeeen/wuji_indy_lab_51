@@ -1,3 +1,4 @@
+# [backend/실물] 90Hz 명령 전송 + 30Hz 정책 틱 루프, 선형 glide 와 도착 판정.
 """90 Hz command loop with a 30 Hz policy tick, for the real hand.
 
 Single thread on purpose.  Two threads would need a lock around the target
@@ -29,17 +30,45 @@ DEFAULT_COMMAND_HZ = 90.0
 POLICY_HZ = 1.0 / POLICY_DT
 
 
+#: Highest command rate the hand accepts (2026-08-24, user).  Combined with the
+#: integer-divider rule below this leaves 30 / 60 / 90 Hz, so 90 is not a
+#: compromise -- it is the maximum usable rate.  120 Hz divides 30 evenly but
+#: the hardware will not take it.
+MAX_COMMAND_HZ = 100.0
+
+
 def policy_divider(command_hz: float) -> int:
-    """Command ticks per policy tick.  Must be an exact integer."""
+    """Command ticks per policy tick.  Must be an exact integer.
+
+    The fixed point is the 30 Hz POLICY rate: one action is held for exactly
+    1/30 s, which is the contract the policy was trained under.  The command
+    rate only decides how often that unchanged target is re-sent, so a
+    non-integer ratio buys nothing and costs the hold time its exact value --
+    at 100 Hz an action would span 3, 3, then 4 command ticks.
+    """
 
     ratio = command_hz * POLICY_DT
     divider = int(round(ratio))
     if divider < 1 or not np.isclose(ratio, divider, atol=0.0, rtol=1e-9):
+        usable = [hz for hz in (30.0, 60.0, 90.0, 120.0, 150.0)
+                  if hz <= MAX_COMMAND_HZ]
         raise ValueError(
             f"command rate {command_hz} Hz is not an integer multiple of the "
-            f"{POLICY_HZ:.1f} Hz policy rate (ratio {ratio:.6f}). Pick e.g. 90 Hz."
+            f"{POLICY_HZ:.1f} Hz policy rate (ratio {ratio:.6f}). The hand "
+            f"accepts up to {MAX_COMMAND_HZ:.0f} Hz, so the usable rates are "
+            f"{', '.join(f'{hz:.0f}' for hz in usable)} Hz -- "
+            f"{max(usable):.0f} is the highest."
         )
     return divider
+
+
+class PlateauedError(RuntimeError):
+    """The glide stopped improving before reaching tolerance.
+
+    Distinct from a timeout: a timeout says "it might still have been getting
+    there", this says "it demonstrably was not".  Both are judged by size at the
+    call site, but only this one means further waiting is pure heat.
+    """
 
 
 @dataclass
@@ -137,6 +166,8 @@ class RealWujiScheduler:
         timeout_seconds: float,
         report=None,
         limit_fraction: float = 1.0,
+        plateau_seconds: float = 2.0,
+        plateau_epsilon_rad: float = 0.002,
     ):
         """Move at a BOUNDED rate by walking the target, then confirm arrival.
 
@@ -170,6 +201,16 @@ class RealWujiScheduler:
         q_start = np.clip(q_start, lower, upper).astype(np.float32)
         q_goal = np.clip(q_goal, lower, upper).astype(np.float32)
 
+        # A real position servo stops improving well before it reaches the
+        # tolerance: measured 2026-08-22, finger1_joint2 plateaued at 0.03-0.05
+        # rad and stayed there, so the glide burned the whole
+        # ``timeout_seconds`` every single time -- 28 s before the run could
+        # start.  Waiting past the plateau buys nothing but heat: the joint is
+        # stalled at 1.5 A the entire time.  Give up when the error has stopped
+        # falling, and let the caller judge the size of what is left.
+        best_error = float("inf")
+        best_at = None
+
         travel = float(np.abs(q_goal - q_start).max())
         allowance = travel + max(0.05, 0.1 * travel)
         glide_ticks = max(1, int(round(seconds * self.command_hz)))
@@ -181,8 +222,19 @@ class RealWujiScheduler:
 
         while True:
             alpha = min(1.0, (tick + 1) / glide_ticks)
+            # float64 for the blend, then clip EVERY sample -- not just the two
+            # endpoints clipped above.  Under NumPy 2's weak promotion a Python
+            # float times a float32 array stays float32, so with q_start and
+            # q_goal both sitting exactly ON a bound (which COMMAND_LIMIT_RATIO
+            # makes routine: three joints clamp to their upper) the blend
+            # rounds one ULP past it and the backend rejects the target.
+            # Measured 2026-08-23: 1.5960443 vs a 1.5960442 limit killed a run
+            # at glide tick 1.  Clamping the ends is not the same as keeping
+            # the path inside the box.
+            blended = (1.0 - alpha) * q_start.astype(np.float64) + \
+                alpha * q_goal.astype(np.float64)
             self.backend.write_joint_position_targets(
-                ((1.0 - alpha) * q_start + alpha * q_goal).astype(np.float32),
+                np.clip(blended, lower, upper).astype(np.float32),
                 max_step_rad=allowance,
             )
             self.backend.publish_latest_target(controller)
@@ -205,6 +257,18 @@ class RealWujiScheduler:
                         return elapsed, q_actual, error
                 else:
                     reached_since = None
+
+                if alpha >= 1.0:
+                    if max_error < best_error - plateau_epsilon_rad:
+                        best_error, best_at = max_error, now
+                    elif best_at is None:
+                        best_at = now
+                    elif now - best_at >= plateau_seconds:
+                        raise PlateauedError(
+                            f"{plateau_seconds:.1f}s 동안 {plateau_epsilon_rad*1000:.0f} mrad "
+                            f"이상 줄지 않았습니다 (최대 오차 {max_error:.5f} rad). "
+                            "서보 정상상태 오차로 보고 더 기다리지 않습니다."
+                        )
 
                 if elapsed > seconds + timeout_seconds:
                     raise RuntimeError(
