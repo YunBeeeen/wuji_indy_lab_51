@@ -1,175 +1,123 @@
-# Real-ready Wuji Hand 1 deployment stack
+# Wuji Hand 젓가락 정책 배포
 
-This is the first backend of the deployment stack intended for the physical
-Wuji Hand 1. It is not a separate MuJoCo-only policy wrapper. The canonical
-joint contract, normalization, observation history, action decoder, stick-pose
-provider boundary, fingertip FK, and policy runner do not import MuJoCo.
+Isaac Lab에서 학습한 손 정책을 MuJoCo와 실물 Wuji Hand에서 실행하기 위한 배포 패키지.
+현재 기준: 105D 관측, 20D 잔차 액션, 30 Hz 정책, 90 Hz 실물 명령.
 
-The model is the official right-hand Hand 1 description pinned at commit
-`06e5f14cdd1d5fad0a666ca463a668bf609f9534` (`v2026.8.14`). See
-[`assets/wuji_description/UPSTREAM.md`](assets/wuji_description/UPSTREAM.md).
-The palm is fixed and there is no Indy7.
-
-## Architecture
+## 시스템 구성
 
 ```text
-policy_contract  perception  backend_protocol
-       \             |             /
-        action + observation + PolicyRunner
-                         |
-             interface-only dependency
-                /                    \
- MujocoWujiHand + Scheduler      RealWujiBackend
-          (enabled)          (disabled pending validation)
++----------------------+      +----------------------+      +----------------------+
+| Isaac Lab 학습       |      | 정책 내보내기        |      | 배포 실행             |
+| hand_real 계열 task  +----->| checkpoint / ONNX    +----->| MuJoCo / 실물 손      |
+| RSL-RL PPO           |      | 입출력 계약 고정     |      | 공통 PolicyRunner     |
++----------------------+      +----------------------+      +----------+-----------+
+                                                                     |
+                                      +------------------------------+------------------+
+                                      |                                                 |
+                                      v                                                 v
+                           +----------+-----------+                          +----------+-----------+
+                           | 듀얼 D435 비전      |                          | Wuji Hand backend   |
+                           | Stick1/2 hand pose  |                          | encoder·SDK·명령    |
+                           +----------+-----------+                          +----------+-----------+
+                                      |                                                 ^
+                                      v                                                 |
+                           +----------+-----------+     20D 액션             +----------+-----------+
+                           | 105D 관측 조립      +------------------------->| clip·scale·clamp   |
+                           +----------------------+                          +----------------------+
 ```
 
-`joint_mapping.py`, `mujoco_wuji.py`, and `mujoco_scheduler.py` contain all
-MuJoCo storage IDs, model/data access, physics stepping, target-hold timing, and
-viewer synchronization. `PolicyRunner` knows only the backend protocol and has
-no physics loop or concrete-backend branch. Its observation adapter is required
-explicitly, so the composition root—not the runner—selects the perception
-provider.
+## 실물 실행 순서
 
-The current observation is 105D with StickPose7D (`palm xyz + quaternion
-wxyz`) for each stick. Quaternion selection uses the same fourfold local-+Y
-square-stick symmetry canonicalization as the active Isaac `hand_real` task.
-The directed shaft axis remains local `+Y = tail -> tip`.
+1. `[STATE]`: 현재 관절 상태 읽기.
+2. `[GLIDE]`: 현재 자세에서 시작 자세까지 저속 이동.
+3. `[INSERT]`: 사용자 젓가락 배치.
+4. `[SEED]`: 관절·비전 히스토리 초기화.
+5. `[RUN]`: 정책 30 Hz 실행, 동일 관절 목표 90 Hz 전송.
+6. `[RETURN]`: 요청 시 시작 자세 복귀 후 모터 끔.
 
-The scene contains two free 7 x 180 x 7 mm, **10 g each** sticks. Reset center
-and directed +Y shaft match Isaac; among the four square-symmetric local-Y
-rolls, the variant whose primary-marker +Z points upward (Palm/Base +X) is selected.
-Canonicalized policy observation remains equal to the Isaac reset reference.
-The hand requests the Isaac pregrasp q; indices 10 and 18 are
-explicitly clamped because Isaac's 1.6272 rad values exceed the pinned official
-Hand 1 nominal uppers. Four candidate ArUco visuals use DICT_4X4_50 with a
-19 mm black boundary. ID0/ID1 belong to Stick1 and ID2/ID3 to Stick2; each
-pair is axially staggered with 48-degree roll separation and is flush with the
-stick surface. All paper stays at local `Y<=+31.4 mm`, leaving the
-`+32..+90 mm` tip/contact region clear. A Palm-Z `-90..0 deg` rendered sweep
-found no full-range one-camera layout: Stick1 has zero flush candidates at
-`-15 deg` and `0 deg`. The calibrated D435 RGB camera is
-1280x720 @ 15 Hz; policy
-ticks remain 30 Hz and reuse the latest valid pose between fresh frames.
-The external viewer also shows a collision-free D435 body proxy using Intel's
-official nominal 90x25x25 mm envelope. Its RGB optical frame is the calibrated
-frame; the enclosure is visual-only because the exact optical-to-enclosure CAD
-offset is not part of the measured extrinsic.
+## 105D 관측 계약
 
-The viewer scene also contains a first-pass physical testbed. The collision
-floor/base plate is `0.630 m (Y) x 0.625 m (Z)`; the 2020 hand post, 4040 camera post,
-camera bracket, and D435 enclosure are approximate visual geometry. The exact
-calibrated `T_BASE_CAMERA` always places the optical frame--support geometry is
-fitted around that pose and never used to recompute it. Palm height is the
-explicit temporary constant `HAND_PALM_HEIGHT_TEMP_M = 0.15`, measured from
-the plate top (`Base X=0`). The 4040 starts on the lower floor at `X=-0.012 m`.
-Base, Palm, and
-camera optical frames are shown as RGB axes (red +X, green +Y, blue +Z).
+| 순서 | 항목 | 차원 | 내용 |
+|---:|---|---:|---|
+| 1 | 이전·현재 관절 위치 | 40 | 실물 관절 한계 기준 정규화 |
+| 2 | 현재 손끝 위치 | 15 | 실측 관절값 기반 palm-frame FK |
+| 3 | Stick1 이전·현재 pose | 14 | palm-frame `xyz+wxyz` |
+| 4 | Stick2 이전·현재 pose | 14 | palm-frame `xyz+wxyz` |
+| 5 | 직전 적용 액션 | 20 | 현재 상태를 만든 직전 정책 액션 |
+| 6 | 동작 모드 | 2 | OPEN/CLOSE one-hot 또는 neutral `[0,0]` |
+|  | 합계 | 105 | `hand_real` 배포 계약 |
 
-## Commands
+- Quaternion 순서: `wxyz`.
+- 사각 스틱 처리: local +Y축 90도 대칭 중 reference 최근접 표현 선택.
+- 히스토리 순서: 이전 값 → 현재 값.
+- reset 첫 관측: 같은 표본 두 번 입력.
+- 101D·103D 정책: 전용 adapter 없이 105D 실행기 사용 불가.
 
-Use the existing environment from the project root:
+## 20D 액션 계약
 
-```bash
-MUJOCO_PY=/home/lsc/anaconda3/envs/wuji_mujoco/bin/python
-
-$MUJOCO_PY -m Deploy.run.run_policy --inspect-contract
-$MUJOCO_PY -m Deploy.run.run_policy --inspect-model
-$MUJOCO_PY -m Deploy.run.run_policy --inspect-joints
-$MUJOCO_PY -m Deploy.run.run_policy --view-scene
-$MUJOCO_PY -m Deploy.run.run_policy --view-camera
-$MUJOCO_PY -m Deploy.run.run_policy --validate-fk
-MUJOCO_GL=egl $MUJOCO_PY -m Deploy.run.run_policy --inspect-camera
-MUJOCO_GL=egl $MUJOCO_PY -m Deploy.run.run_policy --validate-aruco
-$MUJOCO_PY -m Deploy.run.run_policy --smoke-backend --policy-steps 30
-$MUJOCO_PY -m Deploy.run.run_policy --test-joints
-$MUJOCO_PY -m unittest discover -s Deploy/tests -v
-$MUJOCO_PY -m Deploy.tools.build_physical_testbed_scene
+```text
+ONNX 출력
+  -> [-1, 1] clip
+  -> 현재 q + 관절별 residual scale
+  -> 실물 command limit clamp
+  -> 90 Hz 위치 목표 전송
 ```
 
-`--onnx-only` and `--run-policy` remain as optional legacy CLI entry points,
-but compatibility with an old ONNX contract is not a design requirement.
-`--stick-provider synthetic|ground-truth|aruco` selects the provider for policy
-modes at the CLI composition root. Synthetic poses validate plumbing only.
-The four current marker transforms are explicitly a simulation layout
-candidate, not physical calibration. ID1/ID3 must be replaced by transforms
-measured after real attachment. `--validate-aruco` checks a deterministic
-both-visible diagnostic pose without altering the policy reset contract.
+- Joint1/2 scale: `0.10 rad`.
+- Joint3 scale: `0.20 rad`.
+- Joint4 scale: `0.15 rad`.
+- 관절 순서: `finger1_joint1`부터 `finger5_joint4`까지 20개.
+- 관측과 액션 기준: 같은 현재 관절 표본 재사용.
 
-Camera2 is currently a **reset-tail auxiliary candidate**, not a full-range
-tracker.  It is level (`0 deg` downward), mounted on the Base/Palm `+Y` side,
-and looks horizontally toward `-Y`.  The candidate optical center is Base
-`[X,Y,Z]=[0.125,0.200,0.060] m`.  Its 12.5 cm height is the rounded midpoint
-of reset ID0/ID2 marker heights (12.10/12.94 cm).  Camera2-only rendered reset
-detection of both tail markers passed at this pose; a fixed horizontal camera
-does **not** cover the entire Palm-Z `-90..0 deg` sweep.  The previously tested
-57.5/60-degree downward arrangements did cover that sweep, but are retained
-as comparison results only because a tilted physical mount is undesirable.
+## 듀얼 카메라 인식
 
-To repeat a level-camera mount sweep:
-
-```bash
-MUJOCO_GL=egl $MUJOCO_PY -m Deploy.tools.sweep_camera2_mount \
-  --down-angle 0 --heights 0.120 0.125 0.130 --side-y 0.15 0.20 0.25
+```text
+MAIN D435 ──┐
+            ├─> 마커 pose ─> 스틱별 source 선택 ─> Base ─> Hand frame ─> xyz+wxyz
+SIDE D435 ──┘
 ```
 
-Use `--view-scene`, not `python -m mujoco.viewer --mjcf ...`, to inspect the
-reset. The raw MJCF contains compile-time placeholders; `--view-scene` creates
-the backend first so the Isaac pregrasp and camera-facing symmetry-equivalent
-stick reset poses are applied before the GUI opens.
-`--view-camera` opens MuJoCo's native viewer locked to the calibrated D435
-optical camera, so it works even when OpenCV was installed without HighGUI.
-The ArUco provider separately consumes the exact offscreen 1280x720 render.
+- Stick1 마커: ID0·ID1.
+- Stick2 마커: ID2·ID3.
+- Source 우선순위: MAIN 우선, MAIN이 해당 두 마커를 모두 놓친 경우 SIDE 사용.
+- 두 카메라 무효: HOLD → STALE/LOST 전환.
+- 정책 보호: STALE/LOST 발생 시 새 동작 중단 후 safe stop.
 
-The generated physical-testbed include is derived from named values in
-`scene_contract.py`. The measured plate spans Base `Z=-0.160..+0.465 m`; the
-2020 center is at `Y=0, Z=0`, exactly 160 mm from the -Z edge. The 4040 touches
-the outside of the +Z edge, so its center is `Z=+0.485 m`, and is offset to
-`Y=-0.025 m` (290 mm to the -Y edge, 340 mm to the +Y edge). Profile heights
-and bracket shape remain explicitly `TEMPORARY`/`APPROXIMATE`. These fixture
-values never modify the calibrated camera or canonical policy frames.
+## 폴더 구성
 
-## Contract boundaries
+| 경로 | 역할 |
+|---|---|
+| `run/` | 실물·MuJoCo 실행, 정책 진단, 관절 기록 재생 |
+| `policy/` | ONNX 추론, 105D 관측 조립, 20D 액션 변환 |
+| `backends/` | 실물 SDK와 MuJoCo 공통 인터페이스 |
+| `vision/` | 듀얼 D435 추적기와 정책용 pose provider |
+| `common/` | 관절 순서, 한계, 차원, 타이밍 공통 계약 |
+| `assets/` | MuJoCo·카메라·Wuji description 자원 |
+| `models/` | 배포 정책 파일 위치 |
 
-- `OFFICIAL_NOMINAL_PHYSICAL_LIMITS`: pinned description articulation range;
-  not connected-hand factory calibration.
-- `OBSERVATION_NORMALIZATION_LIMITS`: fixed training/deployment affine range;
-  never replaced from runtime hardware values.
-- `COMMAND_TARGET_LIMITS`: position-target range with Joint4 indices
-  `[3, 7, 11, 15, 19]` floored at zero.
-- Action: clip raw output to `[-1, 1]`, then
-  `q_target = actual_q_rad + ACTION_SCALE_RAD * action` elementwise, then
-  command clamp. `ACTION_SCALE_RAD` is per joint and mirrors Isaac's
-  `HAND_REAL_ACTION_SCALE`: Joint3 `0.2`, Joint4 `0.15`, Joint1/Joint2 `0.1`.
-  A uniform `0.1` would move Joint3 and Joint4 only 50% and 67% of the trained
-  distance. `hand_move`'s uniform `0.1` is a different task and is not deployed
-  through this contract.
-- Timing: MuJoCo 120 Hz, policy 30 Hz, exactly four held physics steps. A real
-  hardware I/O rate is a separate pending value.
+## 안전 기준
 
-The official MJCF armature, joint damping, geometry, mass and inertia are
-always preserved, and `ctrlrange` is always narrowed in memory to the canonical
-command contract.
+- 최초 확인: `--read-only` 사용.
+- 실물 enable: 사용자 확인 후 실행.
+- 관절 목표: policy clip → residual scale → command limit clamp.
+- 비전 이상: stale 상태에서 새 액션 차단.
+- 부하 감시: 전류·온도 확인.
+- 예외 처리: `Ctrl+C`와 오류 발생 시 `finally`에서 모터 끔.
+- 검증 순서: read-only → 짧은 실행 → 장시간 실행.
 
-The position-servo gains follow `--controller-gains`:
+## 기술 문서
 
-- `deploy` (default): the Isaac-tuned Kp/Kd the policy was actually trained
-  against (`DEPLOY_STIFFNESS_NM_PER_RAD` / `DEPLOY_DAMPING_NMS_PER_RAD`, mirroring
-  `hand_real_env_cfg.py`'s `HAND_REAL_STIFFNESS` / `HAND_REAL_DAMPING`).
-  Sim-to-sim isolates one variable, the physics engine, so MuJoCo must run the
-  same commanded controller as training.
-- `official`: the pinned vendor MJCF identification (Kp 0.18~0.69, Kv
-  0.008~0.031, roughly 4.7 Hz / zeta 0.67 per joint). It is 1.5~7.2x softer than
-  the deploy gains and is retained as a deliberate plant-mismatch robustness
-  case, not as a baseline.
+- 실행 명령: [CLI.md](CLI.md).
+- 검증 결과: [VALIDATION_REPORT.md](VALIDATION_REPORT.md).
+- 학습·배포 계약 기록: [common/ISAAC_POLICY_CONTRACT.md](common/ISAAC_POLICY_CONTRACT.md).
+- 비전 상세 기록: [vision/vision.md](vision/vision.md).
+- 기존 영문 README: [BACKUP/README_before_korean_2026-08-27.md](BACKUP/README_before_korean_2026-08-27.md).
 
-Effort limits are the official per-joint URDF values in both modes; the MJCF
-`forcerange` and Isaac's `HAND_REAL_EFFORT_LIMITS` are identical to them.
+## 변경 시 확인
 
-Neither mode establishes equivalence to the real firmware controller. Whether
-Hand 1 exposes settable Kp/Kd is still `PENDING_REAL_VALIDATION`; if it does
-not, the deploy gains describe a hand that does not exist and the sim-to-real
-gap lands exactly here.
-
-See [`VALIDATION_REPORT.md`](VALIDATION_REPORT.md) for results and unresolved
-hardware fields. `ISAAC_POLICY_CONTRACT.md` is retained as a historical audit,
-not as the new model/limit/controller source of truth.
+- checkpoint와 adapter의 observation/action 차원 일치 여부.
+- 학습·배포의 관절 순서와 한계 일치 여부.
+- residual scale과 policy frequency 일치 여부.
+- Stick pose의 frame·단위·quaternion 순서 일치 여부.
+- 카메라 serial과 calibration 파일 일치 여부.
+- reward·reset·physics 변경 시 checkpoint 재사용 가능 여부.

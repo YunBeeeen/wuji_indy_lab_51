@@ -1,24 +1,13 @@
 # [backend/실물] 하드웨어 백엔드 생성 게이트 — 실측으로 검증된 항목과 미측정 항목을 명시적으로 나열.
-"""Construct the hardware backend, with an explicit record of what is verified.
-
-``RealWujiHand`` in ``real_wuji.py`` is the SDK wrapper.  This module is the
-gate in front of it: it names, item by item, what hardware runs have actually
-established and what has not been measured yet, and it checks that the object
-really satisfies ``WujiBackend`` instead of assuming it.
-
-This module exists separately because "the SDK works" and "this is safe to hand
-a 20-joint policy" are different claims.  ``finger_reach`` established the first
-on four joints.  The second adds every motor at once, the pregrasp pose, and a
-grasp whose preload must survive a fault -- so the list below is kept honest
-rather than deleted.
-"""
+"""실물 SDK 래퍼를 공통 백엔드로 생성하는 안전 게이트.
+실행 전 실측 검증 항목과 미확인 항목 구분."""
 
 from __future__ import annotations
 
 from ..common.backend_protocol import WujiBackend
 
 
-#: Established by hardware runs, not by reading the vendor documentation.
+#: 제조사 문서가 아닌 실제 하드웨어 실행으로 확인한 항목.
 VERIFIED_ON_HARDWARE = (
     "SDK generation: wujihandpy 1.7.0 (NOT the older wuji_sdk)",
     "firmware 1.2.1, product SN read back",
@@ -30,7 +19,7 @@ VERIFIED_ON_HARDWARE = (
     "closed-loop residual policy driving four joints (finger_reach)",
 )
 
-#: Not measured.  Each of these is a thing the code must therefore not assume.
+#: 아직 실측하지 않아 코드에서 가정하면 안 되는 항목.
 PENDING_REAL_VALIDATION = (
     "firmware watchdog: whether the last target is held when publishing stops. "
     "safe_stop() therefore freezes the target and relies on the caller to keep "
@@ -45,12 +34,7 @@ PENDING_REAL_VALIDATION = (
 
 
 def make_real_backend(**kwargs) -> WujiBackend:
-    """Return a ``WujiBackend``-conforming handle on the physical hand.
-
-    ``kwargs`` go straight to ``RealWujiHand``.  Importing is deferred so this
-    module stays importable in environments without ``wujihandpy`` -- the
-    MuJoCo environment does not have it, and the contract tests run there.
-    """
+    """실물 손을 ``WujiBackend``로 생성 후 필수 함수 검사."""
 
     from .real_wuji import RealWujiHand
 
@@ -67,7 +51,7 @@ def make_real_backend(**kwargs) -> WujiBackend:
 
 
 def pending_validation_report() -> str:
-    """Render both lists for a run header, so neither is silently forgotten."""
+    """검증 완료·미완료 항목을 실행 헤더 문자열로 정리."""
 
     lines = ["[VERIFIED]"]
     lines += [f"  + {item}" for item in VERIFIED_ON_HARDWARE]

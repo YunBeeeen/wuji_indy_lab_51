@@ -1,29 +1,7 @@
 #!/usr/bin/env python3
 # [run/양쪽] 녹화한 Isaac 관절 목표를 정책 없이 재생. MuJoCo와 실물이 같은 코드.
-"""Replay a logged Isaac joint-target trajectory on MuJoCo or the real hand.
-
-The input is a CSV written by ``play.py``'s ``M`` key (see ``HandJointRecorder``).
-Its ``qt_*`` columns are the PD targets the trained policy commanded, one row
-per 30 Hz policy step.  Those - not the ``q_*`` measurements - are what a
-position-controlled hand can be given: the target sits ahead of the measurement
-by the contact preload, and it is that gap times Kp that holds the sticks.
-Replaying measured angles would command zero PD error, i.e. no grip.
-
-Two things are deliberately decoupled:
-
-* **Command rate** stays at ``--command-hz`` (90 Hz by default) on hardware,
-  matching ``real_wuji_scheduler``.  It is a transmission rate, not a speed.
-* **Playback speed** is set by ``--max-joint-speed`` (or ``--speed``).  Slowing
-  down stretches the time each logged row occupies and linearly interpolates
-  between rows, exactly as ``/home/lsc/wuji_test/move_all.py`` walks a target
-  rather than stepping it.  The recorded trajectory peaks at 0.94 rad/s, about
-  4.7x the 0.20 rad/s that script uses, so it is played slower by default.
-  Time-scaling preserves the grip: the preload is a *position* offset, so it
-  survives unchanged while velocities and impacts shrink.
-
-Nothing here enables a motor without an explicit confirmation, and
-``--read-only`` transmits nothing at all.
-"""
+"""녹화 CSV의 측정값이 아닌 관절 목표 ``qt_*``를 MuJoCo 또는 실물에서 재생.
+명령 주기와 재생 속도 분리. 실물 enable 전 사용자 확인."""
 
 from __future__ import annotations
 
@@ -48,8 +26,7 @@ from ..common.policy_contract import (
 )
 
 HAND_JOINTS = len(POLICY_JOINT_NAMES)
-# The speed /home/lsc/wuji_test/move_all.py walks its target at, and the only
-# whole-hand rate that has actually been run on this hardware.
+# 실물 전체 손에서 검증한 보수적 관절 목표 이동 속도.
 VALIDATED_JOINT_SPEED_RAD_S = 0.20
 
 PREGRASP_JOINT_POSITIONS = np.array(

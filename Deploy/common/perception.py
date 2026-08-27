@@ -1,16 +1,6 @@
 # [common] 스틱 포즈 제공자가 갖춰야 할 인터페이스(PoseState/StickPoseProvider) + 합성 스텁. 카메라 아님.
-"""What a stick-pose source must provide, and how stale it may get.
-
-An interface, not a camera.  ``PoseState`` and ``StickPoseProvider`` describe
-the shape of the observation the policy needs; the things that actually produce
-one -- the simulated ArUco fixture, the dual-camera trackers -- live in
-``vision/`` and import this.
-
-It sits in ``common/`` because ``policy/`` builds observations against it, and
-``policy/`` has to stay importable in an environment with no camera stack.  The
-one concrete class here, ``SyntheticStickPoseProvider``, is numpy handing back
-the Isaac reset poses unchanged: a plumbing stand-in, not a perception system.
-"""
+"""정책이 요구하는 스틱 포즈 제공자와 유효 상태의 공통 인터페이스.
+실제 카메라 구현은 ``vision/``에 배치. 합성 제공자는 배선 확인에만 사용."""
 
 from __future__ import annotations
 

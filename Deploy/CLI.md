@@ -1,7 +1,7 @@
 # `Deploy` CLI 레퍼런스
 
 모든 인자와 기본값을 코드에서 직접 뽑아 정리한 것이다. 전부 **프로젝트 루트**
-(`/home/lsc/wuji_indy_lab_51`)에서 `python -m Deploy.run.<진입점>`으로 실행한다.
+(`/home/lsc/Chopsticks`)에서 `python -m Deploy.run.<진입점>`으로 실행한다.
 (2026-08-21 이전에는 패키지 이름이 `mujoco_deploy` 였고 모듈이 전부 최상위에
 있었다. 옛 명령은 더 이상 동작하지 않는다.)
 
@@ -663,23 +663,9 @@ python -m Deploy.run.run_joint_replay \
     --max-step-rad 0.05 \
     --return-to-start
 
- (101D 버전)
-  python -m Deploy.run.run_joint_replay \
-    --csv nrmk_isaaclab_wuji/logs/joint_records/joint_record_2026-08-25_19-53-08.csv \
-    --backend real \
-    --keyboard-open-close \
-    --close-segment 3 \
-    --open-segment 4 \
-    --limit-margin 1.0 \
-    --speed 1.0 \
-    --start-seconds 9 \
-    --max-step-rad 0.05 \
-    --return-to-start
-
 
 
 #Deploy
-
     (deploy cli)
     python -m Deploy.run.run_hand_policy_real \
     --policy Deploy/models/hand_real_2026-08-18_23-57-25_model4500.onnx \
@@ -688,12 +674,3 @@ python -m Deploy.run.run_joint_replay \
 
 
 
-
-# Deploy (101D)
-python -m Deploy.run.run_hand_policy_real \
-    --policy 'Deploy/models/hand_final_2026-08-13_14-15-09_model400.onnx' \
-    --mode open \
-    --q6-deg -105.000097 \
-    --seconds 20 \
-    --current-limit 0.8 \
-    --out real_hand_final_0813.csv

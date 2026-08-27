@@ -1,4 +1,5 @@
 # [common] 정책 액션/관절 목표를 사람이 읽는 줄로. 실물·MuJoCo 러너 공용 포맷터.
+
 """Render a decoded policy action so "is it commanding anything?" is answerable.
 
 ``|target - q|`` alone cannot answer that question: the residual is

@@ -1,32 +1,6 @@
 # [run/실물] 지원되는 grasp 정책을 실물 손에서 실행. ONNX 폭으로 105D/legacy 101D 자동 선택.
-"""Drive a supported grasp policy on the physical Wuji Hand.
-
-The hardware twin of ``run_mujoco_policy.py``.  Same phases, same order, same
-names, so the two logs are readings of one procedure:
-
-    [STATE]    read where the hand actually is -- there is no reset
-    [GLIDE]    walk the target to the pregrasp pose
-    [INSERT]   the operator places the chopsticks   <- MuJoCo's stick pinning
-    [SEED]     build the first observation from the settled state
-    [RUN]      policy at 30 Hz, published at the command rate
-    [RETURN]   glide home, then disable in finally
-
-The one phase with no simulator counterpart is [INSERT], and it is where the
-pinning analogy becomes literal: in MuJoCo the sticks are held by re-applying
-their pose every substep, and here they are held by a person.
-
-Safety properties this file is responsible for
-----------------------------------------------
-* Every motor is enabled, not four.  A bug can now move the whole hand.
-* The pregrasp pose stalls the fingers against each other when the chopsticks
-  are absent.  Measured 2026-08-19: 1.5 A saturated for 96 s, finger1_joint2 at
-  88.4 C.  [INSERT] therefore has a hard timeout and watches temperature.
-* ``safe_stop`` freezes the command; it does not disable and does not release
-  the grip preload.  Holding a frozen target requires that something keep
-  publishing it -- the firmware's behaviour when commands stop is unverified --
-  so the abort handler here runs that loop rather than trusting the hardware.
-* ``finally`` always disables, including on Ctrl+C.
-"""
+"""실물 Wuji Hand 파지 정책 단계별 실행.
+비전 이상·온도·예외 감시. 종료 시 모든 모터 끔."""
 
 from __future__ import annotations
 

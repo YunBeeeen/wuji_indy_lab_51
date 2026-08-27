@@ -2,39 +2,8 @@
 # [vision] MAIN/SIDE D435 2대 통합 추적기. 스틱별로 MAIN이 마커를 하나라도 보면 MAIN, 둘 다 놓칠 때만 SIDE 폴백. 둘 다 무효면 그게 safe_stop 조건. 사용자 작성, 원본 유지.
 from __future__ import annotations
 
-"""
-Two-D435 / two-stick / Indy7->Wuji Hand integration verification.
-
-Transform convention
---------------------
-T_A_B maps coordinates expressed in B into A.
-
-MAIN:
-    T_HAND_STICK_MAIN
-    = T_HAND_BASE @ T_BASE_CAMERA_MAIN @ T_MAIN_STICK
-
-SIDE:
-    T_HAND_STICK_SIDE
-    = T_HAND_BASE @ T_BASE_CAMERA_SIDE @ T_SIDE_STICK
-
-Final source policy (PER STICK)
--------------------------------
-Stick1 uses MAIN whenever MAIN sees ID0 OR ID1.
-SIDE is allowed only when MAIN sees NEITHER ID0 NOR ID1.
-
-Stick2 uses MAIN whenever MAIN sees ID2 OR ID3.
-SIDE is allowed only when MAIN sees NEITHER ID2 NOR ID3.
-
-Important:
-- SIDE trackers run continuously in the background even while MAIN owns output.
-  This keeps SIDE history/DUAL correction warm for handoff.
-- MAIN uses the existing MAIN-camera workspace prior.
-- SIDE intentionally does NOT use the MAIN-camera workspace prior.
-  On a fresh SIDE single-marker start it falls back to the best reprojection
-  branch. DUAL/history still have priority when available.
-- The cameras are not hardware synchronized. Each frame gets a host monotonic
-  timestamp at acquisition; MAIN/SIDE comparison prints |dt| in ms.
-"""
+"""D435 두 대와 두 스틱을 Indy7/Wuji hand frame으로 통합 추적.
+스틱별 MAIN 우선. MAIN이 두 마커를 놓친 경우에만 SIDE 사용."""
 
 import importlib.util
 import threading
@@ -69,13 +38,7 @@ STICK_AXIS_LENGTH_M = 0.030
 
 
 def _draw_frame_axes_if_visible(vis, K, dist, rvec, tvec, length, thickness=2):
-    """Draw axes only when OpenCV can keep every endpoint in the image.
-
-    ``drawFrameAxes`` logs a warning on every frame when an endpoint projects
-    outside the image.  That warning is visualization-only, but at 30 Hz it
-    floods the terminal.  Pre-project the same origin and three endpoints; the
-    pose result remains usable even when its overlay is skipped.
-    """
+    """축 끝점이 모두 화면 안에 있을 때만 표시. 반복 경고 방지."""
     points = np.asarray(
         [[0.0, 0.0, 0.0], [length, 0.0, 0.0],
          [0.0, length, 0.0], [0.0, 0.0, length]],

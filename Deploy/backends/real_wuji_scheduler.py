@@ -1,20 +1,6 @@
 # [backend/실물] 90Hz 명령 전송 + 30Hz 정책 틱 루프, 선형 glide 와 도착 판정.
-"""90 Hz command loop with a 30 Hz policy tick, for the real hand.
-
-Single thread on purpose.  Two threads would need a lock around the target
-buffer and would make the policy-to-command phase nondeterministic; here the
-relationship is fixed and checkable: 90/30 = 3 exactly, so policy runs on every
-third command tick and the two other ticks re-send the same target.
-
-    tick 0   read q -> observation -> ONNX -> residual target -> send
-    tick 1   send the same target
-    tick 2   send the same target
-    tick 3   read q -> ...
-
-Timing uses absolute monotonic deadlines rather than accumulated sleeps, the
-same way ``move_middle_j1.py`` paces its 100 Hz loop: sleeping ``1/rate`` each
-pass accumulates every scheduling overshoot, and at 90 Hz that drifts fast.
-"""
+"""실물 손의 90 Hz 명령 전송과 30 Hz 정책 틱을 단일 스레드로 실행.
+정책 사이 두 틱에는 같은 관절 목표 재전송. 절대 시각 기준 주기 적용."""
 
 from __future__ import annotations
 
@@ -38,14 +24,7 @@ MAX_COMMAND_HZ = 100.0
 
 
 def policy_divider(command_hz: float) -> int:
-    """Command ticks per policy tick.  Must be an exact integer.
-
-    The fixed point is the 30 Hz POLICY rate: one action is held for exactly
-    1/30 s, which is the contract the policy was trained under.  The command
-    rate only decides how often that unchanged target is re-sent, so a
-    non-integer ratio buys nothing and costs the hold time its exact value --
-    at 100 Hz an action would span 3, 3, then 4 command ticks.
-    """
+    """정책 한 틱당 명령 틱 수 계산. 정수배 주기만 허용."""
 
     ratio = command_hz * POLICY_DT
     divider = int(round(ratio))

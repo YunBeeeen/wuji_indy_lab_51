@@ -1,5 +1,5 @@
 # [policy] ONNX 액터 래퍼. 입출력 차원을 계약과 대조하고 유한성 검사.
-"""Small validated ONNX Runtime adapter for the fixed-shape actor graph."""
+"""고정 입출력 차원을 검사하는 ONNX Runtime 정책 어댑터."""
 
 from __future__ import annotations
 
@@ -11,13 +11,9 @@ import numpy.typing as npt
 
 
 class OnnxPolicy:
-    """Load and validate an exported fixed-shape ``[1,obs] -> [1,act]`` policy.
+    """내보낸 ``[1,obs] -> [1,act]`` 정책 형태를 로드 시점에 검사.
 
-    The dimensions are REQUIRED arguments with no defaults.  This stack carries
-    two independent policy contracts -- the 105D/20D chopstick grasp and the
-    15D/4D middle-finger reach -- and defaulting to either one would silently
-    make it "the real contract" for callers that forgot to say.  Stating them
-    explicitly keeps a mismatch a load-time error instead of a wrong number.
+    정책 계약 혼용 방지를 위해 호출자가 입출력 차원 지정.
     """
 
     def __init__(self, path: str | Path, observation_dim: int, action_dim: int):

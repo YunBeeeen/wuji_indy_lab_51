@@ -1,6 +1,16 @@
 **/__pycache__/
 *.egg-info
-logs/
+# 로그 데이터는 제외하고 디렉터리 구조용 .gitkeep만 추적.
+logs/**
+!logs/.gitkeep
+!logs/debug/
+!logs/debug/.gitkeep
+!logs/joint_records/
+!logs/joint_records/.gitkeep
+!logs/rsl_rl/
+!logs/rsl_rl/.gitkeep
+!logs/rsl_rl/*/
+!logs/rsl_rl/*/.gitkeep
 robot_logs/
 _orbit*
 IsaacLab/

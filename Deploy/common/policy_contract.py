@@ -1,11 +1,6 @@
 # [common] 20관절 정책 계약 — 관절 이름·순서, 세 한계 테이블, obs 슬라이스, 액션 스케일, kp/kd/effort.
-"""Canonical Wuji Hand 1 policy contract shared by every backend.
-
-The nominal model values come from wuji-description commit
-``06e5f14cdd1d5fad0a666ca463a668bf609f9534``.  They are not per-device
-factory calibration values.  Real encoder sign and zero offsets deliberately
-remain unverified until a supervised hardware validation is performed.
-"""
+"""모든 백엔드가 공유하는 Wuji Hand 정책 계약.
+관절 순서·한계·관측 슬라이스·액션 스케일 고정."""
 
 from __future__ import annotations
 
@@ -20,17 +15,12 @@ WUJI_DESCRIPTION_RELEASE = "v2026.8.14"
 PALM_FRAME_NAME = "right_palm_link"
 STICK_REPRESENTATION = "StickPose7D: palm xyz + quaternion wxyz"
 
-# --- Hardware facts: true of the hand itself, shared by every task ---------
-# The hand has twenty joints.  ``ACTION_DIM`` happens to equal this because the
-# grasp policy drives all of them, which hides the distinction -- the reach
-# policy drives four.  Use HAND_JOINT_COUNT when you mean "the hand", and a
-# task's own dim when you mean "this policy's output".
+# --- 하드웨어 공통값: task와 무관한 손 자체의 정보 -----------------------
+# 손 관절 수와 정책 출력 차원은 별도 상수로 관리.
 HAND_JOINT_COUNT = 20
 
-# --- Chopstick-grasp task contract (hand_real / hand_final) ----------------
-# ACTION_DIM, ACTION_CLIP, ACTION_SCALE_RAD, OBSERVATION_SLICES and
-# OBSERVATION_DIM below belong to THIS task, not to the hand.  The finger-reach
-# probe defines its own in finger_reach.py and must not import these.
+# --- 젓가락 파지 정책 계약: hand_real / hand_final ------------------------
+# 아래 action·observation 값은 해당 정책에만 적용.
 ACTION_DIM = 20
 ACTION_CLIP = np.float32(1.0)
 JOINT4_POLICY_INDICES = np.asarray([3, 7, 11, 15, 19], dtype=np.int32)
@@ -57,11 +47,8 @@ CANONICAL_JOINTS: tuple[CanonicalJoint, ...] = tuple(
 POLICY_JOINT_NAMES = tuple(joint.canonical_name for joint in CANONICAL_JOINTS)
 
 
-# Per-joint residual step, mirroring Isaac ``HAND_REAL_ACTION_SCALE`` in
-# ``hand_real_env_cfg.py``.  It is deliberately not a single scalar: Joint3 and
-# Joint4 were retuned against larger PD steps, so a uniform 0.1 rad would move
-# those joints only 50% and 67% of the trained distance.  ``hand_move`` still
-# uses a uniform 0.1 and is not deployed through this contract.
+# Isaac ``HAND_REAL_ACTION_SCALE``과 같은 관절별 잔차 스케일.
+# ``hand_move``의 전 관절 0.1 rad 계약과 혼용하지 않는다.
 _ACTION_SCALE_BY_JOINT_SUFFIX = {
     "joint1": 0.1,
     "joint2": 0.1,

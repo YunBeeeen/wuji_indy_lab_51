@@ -1,5 +1,5 @@
 # [policy] 정책 출력 -> 관절 목표. clip(±1) -> q + 관절별 스케일 -> 명령 한계 clamp.
-"""Canonical residual policy-action processing, independent of any backend."""
+"""정책 출력을 백엔드 공통 관절 잔차 목표로 변환."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from ..common.policy_contract import (
 
 @dataclass(frozen=True)
 class DecodedAction:
-    """Keep network output, ActionManager input, and final position target distinct."""
+    """네트워크 출력, 적용 액션, 최종 관절 목표 구분 보관."""
 
     onnx_action: npt.NDArray[np.float32]
     action_manager_action: npt.NDArray[np.float32]
@@ -32,15 +32,9 @@ def decode_policy_action(
     q_current_policy_order: npt.ArrayLike,
     raw_policy_action: npt.ArrayLike,
 ) -> DecodedAction:
-    """Decode actor output according to the canonical training contract.
+    """학습 계약에 따라 액션 clip, 관절별 스케일, 명령 한계 적용.
 
-    ``RslRlVecEnvWrapper`` first clips the actor output to ``[-1, 1]``.  The
-    common action adapter then computes
-    ``actual q [rad] + ACTION_SCALE_RAD * action`` elementwise and clamps the
-    target to the distinct command limits.  The scale is per joint, not a single
-    scalar (Joint3 ``0.2``, Joint4 ``0.15``, the rest ``0.1``), matching Isaac's
-    ``HAND_REAL_ACTION_SCALE``.  Normalized q is never accepted or used by this
-    function.
+    입력 ``q_current``: 정규화 값이 아닌 실제 관절각(rad).
     """
 
     q_current = np.asarray(q_current_policy_order, dtype=np.float32)

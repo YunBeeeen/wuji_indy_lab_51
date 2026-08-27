@@ -1,17 +1,6 @@
 # [policy] 105D 관측 조립 — q 히스토리·손끝FK·스틱 두 개·last_action·모드. 손끝은 백엔드가 아니라 여기서 FK로 푼다.
-"""Canonical 105D observation builder with policy-step history.
-
-``obs[40:55]`` is solved here from measured joint angles rather than taken from
-the backend.  Fingertip position is a policy-input contract, not a backend
-measurement: the policy was trained against Isaac's tip frames, so every
-backend must be shown those frames even when it simulates a different model.
-Asking the backend produced MuJoCo's own vendor-description tips, which put the
-thumb 3.0 mm and the index 0.7 mm away from what the policy learned.
-
-A rigid body makes this free: ``site position == FK(q)`` to 6.7e-08 m within one
-model (``run_policy --validate-fk``), so nothing is lost by solving it.  The
-real hand has no Cartesian sensor and could only ever have done it this way.
-"""
+"""정책 스텝 히스토리 기반 표준 105D 관측 조립.
+손끝 위치는 학습 URDF와 실측 관절값의 FK로 계산."""
 
 from __future__ import annotations
 
@@ -37,7 +26,7 @@ _POLICY_FINGERTIP_FK: WujiHand1FingertipFK | None = None
 
 
 def policy_fingertip_fk() -> WujiHand1FingertipFK:
-    """Return the shared trained-contract FK, parsing the URDF once."""
+    """학습 계약용 URDF를 한 번만 읽어 공유 FK 반환."""
 
     global _POLICY_FINGERTIP_FK
     if _POLICY_FINGERTIP_FK is None:
@@ -47,7 +36,7 @@ def policy_fingertip_fk() -> WujiHand1FingertipFK:
 
 @dataclass
 class PolicyObservationAdapter:
-    """Maintain oldest-to-newest q/stick history independent of a backend."""
+    """관절·스틱 히스토리를 백엔드와 무관하게 오래된 순서부터 유지."""
 
     observation_dim: ClassVar[int] = OBSERVATION_DIM
     observation_slices: ClassVar[dict[str, object]] = OBSERVATION_SLICES

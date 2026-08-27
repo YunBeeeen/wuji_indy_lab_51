@@ -1,5 +1,5 @@
 # [policy] command/observe_after_hold 2상 스텝. 정책 스텝당 q를 한 번만 읽어 관측과 잔차 기준을 같은 표본으로 유지.
-"""Backend-neutral policy interface and two-phase control step."""
+"""MuJoCo와 실물에서 공유하는 2단계 정책 실행 인터페이스."""
 
 from __future__ import annotations
 
@@ -39,26 +39,9 @@ class ActionDecoder(Protocol):
 
 
 class PolicyRunner:
-    """Share observation/action plumbing between MuJoCo and Real.
+    """백엔드 독립 관측 조립과 액션 적용.
 
-    A backend-specific scheduler owns the interval between ``command`` and
-    ``observe_after_hold``: a fixed number of physics substeps in MuJoCo, and a
-    separately validated I/O/control schedule on hardware.  The pacing differs;
-    the contract below must not, which is why this class is shared rather than
-    duplicated per backend.
-
-    **One joint reading per policy step.**  The observation and the residual
-    base are required to be the SAME sample: ``q_target = q_current + scale *
-    action`` is only meaningful if ``q_current`` is the q the policy was shown.
-    This class therefore reads once and caches, instead of reading again inside
-    ``command()``.
-
-    That used to be two reads.  In MuJoCo they returned bit-identical values
-    (measured 2026-08-21: max delta 0.000e+00 rad over 60 steps) because no
-    physics runs between ``observe_after_hold`` and the next ``command``, so the
-    redundancy was invisible.  On hardware the same two reads differ by encoder
-    noise -- finger_reach saw a 0.101 rad delta reported against a 0.100 rad
-    guard that was never actually exceeded.
+    정책 틱마다 관절을 한 번 읽고 관측과 잔차 목표 계산에 같은 표본 사용.
     """
 
     def __init__(

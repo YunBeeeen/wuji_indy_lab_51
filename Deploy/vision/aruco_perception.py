@@ -1,5 +1,5 @@
 # [vision] OpenCV ArUco/IPPE로 스틱 7D 포즈를 내는 제공자. 점프 게이트와 HOLD/STALE/LOST 상태기계 포함.
-"""OpenCV ArUco/IPPE StickPose7D provider shared by simulated and real RGB sources."""
+"""시뮬레이션과 실물 RGB에 공통으로 쓰는 ArUco/IPPE 스틱 포즈 추정기."""
 
 from __future__ import annotations
 
@@ -79,8 +79,7 @@ class ArucoStickPoseProvider:
         dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
         parameters = cv2.aruco.DetectorParameters()
         parameters.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
-        # A 19 mm marker at the calibrated mounting distance occupies less
-        # than OpenCV's default minimum perimeter fraction in 1280x720.
+        # 19 mm 마커 검출을 위해 OpenCV 기본 최소 둘레 기준 낮춤.
         parameters.minMarkerPerimeterRate = 0.005
         self.detector = cv2.aruco.ArucoDetector(dictionary, parameters)
         self.max_reprojection_error_px = max_reprojection_error_px

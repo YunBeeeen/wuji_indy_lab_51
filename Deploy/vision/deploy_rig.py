@@ -1,58 +1,6 @@
 # [vision] 실험실 실측 리그 — D435 2대 외부파라미터, Indy7 J6에 달린 palm 프레임. 값마다 측정/후보 출처 표시.
-"""The physical installation, with each number's provenance attached.
-
-Not to be confused with ``scene_contract.py``.  That file describes the
-SIMULATED scene: one rendered camera and an invented marker layout, which exist
-so the ArUco detection and PnP maths can be validated inside MuJoCo against a
-pose that is known exactly.  It is a test fixture and its numbers are labelled
-CANDIDATE in its own comments.
-
-This file describes the rig that actually exists in the lab: two calibrated
-D435s, the Indy7 that carries the hand, and the mounting between them.  The
-numbers are transcribed from ``/home/lsc/Vision`` -- the tracker that produced
-and uses them -- rather than re-derived, so there is one place they can drift
-and it is visible.
-
-Only the SUM of the two yaws exists
------------------------------------
-``HAND_MOUNT_YAW_OFFSET_DEG`` and q6 are rotations about the SAME axis, and the
-mount translation runs along that axis too, so::
-
-    Rz(q6) @ Rz(mount_yaw) == Rz(q6 + mount_yaw)      (agree to 4.6e-16)
-
-155/25 and 100/80 produce identical geometry.  The tracker's note about
-verifying the mount yaw separately therefore asks for something no measurement
-can deliver: what is identifiable is ``TOTAL_YAW_DEG``, and the split is
-bookkeeping.  Keep the split only so the number matches the tracker's source.
-
-What the sum is verified against
---------------------------------
-At q6 = 25.000097 deg the operator observes the palm facing the sky, and that
-IS a constraint on the sum: the rotation axis (hand +Z) lies nearly horizontal
-in Base, so turning about it swings the palm normal strongly -- 42.8 deg off
-vertical at a sum of 140, 3.7 deg at 180, 37.4 deg at 220.
-
-Two frame facts make that check meaningful, both established by geometry rather
-than by comment:
-
-* ``palm_link`` +X is the palm plate normal.  The plate's bounding box is
-  31.9 x 81.1 x 104.8 mm -- X is the thin axis -- and 99.77 % of the mesh's
-  area-weighted facet normal lies on X.
-* **Base +Z is up here.**  ``scene_contract`` documents a DIFFERENT frame also
-  called Base, in which +X is up; that one belongs to the simulated MuJoCo
-  scene.  Mixing them makes the palm look 87.5 deg away from vertical instead
-  of 3.7, which is how this was first misread.
-
-Residual
---------
-The sum that maximises palm-up is 182.724 deg, not 180.000.  Using 180 leaves
-the palm normal 3.73 deg off vertical, which displaces a stick 100 mm from the
-palm origin by 6.5 mm.  The eye cannot separate these: every sum from 178.4 to
-187.0 deg looks "within 5 deg of level".  So the observation confirms the frame
-is not grossly wrong; it does not calibrate it, and the residual could equally
-be an error in ``T_BASE_J6`` (i.e. in the fixed q1..q5).  If tracked stick poses
-look displaced by roughly half a centimetre, start here.
-"""
+"""실험실 듀얼 D435·Indy7·Wuji Hand 설치값과 측정 출처 정의.
+시뮬레이션 카메라 계약과 구분. q6와 mount yaw의 합으로 palm frame 계산."""
 
 from __future__ import annotations
 

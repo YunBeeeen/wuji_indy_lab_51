@@ -1,28 +1,6 @@
 # [run/MuJoCo] 지원 grasp 정책을 실물과 같은 절차로 실행. 105D/legacy 101D 자동 선택.
-"""Run a supported grasp policy in MuJoCo through the real hand's bring-up sequence.
-
-This is the MuJoCo twin of ``run_finger_reach_real.py``: same phase names, same
-order, same meanings, so a sim-to-sim comparison is reading two logs of one
-procedure rather than reconciling two different programs.
-
-    [RESET]    park the hand and put the sticks at their Isaac reset poses
-    [GLIDE]    walk the target to the start pose, sticks PINNED
-    [SETTLE]   hold there, sticks PINNED
-    [RELEASE]  stop pinning -- from here the grasp is the policy's alone
-    [SEED]     build the first observation from the settled state
-    [RUN]      policy at 30 Hz
-    [REPORT]   what actually happened to the sticks
-
-Pinning is the simulator's stand-in for the person who holds the chopsticks
-while the hand closes.  Releasing at a named instant is the point of the whole
-script: everything before it is staging, and only what happens after it is a
-grasp.  ``run_policy.py --run-policy`` starts already released from a teleported
-pose, which is why it could never show this.
-
-This is a MuJoCo program.  It never imports hardware modules and it is not a
-task-performance evaluation unless a real perception source is supplied --
-with ``--stick-provider synthetic`` the policy is shown a constant stick pose.
-"""
+"""실물과 같은 준비 순서로 MuJoCo 파지 정책 실행.
+스틱 고정 해제 후 파지 상태와 정책 동작 진단."""
 
 from __future__ import annotations
 

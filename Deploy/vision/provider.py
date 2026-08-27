@@ -1,28 +1,6 @@
-# [vision] 듀얼 카메라 트래커를 StickPoseProvider 로 감싸는 브리지. 원본 스크립트는 안 고치고 조립만 한다.
-"""Bridge the two-camera tracker to the policy's stick-pose interface.
-
-The tracker in ``run_dual_camera_hand_stick_final.py`` already does the hard
-part: two RealSense pipelines on their own threads, ArUco detection, per-stick
-MAIN/SIDE arbitration, and a Hand-frame transform.  This file adds nothing to
-that.  It composes the pieces the tracker already exports, turns the tracker's
-per-frame ``reason`` string into the ``PoseState`` the policy runner acts on,
-and hands back a ``StickPosePair7D``.
-
-The tracker scripts are NOT imported as a package and NOT modified -- they are
-the user's, they run standalone, and they keep being updated.  They are loaded
-by path, the same way the tracker loads its own two single-stick modules.
-
-Two things this file is strict about, because both fail silently:
-
-**q6 has no default.**  The palm frame rides on the Indy7's joint 6, and every
-stick pose is expressed in that frame, so a wrong q6 rotates the whole
-observation.  ``deploy_rig`` refuses a missing q6 and so does this.
-
-**Staleness is measured in milliseconds, not frames.**  A frame-count ladder
-silently changes meaning when the camera's FPS changes -- and it just did, 15
-to 30.  The thresholds below are durations the grasp can survive blind, which
-is a physical question rather than a frame-rate one.
-"""
+# [vision] 듀얼 카메라 트래커를 StickPoseProvider로 감싸는 브리지. 원본 유지, 조립만 수행.
+"""듀얼 카메라 추적기와 정책의 스틱 포즈 인터페이스 연결.
+q6 기반 hand frame 변환과 시간 기준 HOLD/STALE/LOST 상태 관리."""
 
 from __future__ import annotations
 
@@ -63,7 +41,7 @@ CAMERA_STALE_MS = deploy_rig.CAMERA_STALE_MS
 
 
 def load_tracker(path: Path | str = TRACKER_PATH):
-    """Load the tracker script by path, without running its ``main()``."""
+    """추적기 ``main()`` 실행 없이 스크립트를 경로로 로드."""
 
     path = Path(path).resolve()
     if not path.is_file():
@@ -80,14 +58,7 @@ def load_tracker(path: Path | str = TRACKER_PATH):
 
 @dataclass
 class StickSourceReport:
-    """Which camera answered for each stick, and why.  Logging, not control.
-
-    Worth recording every step: MAIN and SIDE do not resolve poses the same way
-    -- the tracker states outright that SIDE skips the MAIN workspace prior and
-    falls back to best reprojection on a fresh single-marker start.  The policy
-    sees only a 7D pose either way, so without this a SIDE stretch is
-    indistinguishable afterwards from a MAIN one.
-    """
+    """각 스틱에 사용된 카메라와 선택 이유를 진단용으로 기록."""
 
     stick1_source: str = "NONE"
     stick2_source: str = "NONE"
