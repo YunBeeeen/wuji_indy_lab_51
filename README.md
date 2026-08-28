@@ -116,7 +116,9 @@ python scripts/rsl_rl/train.py \
 - 전체 CLI: [`CLI.md`](CLI.md)
 - Hand task 구조: [`nrmk_isaaclab_wuji/isaac_neuromeka/tasks/manipulation/hand_grasp/README.md`](nrmk_isaaclab_wuji/isaac_neuromeka/tasks/manipulation/hand_grasp/README.md)
 - PD 자동 조정: [`pd_auto_tuner/README.md`](pd_auto_tuner/README.md)
-- 날짜별 기록: [`활동기록/`](활동기록/)
+- 활동 기록 인덱스: [`활동기록/README.md`](활동기록/README.md)
+- 중간 리뷰: [`활동기록/MIDTERM_REVIEW_2026-07-20.md`](활동기록/MIDTERM_REVIEW_2026-07-20.md)
+- 최종 리뷰: [`활동기록/FINAL_REVIEW_2026-08-28.md`](활동기록/FINAL_REVIEW_2026-08-28.md)
 
 ## 주의
 
